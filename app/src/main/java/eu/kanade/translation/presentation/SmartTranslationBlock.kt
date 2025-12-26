@@ -31,6 +31,7 @@ fun SmartTranslationBlock(
     fontFamily: FontFamily,
 
 ) {
+    if (block.translation.isNullOrBlank()) return
     val padX = block.symWidth * 2
     val padY = block.symHeight
     val xPx = max((block.x - padX / 2) * scaleFactor, 0.0f)
