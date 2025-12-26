@@ -7,7 +7,6 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
-import kotlin.math.abs
 
 class MLKitTranslator(
     override val fromLang: TextRecognizerLanguage,
@@ -26,54 +25,59 @@ class MLKitTranslator(
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
         Tasks.await(translator.downloadModelIfNeeded(conditions))
 
-        pages.forEach { (_, page) ->
-            page.blocks.forEach { block ->
+        pages.mapValues { (_, page) ->
+            page.blocks.map { block ->
                 
-                // 1️⃣ تطبيق الفلاتر (الحروف الفريدة والزاوية)
-                val cleanedText = block.text.filter { it.isLetterOrDigit() }
-                val uniqueCount = cleanedText.toSet().size
+                // 1️⃣ تنظيف النص من الأسطر والمسافات للفحص فقط
+                // نستخدم replace لضمان أن charCount يحسب الحروف الحقيقية فقط
+                val textForFiltering = block.text.replace("\n", "").replace(" ", "")
                 
-                // فحص الزاوية (نطاق 5 درجات للتعامل مع ميلان المانجا)
-                val angleOk = block.angle in -5f..5f
-                
-                // شرط الجودة: نص حقيقي وليس ضجيجاً
-                val isNotNoise = block.text.length > 1 && uniqueCount >= 3
+                // 2️⃣ بداية الفلترة اليدوية على النص المنظف
+                var charCount = 0
+                val seenChars = mutableMapOf<Char, Boolean>()
+                for (c in textForFiltering) {
+                    if (!seenChars.containsKey(c)) {
+                        seenChars[c] = true
+                        charCount += 1
+                    }
+                }
 
-                if (isNotNoise && angleOk) {
+                // فحص الزاوية
+                val angleOk = block.angle >= -2.0 && block.angle <= 2.0
+
+                // 3️⃣ التحقق من الشروط
+                if (charCount >= 4 && angleOk) {
                     try {
-                        // منطق تقسيم الأسطر الأصلي الخاص بك
+                        // هنا نعود للنص الأصلي (block.text) لتقسيم الأسطر بشكل صحيح
                         val lines = block.text.split("\n")
                         val originalWordCounts = lines.map { line ->
                             line.split(" ").size
                         }
 
-                        // ترجمة النص كاملاً ككتلة واحدة لضمان السياق
+                        // الترجمة (نستخدم مسافة بدلاً من السطر الجديد للسياق)
                         val fullText = block.text.replace("\n", " ")
                         val translatedText = Tasks.await(translator.translate(fullText))
 
-                        // إعادة تقسيم النص المترجم حسب عدد الكلمات لكل سطر
+                        // إعادة البناء (منطقك الأصلي)
                         val words = translatedText.split(" ")
                         val rebuiltLines = mutableListOf<String>()
                         var index = 0
-                        
                         for (count in originalWordCounts) {
                             if (index >= words.size) break
-                            val end = minOf(index + count, words.size)
+                            val end = (index + count).coerceAtMost(words.size)
                             rebuiltLines.add(words.subList(index, end).joinToString(" "))
                             index = end
                         }
 
-                        // إضافة أي كلمات متبقية للسطر الأخير
                         if (index < words.size && rebuiltLines.isNotEmpty()) {
                             rebuiltLines[rebuiltLines.size - 1] += " " + words.subList(index, words.size).joinToString(" ")
                         }
 
                         block.translation = rebuiltLines.joinToString("\n")
                     } catch (e: Exception) {
-                        block.translation = "" 
+                        block.translation = ""
                     }
                 } else {
-                    // إذا كان النص ضجيجاً أو مائلاً جداً، نمسح الترجمة
                     block.translation = ""
                 }
             }
