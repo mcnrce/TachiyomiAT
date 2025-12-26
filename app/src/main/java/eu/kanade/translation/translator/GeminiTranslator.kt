@@ -6,106 +6,103 @@ import com.google.ai.client.generativeai.type.HarmCategory
 import com.google.ai.client.generativeai.type.SafetySetting
 import com.google.ai.client.generativeai.type.content
 import com.google.ai.client.generativeai.type.generationConfig
-import com.google.android.gms.tasks.Tasks
-import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.TranslatorOptions
 import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
 import logcat.logcat
+import org.json.JSONArray
 import org.json.JSONObject
-@Suppress
+
 class GeminiTranslator(
-    override val fromLang: TextRecognizerLanguage,
-    override val toLang: TextTranslatorLanguage,
-     apiKey: String,
-     modelName: String,
-    val maxOutputToken: Int,
-    val temp: Float,
+override val fromLang: TextRecognizerLanguage,
+override val toLang: TextTranslatorLanguage,
+apiKey: String,
+modelName: String,
+val maxOutputToken: Int,
+val temp: Float,
 ) : TextTranslator {
 
-    private var model: GenerativeModel = GenerativeModel(
-        modelName = modelName,
-        apiKey = apiKey,
-        generationConfig = generationConfig {
-            topK = 30
-            topP = 0.5f
-            temperature = temp
-            maxOutputTokens = maxOutputToken
-            responseMimeType = "application/json"
-        },
-        safetySettings = listOf(
-            SafetySetting(HarmCategory.HARASSMENT, BlockThreshold.NONE),
-            SafetySetting(HarmCategory.HATE_SPEECH, BlockThreshold.NONE),
-            SafetySetting(HarmCategory.SEXUALLY_EXPLICIT, BlockThreshold.NONE),
-            SafetySetting(HarmCategory.DANGEROUS_CONTENT, BlockThreshold.NONE),
-        ),
-        systemInstruction = content {
-            text(
-                "## System Prompt for Manhwa/Manga/Manhua Translation\n" +
-                    "\n" +
-                    "You are a highly skilled AI tasked with translating text from scanned images of comics (manhwa, manga, manhua) while preserving the original structure and removing any watermarks or site links. \n" +
-                    "\n" +
-                    "**Here's how you should operate:**\n" +
-                    "\n" +
-                    "1. **Input:** You'll receive a JSON object where keys are image filenames (e.g., \"001.jpg\") and values are lists of text strings extracted from those images.\n" +
-                    "\n" +
-                    "2. **Translation:** Translate all text strings to the target language `${toLang.label}`. Ensure the translation is natural and fluent, adapting idioms and expressions to fit the target language's cultural context.\n" +
-                    "\n" +
-                    "3. **Watermark/Site Link Removal:** Replace any watermarks or site links (e.g., \"colamanga.com\") with the placeholder \"RTMTH\".\n" +
-                    "\n" +
-                    "4. **Structure Preservation:** Maintain the exact same structure as the input JSON. The output JSON should have the same number of keys (image filenames) and the same number of text strings within each list.\n" +
-                    "\n" +
-                    "**Example:**\n" +
-                    "\n" +
-                    "**Input:**\n" +
-                    "\n" +
-                    "```json\n" +
-                    "{\"001.jpg\":[\"chinese1\",\"chinese2\"],\"002.jpg\":[\"chinese2\",\"colamanga.com\"]}\n" +
-                    "```\n" +
-                    "\n" +
-                    "**Output (for `${toLang.label}` = English):**\n" +
-                    "\n" +
-                    "```json\n" +
-                    "{\"001.jpg\":[\"eng1\",\"eng2\"],\"002.jpg\":[\"eng2\",\"RTMTH\"]}\n" +
-                    "```\n" +
-                    "\n" +
-                    "**Key Points:**\n" +
-                    "\n" +
-                    "* Prioritize accurate and natural-sounding translations.\n" +
-                    "* Be meticulous in removing all watermarks and site links.\n" +
-                    "* Ensure the output JSON structure perfectly mirrors the input structure.\n" +
-                    "Return {[key:string]:Array<String>}",
+private val model = GenerativeModel(  
+    modelName = modelName,  
+    apiKey = apiKey,  
+    generationConfig = generationConfig {  
+        temperature = temp  
+        maxOutputTokens = maxOutputToken  
+        responseMimeType = "application/json"  
+    },  
+    safetySettings = listOf(  
+        SafetySetting(HarmCategory.HARASSMENT, BlockThreshold.NONE),  
+        SafetySetting(HarmCategory.HATE_SPEECH, BlockThreshold.NONE),  
+        SafetySetting(HarmCategory.SEXUALLY_EXPLICIT, BlockThreshold.NONE),  
+        SafetySetting(HarmCategory.DANGEROUS_CONTENT, BlockThreshold.NONE),  
+    ),  
+    systemInstruction = content {  
+        text(  
+            "Translate all strings in this JSON to ${toLang.label}. " + 
+            "If the text is a website link or url, do not translate it; simply replace the translation with blank text. "
+            +"Keep keys, order, and structure unchanged. Return JSON only."  
+        )  
+    }  
+)  
 
-                )
-        },
-    )
+override suspend fun translate(pages: MutableMap<String, PageTranslation>) {  
+    try {  
+        // 1️⃣ إنشاء JSON مؤقت وخفيف مع فلترة أولية  
+        val requestJson = JSONObject()  
+        val filteredIndexes = mutableMapOf<String, MutableList<Int>>() // لتتبع أي بلوك سيتم ترجمته  
 
-    override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
-        try {
-            val data = pages.mapValues { (k, v) -> v.blocks.map { b -> b.text } }
-            val json = JSONObject(data)
-            val response = model.generateContent(json.toString())
-            val resJson = JSONObject("${response.text}")
-            for ((k, v) in pages) {
-                v.blocks.forEachIndexed { i, b ->
-                    run {
-                        val res = resJson.optJSONArray(k)?.optString(i, "NULL")
-                        b.translation = if (res == null || res == "NULL") b.text else res
-                    }
-                }
-                v.blocks =
-                    v.blocks.filterNot { it.translation.contains("RTMTH") }.toMutableList()
-            }
-        } catch (e: Exception) {
-            logcat { "Image Translation Error : ${e.stackTraceToString()}" }
-            throw e
-        }
-    }
+        pages.forEach { (pageName, page) ->  
+            val arr = JSONArray()  
+            val pageFilteredIndexes = mutableListOf<Int>()  
+            page.blocks.forEachIndexed { index, block ->  
+                // فحص النص: يجب أن يحتوي على 4 أحرف مختلفة على الأقل  
+                var charCount = 0  
+                val seenChars = mutableMapOf<Char, Boolean>()  
+                for (c in block.text) {  
+                    if (!seenChars.containsKey(c)) {  
+                        seenChars[c] = true  
+                        charCount += 1  
+                    }  
+                }  
 
-    override fun close() {
-    }
+                // فحص الزاوية: يجب أن تكون بين -2 و 2  
+                val angleOk = block.angle >= -2.0 && block.angle <= 2.0  
 
+                if (charCount >= 4 && angleOk) {  
+                    arr.put(block.text)  
+                    pageFilteredIndexes.add(index)  
+                } else {  
+                    // مسح الترجمة للنصوص التي لا تلبي الشروط  
+                    block.translation = ""  
+                }  
+            }  
+            if (arr.length() > 0) {  
+                requestJson.put(pageName, arr)  
+                filteredIndexes[pageName] = pageFilteredIndexes  
+            }  
+        }  
+
+        // 2️⃣ إرسال النصوص المفلترة فقط  
+        val response = model.generateContent(requestJson.toString())  
+        val responseJson = JSONObject(response.text ?: "{}")  
+
+        // 3️⃣ إعادة الدمج في الملف الأصلي  
+        pages.forEach { (pageName, page) ->  
+            val translatedArr = responseJson.optJSONArray(pageName) ?: return@forEach  
+            val indexes = filteredIndexes[pageName] ?: return@forEach  
+            for (i in 0 until translatedArr.length()) {  
+                val idx = indexes[i]  
+                page.blocks[idx].translation = translatedArr.optString(i, page.blocks[idx].text)  
+            }  
+        }  
+
+    } catch (e: Exception) {  
+        logcat { "Gemini Translation Error:\n${e.stackTraceToString()}" }  
+        throw e  
+    }  
+}  
+
+override fun close() {  
+    // لا يوجد موارد لإغلاقها  
+}
 
 }
