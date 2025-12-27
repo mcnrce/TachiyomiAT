@@ -48,30 +48,28 @@ class PageTranslationHelper {
          * يحدد ما إذا كان يجب دمج فقاعتين بناءً على موقعهما الهندسي.
          */
         private fun shouldMerge(
-            a: TranslationBlock,
-            b: TranslationBlock,
-            xThreshold: Float,
-            yThresholdFactor: Float
-        ): Boolean {
-            // أ- فحص الزاوية: تقارب في الميلان
-            if (abs(a.angle - b.angle) > 15) return false
+        private fun shouldMerge(r1: TranslationBlock, r2: TranslationBlock): Boolean {
 
-            // ب- فحص التداخل أو القرب الأفقي
-            // يسمح بدمج الأسطر حتى لو اختلف عرضها طالما أنها تقع في نفس العمود تقريباً
-            val isXOverlapOrClose = a.x < (b.x + b.width + xThreshold) && (a.x + a.width + xThreshold) > b.x
+    // تشابه الزاوية
+    val angleSimilar = kotlin.math.abs(r1.angle - r2.angle) < 10
 
-            // ج- فحص المسافة الرأسية
-            val top = maxOf(a.y, b.y)
-            val bottom = minOf(a.y + a.height, b.y + b.height)
-            val verticalGap = top - bottom 
+    // الفجوة العمودية
+    val top = maxOf(r1.y, r2.y)
+    val bottom = minOf(r1.y + r1.height, r2.y + r2.height)
+    val verticalGap = top - bottom
+    val avgSymHeight = (r1.symHeight + r2.symHeight) / 2f
+    val closeVertically = verticalGap <= avgSymHeight * 1.5f
 
-            val avgSymHeight = (a.symHeight + b.symHeight) / 2
-            val maxAllowedGap = avgSymHeight * yThresholdFactor
+    // الفجوة الأفقية (قرب نسبي فقط)
+    val left = maxOf(r1.x, r2.x)
+    val right = minOf(r1.x + r1.width, r2.x + r2.width)
+    val horizontalGap = left - right
+    val avgSymWidth = (r1.symWidth + r2.symWidth) / 2f
+    val closeHorizontally = horizontalGap <= avgSymWidth * 2.5f
 
-            val isYClose = verticalGap <= maxAllowedGap
-
-            return isXOverlapOrClose && isYClose
-        }
+    // الدمج = قرب نسبي فقط
+    return angleSimilar && closeVertically && closeHorizontally
+}
 
         /**
          * دمج الخصائص الفيزيائية والنصية لكتلتين.
