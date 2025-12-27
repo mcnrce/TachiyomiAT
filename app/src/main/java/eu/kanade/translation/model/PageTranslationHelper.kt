@@ -75,40 +75,41 @@ class PageTranslationHelper {
          * دمج الخصائص الفيزيائية والنصية لكتلتين.
          */
         private fun performMerge(a: TranslationBlock, b: TranslationBlock): TranslationBlock {
-            // استخدام maxOf و minOf لحساب الحدود الجديدة
-            val minX = minOf(a.x, b.x)
-            val minY = minOf(a.y, b.y)
-            val maxX = maxOf(a.x + a.width, b.x + b.width)
-            val maxY = maxOf(a.y + a.height, b.y + b.height)
+    val minX = minOf(a.x, b.x)
+    val minY = minOf(a.y, b.y)
+    val maxX = maxOf(a.x + a.width, b.x + b.width)
+    val maxY = maxOf(a.y + a.height, b.y + b.height)
 
-            // ترتيب النص: الأقل Y (الأعلى في الصفحة) يأتي أولاً
-            val first = if (a.y <= b.y) a else b
-            val second = if (a.y <= b.y) b else a
+    val first = if (a.y <= b.y) a else b
+    val second = if (a.y <= b.y) b else a
 
-            val mergedText = "${first.text}\n${second.text}"
-            val mergedTrans = if (first.translation.isNotBlank() || second.translation.isNotBlank()) {
-                "${first.translation}\n${second.translation}".trim()
-            } else ""
+    val mergedText = "${first.text}\n${second.text}"
+    val mergedTrans =
+        if (first.translation.isNotBlank() || second.translation.isNotBlank())
+            "${first.translation}\n${second.translation}".trim()
+        else ""
 
-            // حساب الحجم الموزون بناءً على طول النص (دقة الخط)
-            val lenA = a.text.length.coerceAtLeast(1)
-            val lenB = b.text.length.coerceAtLeast(1)
-            val totalLen = lenA + lenB
+    // ✔ حساب الطول بدون length
+    val lenA = getStrLen(a.text)
+    val lenB = getStrLen(b.text)
+    val totalLen = lenA + lenB
 
-            val finalSymWidth = (a.symWidth * lenA + b.symWidth * lenB) / totalLen
-            val finalSymHeight = (a.symHeight * lenA + b.symHeight * lenB) / totalLen
+    val finalSymWidth =
+        (a.symWidth * lenA + b.symWidth * lenB) / totalLen
+    val finalSymHeight =
+        (a.symHeight * lenA + b.symHeight * lenB) / totalLen
 
-            return TranslationBlock(
-                text = mergedText,
-                translation = mergedTrans,
-                width = maxX - minX,
-                height = maxY - minY,
-                x = minX,
-                y = minY,
-                angle = (a.angle + b.angle) / 2,
-                symWidth = finalSymWidth,
-                symHeight = finalSymHeight
-            )
+    return TranslationBlock(
+        text = mergedText,
+        translation = mergedTrans,
+        width = maxX - minX,
+        height = maxY - minY,
+        x = minX,
+        y = minY,
+        angle = (a.angle + b.angle) / 2,
+        symWidth = finalSymWidth,
+        symHeight = finalSymHeight
+    )
         }
     }
 }
