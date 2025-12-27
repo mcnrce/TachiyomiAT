@@ -17,18 +17,19 @@ class PageTranslationHelper {
                 .toMutableList()
 
             var mergedAny: Boolean
-            do {
+            mergeLoop@ do {
                 mergedAny = false
                 var i = 0
                 while (i < result.size) {
                     var j = i + 1
                     while (j < result.size) {
                         if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
-                            result[i] = performMerge(result[i], result[j])
-                            result.removeAt(j)
-                            mergedAny = true
-                        } else {
-                            j++
+    result[i] = performMerge(result[i], result[j])
+    result.removeAt(j)
+    mergedAny = true
+    break@mergeLoop   // ← هذا هو التعديل الجوهري
+} else {
+    j++
                         }
                     }
                     i++
