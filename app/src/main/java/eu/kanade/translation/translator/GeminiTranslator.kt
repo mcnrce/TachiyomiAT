@@ -6,25 +6,31 @@ import com.google.ai.client.generativeai.type.HarmCategory
 import com.google.ai.client.generativeai.type.SafetySetting
 import com.google.ai.client.generativeai.type.content
 import com.google.ai.client.generativeai.type.generationConfig
+import com.google.android.gms.tasks.Tasks
+import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.Translation
+import com.google.mlkit.nl.translate.TranslatorOptions
 import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
 import logcat.logcat
-import org.json.JSONArray
 import org.json.JSONObject
-
+@Suppress
 class GeminiTranslator(
     override val fromLang: TextRecognizerLanguage,
     override val toLang: TextTranslatorLanguage,
-    apiKey: String,
-    modelName: String,
+     apiKey: String,
+     modelName: String,
     val maxOutputToken: Int,
     val temp: Float,
 ) : TextTranslator {
 
-    private val model = GenerativeModel(
+    private var model: GenerativeModel = GenerativeModel(
         modelName = modelName,
         apiKey = apiKey,
         generationConfig = generationConfig {
+            topK = 30
+            topP = 0.5f
             temperature = temp
             maxOutputTokens = maxOutputToken
             responseMimeType = "application/json"
@@ -37,74 +43,75 @@ class GeminiTranslator(
         ),
         systemInstruction = content {
             text(
-                "Translate all strings in this JSON to ${toLang.label}. " +
-                "If the text is a website link or url, do not translate it; simply replace the translation with blank text. " +
-                "Keep keys, order, and structure unchanged. Return JSON only."
-            )
-        }
+               " ## System Instruction – Comic Translation (Strict JSON Mode)
+
+You are an AI translator specialized in manhwa, manga, and manhua text extracted from scanned images.
+
+Rules you MUST follow strictly:
+
+1. Input format:
+   - You will receive a JSON object.
+   - Keys are image filenames (e.g. "001.jpg").
+   - Values are arrays of strings.
+   - Each string represents one text block.
+
+2. Translation:
+   - Translate every string into ${toLang.label}.
+   - Use natural, fluent language suitable for comics.
+   - Preserve tone, emotion, and intent.
+   - Do NOT merge, split, reorder, or omit any strings.
+
+3. Watermarks and site links:
+   - If a string is a watermark, website name, or URL, replace its translation with the exact text "RTMTH".
+   - Do NOT translate watermarks.
+
+4. Structure preservation (CRITICAL):
+   - Output MUST be valid JSON.
+   - Keys MUST remain identical and in the same order.
+   - Each array MUST have the exact same length as the input.
+   - Index-to-index correspondence MUST be preserved.
+
+5. Output rules:
+   - Output JSON ONLY.
+   - No explanations.
+   - No comments.
+   - No markdown.
+   - No extra text.
+
+Return type:
+{ [key: string]: Array<string> }"
     )
 
-    override suspend fun translate(pages: MutableMap<String, PageTranslation>) {  
-    try {  
-        val requestJson = JSONObject()  
-        val filteredIndexes = mutableMapOf<String, MutableList<Int>>()  
-
-        pages.forEach { (pageName, page) ->  
-            val arr = JSONArray()  
-            val pageFilteredIndexes = mutableListOf<Int>()  
-
-            page.blocks.forEachIndexed { index, block ->  
-                var charCount = 0  
-                val seenChars = mutableMapOf<Char, Boolean>()  
-                for (c in block.text) {  
-                    if (!seenChars.containsKey(c)) {  
-                        seenChars[c] = true  
-                        charCount += 1  
-                    }  
-                }  
-
-                val angleOk = block.angle >= -2.0 && block.angle <= 2.0  
-
-                if (charCount >= 4 && angleOk) {  
-                    arr.put(block.text)  
-                    pageFilteredIndexes.add(index)  
-                } else {  
-                    block.translation = ""  
-                }  
-            }  
-
-            if (arr.length() > 0) {  
-                requestJson.put(pageName, arr)  
-                filteredIndexes[pageName] = pageFilteredIndexes  
-            }  
-        }  
-
-        val response = model.generateContent(requestJson.toString())  
-
-        // ✅ التحقق مباشرة من JSON قبل معالجة النتيجة
-        val responseText = response.text
-        val responseJson = try { 
-            JSONObject(responseText ?: "{}") 
-        } catch (e: Exception) {  
-            logcat { "Gemini Translation Error: Response is not valid JSON\n$responseText" }  
-            throw e  
-        }  
-
-        pages.forEach { (pageName, page) ->  
-            val translatedArr = responseJson.optJSONArray(pageName) ?: return@forEach  
-            val indexes = filteredIndexes[pageName] ?: return@forEach  
-            for (i in 0 until translatedArr.length()) {  
-                val idx = indexes[i]  
-                page.blocks[idx].translation = translatedArr.optString(i, page.blocks[idx].text)  
-            }  
-        }  
-
-    } catch (e: Exception) {  
-        logcat { "Gemini Translation Error:\n${e.stackTraceToString()}" }  
-        throw e  
-    }  
+    override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
+        try {
+            val data = pages.mapValues { (k, v) -> v.blocks.map { b -> b.text } }
+            val json = JSONObject(data)
+            val response = model.generateContent(json.toString())
+            val resJson = JSONObject("${response.text}")
+            for ((k, v) in pages) {
+                v.blocks.forEachIndexed { i, b ->
+                    run {
+                        // تصفية الفقاعات ذات الميلان الكبير بعد الترجمة
+v.blocks.forEach { block ->
+    if (block.angle < -5.0f || block.angle > 5.0f) {
+        block.translation = ""
     }
+}
+                        val res = resJson.optJSONArray(k)?.optString(i, "NULL")
+                        b.translation = if (res == null || res == "NULL") b.text else res
+                    }
+                }
+                v.blocks =
+                    v.blocks.filterNot { it.translation.contains("RTMTH") }.toMutableList()
+            }
+        } catch (e: Exception) {
+            logcat { "Image Translation Error : ${e.stackTraceToString()}" }
+            throw e
+        }
+    }
+
     override fun close() {
-        // لا يوجد موارد لإغلاقها
     }
+
+
 }
