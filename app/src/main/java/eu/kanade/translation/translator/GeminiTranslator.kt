@@ -44,65 +44,74 @@ private val model = GenerativeModel(
     }  
 )  
 
-override suspend fun translate(pages: MutableMap<String, PageTranslation>) {  
-    try {  
-        // 1️⃣ إنشاء JSON مؤقت وخفيف مع فلترة أولية  
-        val requestJson = JSONObject()  
-        val filteredIndexes = mutableMapOf<String, MutableList<Int>>() // لتتبع أي بلوك سيتم ترجمته  
+override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
+    try {
+        val MAX_SIZE = 5000
 
-        pages.forEach { (pageName, page) ->  
-            val arr = JSONArray()  
-            val pageFilteredIndexes = mutableListOf<Int>()  
-            page.blocks.forEachIndexed { index, block ->  
-                // فحص النص: يجب أن يحتوي على 4 أحرف مختلفة على الأقل  
-                var charCount = 0  
-                val seenChars = mutableMapOf<Char, Boolean>()  
-                for (c in block.text) {  
-                    if (!seenChars.containsKey(c)) {  
-                        seenChars[c] = true  
-                        charCount += 1  
-                    }  
-                }  
+        val pendingJson = JSONObject()
+        val pendingIndexes = mutableMapOf<String, MutableList<Int>>()
 
-                // فحص الزاوية: يجب أن تكون بين -2 و 2  
-                val angleOk = block.angle >= -2.0 && block.angle <= 2.0  
+        fun sendCurrentBatch() {
+            if (pendingJson.length() == 0) return
 
-                if (charCount >= 4 && angleOk) {  
-                    arr.put(block.text)  
-                    pageFilteredIndexes.add(index)  
-                } else {  
-                    // مسح الترجمة للنصوص التي لا تلبي الشروط  
-                    block.translation = ""  
-                }  
-            }  
-            if (arr.length() > 0) {  
-                requestJson.put(pageName, arr)  
-                filteredIndexes[pageName] = pageFilteredIndexes  
-            }  
-        }  
+            val response = model.generateContent(pendingJson.toString())
+            val responseJson = JSONObject(response.text ?: "{}")
 
-        // 2️⃣ إرسال النصوص المفلترة فقط  
-        val response = model.generateContent(requestJson.toString())  
-        val responseJson = JSONObject(response.text ?: "{}")  
+            pendingIndexes.forEach { (pageName, indexes) ->
+                val translatedArr = responseJson.optJSONArray(pageName) ?: return@forEach
+                val page = pages[pageName] ?: return@forEach
 
-        // 3️⃣ إعادة الدمج في الملف الأصلي  
-        pages.forEach { (pageName, page) ->  
-            val translatedArr = responseJson.optJSONArray(pageName) ?: return@forEach  
-            val indexes = filteredIndexes[pageName] ?: return@forEach  
-            for (i in 0 until translatedArr.length()) {  
-                val idx = indexes[i]  
-                page.blocks[idx].translation = translatedArr.optString(i, page.blocks[idx].text)  
-            }  
-        }  
+                for (i in 0 until translatedArr.length()) {
+                    val blockIndex = indexes[i]
+                    page.blocks[blockIndex].translation =
+                        translatedArr.optString(i, page.blocks[blockIndex].text)
+                }
+            }
 
-    } catch (e: Exception) {  
-        logcat { "Gemini Translation Error:\n${e.stackTraceToString()}" }  
-        throw e  
-    }  
-}  
+            pendingJson.keys().asSequence().toList().forEach { pendingJson.remove(it) }
+            pendingIndexes.clear()
+        }
 
-override fun close() {  
-    // لا يوجد موارد لإغلاقها  
-}
+        pages.forEach { (pageName, page) ->
+            val arr = JSONArray()
+            val pageFilteredIndexes = mutableListOf<Int>()
 
+            page.blocks.forEachIndexed { index, block ->
+
+                val angleOk = block.angle >= -2.0 && block.angle <= 2.0
+
+                if (angleOk) {
+                    arr.put(block.text)
+                    pageFilteredIndexes.add(index)
+                } else {
+                    block.translation = ""
+                }
+            }
+
+            if (arr.length() > 0) {
+                // جرّب الإضافة
+                pendingJson.put(pageName, arr)
+                pendingIndexes[pageName] = pageFilteredIndexes
+
+                // إن تجاوز الحجم → أرسل السابق وابدأ من جديد
+                if (jsonSizeApprox(pendingJson) > MAX_SIZE) {
+                    pendingJson.remove(pageName)
+                    pendingIndexes.remove(pageName)
+
+                    sendCurrentBatch()
+
+                    // أعد إضافة الصفحة الحالية بعد التفريغ
+                    pendingJson.put(pageName, arr)
+                    pendingIndexes[pageName] = pageFilteredIndexes
+                }
+            }
+        }
+
+        // إرسال ما تبقى
+        sendCurrentBatch()
+
+    } catch (e: Exception) {
+        logcat { "Gemini Translation Error:\n${e.stackTraceToString()}" }
+        throw e
+    }
 }
