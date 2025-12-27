@@ -81,7 +81,7 @@ Rules you MUST follow strictly:
 Return type:
 { [key: string]: Array<string> }"
     )
-
+        },)
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
         try {
             val data = pages.mapValues { (k, v) -> v.blocks.map { b -> b.text } }
