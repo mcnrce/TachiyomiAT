@@ -44,97 +44,66 @@ class GeminiTranslator(
         }
     )
 
-    override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
-        try {
-            val MAX_SIZE = 5000
+    override suspend fun translate(pages: MutableMap<String, PageTranslation>) {  
+    try {  
+        val requestJson = JSONObject()  
+        val filteredIndexes = mutableMapOf<String, MutableList<Int>>()  
 
-            var requestJson = JSONObject()
-            val filteredIndexes = mutableMapOf<String, MutableList<Int>>()
+        pages.forEach { (pageName, page) ->  
+            val arr = JSONArray()  
+            val pageFilteredIndexes = mutableListOf<Int>()  
 
-            fun isValidJson(text: String?): Boolean {
-                if (text.isNullOrBlank()) return false
-                return try {
-                    JSONObject(text)
-                    true
-                } catch (e1: Exception) {
-                    try {
-                        JSONArray(text)
-                        true
-                    } catch (e2: Exception) {
-                        false
-                    }
-                }
-            }
+            page.blocks.forEachIndexed { index, block ->  
+                var charCount = 0  
+                val seenChars = mutableMapOf<Char, Boolean>()  
+                for (c in block.text) {  
+                    if (!seenChars.containsKey(c)) {  
+                        seenChars[c] = true  
+                        charCount += 1  
+                    }  
+                }  
 
-            fun sendBatch(jsonBatch: JSONObject, indexesBatch: Map<String, MutableList<Int>>) {
-                if (jsonBatch.length() == 0) return
-                val response = model.generateContent(jsonBatch.toString())
-                val responseText = response.text ?: "{}"
+                val angleOk = block.angle >= -2.0 && block.angle <= 2.0  
 
-                if (!isValidJson(responseText)) {
-                    logcat { "Gemini Translation Error: Response is not valid JSON:\n$responseText" }
-                    throw Exception("Invalid JSON received from Gemini API")
-                }
+                if (charCount >= 4 && angleOk) {  
+                    arr.put(block.text)  
+                    pageFilteredIndexes.add(index)  
+                } else {  
+                    block.translation = ""  
+                }  
+            }  
 
-                val responseJson = JSONObject(responseText)
-                indexesBatch.forEach { (pageName, indexes) ->
-                    val translatedArr = responseJson.optJSONArray(pageName) ?: return@forEach
-                    val page = pages[pageName] ?: return@forEach
-                    for (i in 0 until translatedArr.length()) {
-                        val idx = indexes[i]
-                        page.blocks[idx].translation =
-                            translatedArr.optString(i, page.blocks[idx].text)
-                    }
-                }
-            }
+            if (arr.length() > 0) {  
+                requestJson.put(pageName, arr)  
+                filteredIndexes[pageName] = pageFilteredIndexes  
+            }  
+        }  
 
-            pages.forEach { (pageName, page) ->
-                val arr = JSONArray()
-                val pageFilteredIndexes = mutableListOf<Int>()
+        val response = model.generateContent(requestJson.toString())  
 
-                page.blocks.forEachIndexed { index, block ->
-                    val angleOk = block.angle >= -2.0 && block.angle <= 2.0
-                    if (angleOk) {
-                        arr.put(block.text)
-                        pageFilteredIndexes.add(index)
-                    } else {
-                        block.translation = ""
-                    }
-                }
+        // ✅ التحقق مباشرة من JSON قبل معالجة النتيجة
+        val responseText = response.text
+        val responseJson = try { 
+            JSONObject(responseText ?: "{}") 
+        } catch (e: Exception) {  
+            logcat { "Gemini Translation Error: Response is not valid JSON\n$responseText" }  
+            throw e  
+        }  
 
-                if (arr.length() > 0) {
-                    requestJson.put(pageName, arr)
-                    filteredIndexes[pageName] = pageFilteredIndexes
+        pages.forEach { (pageName, page) ->  
+            val translatedArr = responseJson.optJSONArray(pageName) ?: return@forEach  
+            val indexes = filteredIndexes[pageName] ?: return@forEach  
+            for (i in 0 until translatedArr.length()) {  
+                val idx = indexes[i]  
+                page.blocks[idx].translation = translatedArr.optString(i, page.blocks[idx].text)  
+            }  
+        }  
 
-                    // 🔴 فحص الحجم التقريبي
-                    if (requestJson.toString().length > MAX_SIZE) {
-                        // إزالة الصفحة الحالية
-                        requestJson.remove(pageName)
-                        filteredIndexes.remove(pageName)
-
-                        // إرسال الدفعة السابقة
-                        sendBatch(requestJson, filteredIndexes)
-
-                        // إعادة التهيئة
-                        requestJson = JSONObject()
-                        filteredIndexes.clear()
-
-                        // إعادة إضافة الصفحة الحالية كبداية دفعة جديدة
-                        requestJson.put(pageName, arr)
-                        filteredIndexes[pageName] = pageFilteredIndexes
-                    }
-                }
-            }
-
-            // إرسال المتبقي
-            sendBatch(requestJson, filteredIndexes)
-
-        } catch (e: Exception) {
-            logcat { "Gemini Translation Error:\n${e.stackTraceToString()}" }
-            throw e
-        }
+    } catch (e: Exception) {  
+        logcat { "Gemini Translation Error:\n${e.stackTraceToString()}" }  
+        throw e  
+    }  
     }
-
     override fun close() {
         // لا يوجد موارد لإغلاقها
     }
