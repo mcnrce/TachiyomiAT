@@ -91,15 +91,15 @@ Return type:
             for ((k, v) in pages) {
                 v.blocks.forEachIndexed { i, b ->
                     run {
-v.blocks.forEach { block ->
+                        v.blocks.forEach { block ->
     // احسب عدد الأحرف الفريدة باستثناء '\n'
     val uniqueChars = block.translation.filter { it != '\n' }.toSet().size
 
     // إذا كان الميلان كبير أو عدد الأحرف الفريدة أقل من 3، اجعل الفقاعة فارغة
-    if (uniqueChars <= 3) {
+    if (block.angle < -30.0f || block.angle > 30.0f || uniqueChars <= 3) {
         block.translation = ""
     }
-}
+                        }
                         val res = resJson.optJSONArray(k)?.optString(i, "NULL")
                         b.translation = if (res == null || res == "NULL") b.text else res
                     }
