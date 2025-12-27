@@ -44,54 +44,85 @@ private val model = GenerativeModel(
     }  
 )  
 
-override suspend fun translate(pages: MutableMap<String, PageTranslation>) {  
-    try {  
-        // 1️⃣ إنشاء JSON مؤقت وخفيف مع فلترة أولية  
-        val requestJson = JSONObject()  
-        val filteredIndexes = mutableMapOf<String, MutableList<Int>>() // لتتبع أي بلوك سيتم ترجمته  
+override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
+    try {
+        val MAX_SIZE = 5000
 
-        pages.forEach { (pageName, page) ->  
-            val arr = JSONArray()  
-            val pageFilteredIndexes = mutableListOf<Int>()  
-            page.blocks.forEachIndexed { index, block -> 
-                val seenChars = mutableMapOf<Char, Boolean>()  
-                // فحص الزاوية: يجب أن تكون بين -2 و 2  
-                val angleOk = block.angle >= -2.0 && block.angle <= 2.0  
+        var requestJson = JSONObject()
+        val filteredIndexes = mutableMapOf<String, MutableList<Int>>()
 
-                if (angleOk) {  
-                    arr.put(block.text)  
-                    pageFilteredIndexes.add(index)  
-                } else {  
-                    // مسح الترجمة للنصوص التي لا تلبي الشروط  
-                    block.translation = ""  
-                }  
-            }  
-            if (arr.length() > 0) {  
-                requestJson.put(pageName, arr)  
-                filteredIndexes[pageName] = pageFilteredIndexes  
-            }  
-        }  
+        pages.forEach { (pageName, page) ->
+            val arr = JSONArray()
+            val pageFilteredIndexes = mutableListOf<Int>()
 
-        // 2️⃣ إرسال النصوص المفلترة فقط  
-        val response = model.generateContent(requestJson.toString())  
-        val responseJson = JSONObject(response.text ?: "{}")  
+            page.blocks.forEachIndexed { index, block ->
 
-        // 3️⃣ إعادة الدمج في الملف الأصلي  
-        pages.forEach { (pageName, page) ->  
-            val translatedArr = responseJson.optJSONArray(pageName) ?: return@forEach  
-            val indexes = filteredIndexes[pageName] ?: return@forEach  
-            for (i in 0 until translatedArr.length()) {  
-                val idx = indexes[i]  
-                page.blocks[idx].translation = translatedArr.optString(i, page.blocks[idx].text)  
-            }  
-        }  
+                val angleOk = block.angle >= -2.0 && block.angle <= 2.0
 
-    } catch (e: Exception) {  
-        logcat { "Gemini Translation Error:\n${e.stackTraceToString()}" }  
-        throw e  
-    }  
-}  
+                if (angleOk) {
+                    arr.put(block.text)
+                    pageFilteredIndexes.add(index)
+                } else {
+                    block.translation = ""
+                }
+            }
 
+            if (arr.length() > 0) {
+                requestJson.put(pageName, arr)
+                filteredIndexes[pageName] = pageFilteredIndexes
+
+                // 🔴 فحص الحجم التقريبي
+                if (requestJson.toString().length > MAX_SIZE) {
+                    // إزالة الصفحة الحالية
+                    requestJson.remove(pageName)
+                    filteredIndexes.remove(pageName)
+
+                    // إرسال الدفعة السابقة
+                    val response = model.generateContent(requestJson.toString())
+                    val responseJson = JSONObject(response.text ?: "{}")
+
+                    filteredIndexes.forEach { (pName, indexes) ->
+                        val translatedArr = responseJson.optJSONArray(pName) ?: return@forEach
+                        val p = pages[pName] ?: return@forEach
+                        for (i in 0 until translatedArr.length()) {
+                            val idx = indexes[i]
+                            p.blocks[idx].translation =
+                                translatedArr.optString(i, p.blocks[idx].text)
+                        }
+                    }
+
+                    // إعادة التهيئة
+                    requestJson = JSONObject()
+                    filteredIndexes.clear()
+
+                    // إعادة إضافة الصفحة الحالية كبداية دفعة جديدة
+                    requestJson.put(pageName, arr)
+                    filteredIndexes[pageName] = pageFilteredIndexes
+                }
+            }
+        }
+
+        // إرسال المتبقي
+        if (requestJson.length() > 0) {
+            val response = model.generateContent(requestJson.toString())
+            val responseJson = JSONObject(response.text ?: "{}")
+
+            filteredIndexes.forEach { (pageName, indexes) ->
+                val translatedArr = responseJson.optJSONArray(pageName) ?: return@forEach
+                val page = pages[pageName] ?: return@forEach
+                for (i in 0 until translatedArr.length()) {
+                    val idx = indexes[i]
+                    page.blocks[idx].translation =
+                        translatedArr.optString(i, page.blocks[idx].text)
+                }
+            }
+        }
+
+    } catch (e: Exception) {
+        logcat { "Gemini Translation Error:\n${e.stackTraceToString()}" }
+        throw e
+    }
+}
 override fun close() {  
     // لا يوجد موارد لإغلاقها  
 }
