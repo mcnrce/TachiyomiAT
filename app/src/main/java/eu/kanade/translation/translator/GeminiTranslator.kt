@@ -48,35 +48,15 @@ override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
     try {
         val MAX_SIZE = 5000
 
-        val pendingJson = JSONObject()
-        val pendingIndexes = mutableMapOf<String, MutableList<Int>>()
-
-        fun sendCurrentBatch() {
-            if (pendingJson.length() == 0) return
-
-            val response = model.generateContent(pendingJson.toString())
-            val responseJson = JSONObject(response.text ?: "{}")
-
-            pendingIndexes.forEach { (pageName, indexes) ->
-                val translatedArr = responseJson.optJSONArray(pageName) ?: return@forEach
-                val page = pages[pageName] ?: return@forEach
-
-                for (i in 0 until translatedArr.length()) {
-                    val blockIndex = indexes[i]
-                    page.blocks[blockIndex].translation =
-                        translatedArr.optString(i, page.blocks[blockIndex].text)
-                }
-            }
-
-            pendingJson.keys().asSequence().toList().forEach { pendingJson.remove(it) }
-            pendingIndexes.clear()
-        }
+        var requestJson = JSONObject()
+        val filteredIndexes = mutableMapOf<String, MutableList<Int>>()
 
         pages.forEach { (pageName, page) ->
             val arr = JSONArray()
             val pageFilteredIndexes = mutableListOf<Int>()
 
             page.blocks.forEachIndexed { index, block ->
+                val seenChars = mutableMapOf<Char, Boolean>()
 
                 val angleOk = block.angle >= -2.0 && block.angle <= 2.0
 
@@ -89,26 +69,55 @@ override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
             }
 
             if (arr.length() > 0) {
-                // جرّب الإضافة
-                pendingJson.put(pageName, arr)
-                pendingIndexes[pageName] = pageFilteredIndexes
+                requestJson.put(pageName, arr)
+                filteredIndexes[pageName] = pageFilteredIndexes
 
-                // إن تجاوز الحجم → أرسل السابق وابدأ من جديد
-                if (jsonSizeApprox(pendingJson) > MAX_SIZE) {
-                    pendingJson.remove(pageName)
-                    pendingIndexes.remove(pageName)
+                // 🔴 فحص الحجم التقريبي
+                if (requestJson.toString().length > MAX_SIZE) {
+                    // إزالة الصفحة الحالية
+                    requestJson.remove(pageName)
+                    filteredIndexes.remove(pageName)
 
-                    sendCurrentBatch()
+                    // إرسال الدفعة السابقة
+                    val response = model.generateContent(requestJson.toString())
+                    val responseJson = JSONObject(response.text ?: "{}")
 
-                    // أعد إضافة الصفحة الحالية بعد التفريغ
-                    pendingJson.put(pageName, arr)
-                    pendingIndexes[pageName] = pageFilteredIndexes
+                    filteredIndexes.forEach { (pName, indexes) ->
+                        val translatedArr = responseJson.optJSONArray(pName) ?: return@forEach
+                        val p = pages[pName] ?: return@forEach
+                        for (i in 0 until translatedArr.length()) {
+                            val idx = indexes[i]
+                            p.blocks[idx].translation =
+                                translatedArr.optString(i, p.blocks[idx].text)
+                        }
+                    }
+
+                    // إعادة التهيئة
+                    requestJson = JSONObject()
+                    filteredIndexes.clear()
+
+                    // إعادة إضافة الصفحة الحالية كبداية دفعة جديدة
+                    requestJson.put(pageName, arr)
+                    filteredIndexes[pageName] = pageFilteredIndexes
                 }
             }
         }
 
-        // إرسال ما تبقى
-        sendCurrentBatch()
+        // إرسال المتبقي
+        if (requestJson.length() > 0) {
+            val response = model.generateContent(requestJson.toString())
+            val responseJson = JSONObject(response.text ?: "{}")
+
+            filteredIndexes.forEach { (pageName, indexes) ->
+                val translatedArr = responseJson.optJSONArray(pageName) ?: return@forEach
+                val page = pages[pageName] ?: return@forEach
+                for (i in 0 until translatedArr.length()) {
+                    val idx = indexes[i]
+                    page.blocks[idx].translation =
+                        translatedArr.optString(i, page.blocks[idx].text)
+                }
+            }
+        }
 
     } catch (e: Exception) {
         logcat { "Gemini Translation Error:\n${e.stackTraceToString()}" }
