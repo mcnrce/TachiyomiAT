@@ -88,15 +88,26 @@ class GeminiTranslator(
             val json = JSONObject(data)
             val response = model.generateContent(json.toString())
             val resJson = JSONObject("${response.text}")
-            for ((k, v) in pages) {
+                        for ((k, v) in pages) {
                 v.blocks.forEachIndexed { i, b ->
                     run {
+                        // أضفنا فحص الزاوية هنا: إذا كانت خارج النطاق نضع نصاً فارغاً
+                        val angleOk = b.angle >= -15.0 && b.angle <= 15.0
                         val res = resJson.optJSONArray(k)?.optString(i, "NULL")
-                        b.translation = if (res == null || res == "NULL") b.text else res
+                        
+                        b.translation = if (res == null || res == "NULL" || !angleOk) {
+                            if (!angleOk) "" else b.text 
+                        } else {
+                            res
+                        }
                     }
                 }
                 v.blocks =
-                    v.blocks.filterNot { it.translation.contains("RTMTH") }.toMutableList()
+                    v.blocks.filterNot { 
+                        it.translation.contains("RTMTH") || it.translation.isBlank() 
+                    }.toMutableList()
+            }
+
             }
         } catch (e: Exception) {
             logcat { "Image Translation Error : ${e.stackTraceToString()}" }
