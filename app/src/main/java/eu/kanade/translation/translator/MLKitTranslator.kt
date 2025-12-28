@@ -31,22 +31,12 @@ class MLKitTranslator(
                 // 1️⃣ تنظيف النص من الأسطر والمسافات للفحص فقط
                 // نستخدم replace لضمان أن charCount يحسب الحروف الحقيقية فقط
                 val textForFiltering = block.text.replace("\n", "").replace(" ", "")
-                
-                // 2️⃣ بداية الفلترة اليدوية على النص المنظف
-                var charCount = 0
-                val seenChars = mutableMapOf<Char, Boolean>()
-                for (c in textForFiltering) {
-                    if (!seenChars.containsKey(c)) {
-                        seenChars[c] = true
-                        charCount += 1
-                    }
-                }
 
                 // فحص الزاوية
                 val angleOk = block.angle >= -15.0 && block.angle <= 15.0
 
                 // 3️⃣ التحقق من الشروط
-                if (charCount >= 2 && angleOk) {
+                if (angleOk) {
                     try {
                         // هنا نعود للنص الأصلي (block.text) لتقسيم الأسطر بشكل صحيح
                         val lines = block.text.split("\n")
