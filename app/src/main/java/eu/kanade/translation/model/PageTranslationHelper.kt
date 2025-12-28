@@ -1,6 +1,8 @@
 package eu.kanade.translation.model
 
 import kotlin.math.abs
+import java.util.HashMap
+import java.util.ArrayList
 
 class PageTranslationHelper {
 
