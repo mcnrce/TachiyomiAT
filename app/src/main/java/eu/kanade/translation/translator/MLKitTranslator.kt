@@ -43,7 +43,7 @@ class MLKitTranslator(
                 }
 
                 // فحص الزاوية
-                val angleOk = block.angle >= -2.0 && block.angle <= 2.0
+                val angleOk = block.angle >= -15.0 && block.angle <= 15.0
 
                 // 3️⃣ التحقق من الشروط
                 if (charCount >= 4 && angleOk) {
