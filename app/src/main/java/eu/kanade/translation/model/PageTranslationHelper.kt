@@ -55,7 +55,7 @@ class PageTranslationHelper {
             yThresholdFactor: Float
         ): Boolean {
 
-            val angleSimilar = abs(r1.angle - r2.angle) < 10
+            val angleSimilar = abs(abs(r1.angle) - abs(r2.angle)) < 10
 
             val r1Bottom = r1.y + r1.height
             val r2Bottom = r2.y + r2.height
