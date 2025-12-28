@@ -4,97 +4,116 @@ import kotlin.math.abs
 
 class PageTranslationHelper {
 
-    companion object {  
+    companion object {
 
-        fun smartMergeBlocks(
-            blocks: List<TranslationBlock>,
-            xThreshold: Float = 60f,
-            yThresholdFactor: Float = 1.6f
-        ): MutableList<TranslationBlock> {
-            if (blocks.isEmpty()) return mutableListOf()
+        fun mergeWithGraph(blocks: List<TranslationBlock>): List<TranslationBlock> {
+            if (blocks.isEmpty()) return emptyList()
 
-            val result = blocks.filter { it.text.isNotBlank() && it.width > 2 && it.height > 2 }
-                .toMutableList()
+            // فرز أولي لتقليل المقارنات
+            val sorted = blocks.sortedBy { it.y }
+            val parent = IntArray(sorted.size) { it }
 
-            var mergedAny: Boolean
-            mergeLoop@ do {
-                mergedAny = false
-                var i = 0
-                while (i < result.size) {
-                    var j = i + 1
-                    while (j < result.size) {
-                        if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
-    result[i] = performMerge(result[i], result[j])
-    result.removeAt(j)
-    mergedAny = true
-    break@mergeLoop   // ← هذا هو التعديل الجوهري
-} else {
-    j++
-                        }
-                    }
-                    i++
+            fun find(x: Int): Int {
+                if (parent[x] != x) {
+                    parent[x] = find(parent[x])
                 }
-            } while (mergedAny)
+                return parent[x]
+            }
+
+            fun union(a: Int, b: Int) {
+                val ra = find(a)
+                val rb = find(b)
+                if (ra != rb) parent[rb] = ra
+            }
+
+            // بناء الروابط
+            for (i in sorted.indices) {
+                val a = sorted[i]
+                var j = i + 1
+                while (j < sorted.size) {
+                    val b = sorted[j]
+
+                    // إيقاف مبكر إذا ابتعدت رأسيًا كثيرًا
+                    val verticalGap = b.y - (a.y + a.height)
+                    if (verticalGap > a.symHeight * 2f) break
+
+                    if (shouldMergeStrict(a, b)) {
+                        union(i, j)
+                    }
+                    j++
+                }
+            }
+
+            // تجميع المكونات المتصلة
+            val groups = HashMap<Int, MutableList<TranslationBlock>>()
+            for (i in sorted.indices) {
+                val root = find(i)
+                groups.getOrPut(root) { mutableListOf() }.add(sorted[i])
+            }
+
+            // دمج كل مجموعة
+            val result = ArrayList<TranslationBlock>()
+            for (group in groups.values) {
+                result.add(mergeGroup(group))
+            }
 
             return result
         }
 
-        private fun getTextLength(text: String): Int {
-            val count = text.length
-            return if (count < 1) 1 else count
-        }
+        private fun mergeGroup(group: List<TranslationBlock>): TranslationBlock {
+            val ordered = group.sortedWith(compareBy({ it.y }, { it.x }))
 
-        private fun shouldMerge(r1: TranslationBlock, r2: TranslationBlock, xThreshold: Float, yThresholdFactor: Float): Boolean {
-            val angleSimilar = abs(r1.angle - r2.angle) < 10
+            val minX = ordered.minOf { it.x }
+            val minY = ordered.minOf { it.y }
+            val maxX = ordered.maxOf { it.x + it.width }
+            val maxY = ordered.maxOf { it.y + it.height }
 
-            val r1Bottom = r1.y + r1.height
-            val r2Bottom = r2.y + r2.height
+            var totalLen = 0
+            var sumSymW = 0f
+            var sumSymH = 0f
 
-            val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
-            val avgSymHeight = (r1.symHeight + r2.symHeight) / 2f
-            val closeVertically = verticalGap <= avgSymHeight * yThresholdFactor
+            for (b in ordered) {
+                val len = maxOf(1, b.text.length)
+                totalLen += len
+                sumSymW += b.symWidth * len
+                sumSymH += b.symHeight * len
+            }
 
-            val left1 = r1.x
-            val right1 = r1.x + r1.width
-            val left2 = r2.x
-            val right2 = r2.x + r2.width
-
-            val horizontalOverlap = maxOf(0f, minOf(right1, right2) - maxOf(left1, left2))
-            val closeHorizontally = horizontalOverlap > 0 || abs(left1 - left2) < xThreshold
-
-            return angleSimilar && closeVertically && closeHorizontally
-        }
-
-        private fun performMerge(a: TranslationBlock, b: TranslationBlock): TranslationBlock {
-            val minX = minOf(a.x, b.x)
-            val minY = minOf(a.y, b.y)
-            val maxX = maxOf(a.x + a.width, b.x + b.width)
-            val maxY = maxOf(a.y + a.height, b.y + b.height)
-
-            // ترتيب النصوص حسب الموضع الرأسي أولًا ثم الأفقي
-            val blocksOrdered = listOf(a, b).sortedWith(compareBy({ it.y }, { it.x }))
-
-            val mergedText = blocksOrdered.joinToString("\n") { it.text }
-            val mergedTrans = blocksOrdered.joinToString("\n") { it.translation }.trim()
-
-            val lenA = getTextLength(a.text)
-            val lenB = getTextLength(b.text)
-            val totalLen = lenA + lenB
-
-            val finalSymWidth = (a.symWidth * lenA + b.symWidth * lenB) / totalLen
-            val finalSymHeight = (a.symHeight * lenA + b.symHeight * lenB) / totalLen
+            val baseAngle = ordered.minBy { abs(it.angle) }.angle
+            val finalAngle = ordered
+                .filter { abs(it.angle - baseAngle) < 10 }
+                .map { it.angle }
+                .average()
+                .toFloat()
 
             return TranslationBlock(
-                text = mergedText,
-                translation = mergedTrans,
-                width = maxX - minX,
-                height = maxY - minY,
+                text = ordered.joinToString("\n") { it.text },
+                translation = ordered.joinToString("\n") { it.translation },
                 x = minX,
                 y = minY,
-                angle = (a.angle + b.angle) / 2,
-                symWidth = finalSymWidth,
-                symHeight = finalSymHeight
+                width = maxX - minX,
+                height = maxY - minY,
+                angle = finalAngle,
+                symWidth = sumSymW / totalLen,
+                symHeight = sumSymH / totalLen
             )
+        }
+
+        private fun shouldMergeStrict(a: TranslationBlock, b: TranslationBlock): Boolean {
+            if (abs(a.angle - b.angle) >= 10) return false
+
+            val left = maxOf(a.x, b.x)
+            val right = minOf(a.x + a.width, b.x + b.width)
+            val horizontalOverlap = right - left
+
+            if (horizontalOverlap <= 0) return false
+
+            val verticalGap =
+                if (a.y + a.height < b.y) b.y - (a.y + a.height)
+                else if (b.y + b.height < a.y) a.y - (b.y + b.height)
+                else 0
+
+            return verticalGap <= (a.symHeight + b.symHeight) / 2f * 1.6f
         }
     }
 }
