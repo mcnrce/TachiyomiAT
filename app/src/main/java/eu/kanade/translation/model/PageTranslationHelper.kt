@@ -4,96 +4,136 @@ import kotlin.math.abs
 
 class PageTranslationHelper {
 
-    companion object {  
+    companion object {
 
-        fun smartMergeBlocks(
+        fun mergeWithGraph(
             blocks: List<TranslationBlock>,
-            xThreshold: Float = 60f,
+            xThreshold: Float = 2.5f,
             yThresholdFactor: Float = 1.6f
         ): MutableList<TranslationBlock> {
+
             if (blocks.isEmpty()) return mutableListOf()
 
-            val result = blocks.filter { it.text.isNotBlank() && it.width > 2 && it.height > 2 }
-                .toMutableList()
+            val n = blocks.size
+            val parent = IntArray(n) { it }
 
-            var mergedAny: Boolean
-            do {
-                mergedAny = false
-                var i = 0
-                while (i < result.size) {
-                    var j = i + 1
-                    while (j < result.size) {
-                        if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
-                            result[i] = performMerge(result[i], result[j])
-                            result.removeAt(j)
-                            mergedAny = true
-                        } else {
-                            j++
-                        }
-                    }
-                    i++
+            fun find(x: Int): Int {
+                var cur = x
+                while (parent[cur] != cur) {
+                    parent[cur] = parent[parent[cur]]
+                    cur = parent[cur]
                 }
-            } while (mergedAny)
+                return cur
+            }
 
-            return result
-        }
+            fun union(a: Int, b: Int) {
+                val rootA = find(a)
+                val rootB = find(b)
+                if (rootA != rootB) parent[rootB] = rootA
+            }
 
-        private fun getTextLength(text: String): Int {
-            val count = text.length
-            return if (count < 1) 1 else count
-        }
+            fun shouldMergeStrict(a: TranslationBlock, b: TranslationBlock): Boolean {
+                val angleCheck = abs(a.angle - b.angle) < 10
 
-        private fun shouldMerge(r1: TranslationBlock, r2: TranslationBlock, xThreshold: Float, yThresholdFactor: Float): Boolean {
-            val angleSimilar = abs(r1.angle - r2.angle) < 10
+                val r1Bottom = a.y + a.height
+                val r2Bottom = b.y + b.height
+                val verticalGap =
+                    if (a.y < b.y) b.y - r1Bottom else a.y - r2Bottom
 
-            val r1Bottom = r1.y + r1.height
-            val r2Bottom = r2.y + r2.height
+                val avgSymHeight = (a.symHeight + b.symHeight) / 2f
+                val closeVertically =
+                    verticalGap <= avgSymHeight * yThresholdFactor
 
-            val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
-            val avgSymHeight = (r1.symHeight + r2.symHeight) / 2f
-            val closeVertically = verticalGap <= avgSymHeight * yThresholdFactor
+                val horizontalOverlap =
+                    maxOf(
+                        0f,
+                        minOf(a.x + a.width, b.x + b.width) -
+                        maxOf(a.x, b.x)
+                    )
 
-            val left1 = r1.x
-            val right1 = r1.x + r1.width
-            val left2 = r2.x
-            val right2 = r2.x + r2.width
+                val avgSymWidth = (a.symWidth + b.symWidth) / 2f
+                val closeHorizontally =
+                    horizontalOverlap > 0 ||
+                    abs(a.x - b.x) <= avgSymWidth * xThreshold
 
-            val horizontalOverlap = maxOf(0f, minOf(right1, right2) - maxOf(left1, left2))
-            val closeHorizontally = horizontalOverlap > 0 || abs(left1 - left2) < xThreshold
+                val aInsideB =
+                    a.x >= b.x && a.x + a.width <= b.x + b.width &&
+                    a.y >= b.y && a.y + a.height <= b.y + b.height
 
-            return angleSimilar && closeVertically && closeHorizontally
-        }
+                val bInsideA =
+                    b.x >= a.x && b.x + b.width <= a.x + a.width &&
+                    b.y >= a.y && b.y + b.height <= a.y + a.height
 
-        private fun performMerge(a: TranslationBlock, b: TranslationBlock): TranslationBlock {
-            val minX = minOf(a.x, b.x)
-            val minY = minOf(a.y, b.y)
-            val maxX = maxOf(a.x + a.width, b.x + b.width)
-            val maxY = maxOf(a.y + a.height, b.y + b.height)
+                return angleCheck &&
+                        ((closeHorizontally && closeVertically) || aInsideB || bInsideA)
+            }
 
-            // ترتيب النصوص حسب الموضع الرأسي أولًا ثم الأفقي
-            val blocksOrdered = listOf(a, b).sortedWith(compareBy({ it.y }, { it.x }))
+            for (i in 0 until n) {
+                for (j in i + 1 until n) {
+                    if (shouldMergeStrict(blocks[i], blocks[j])) {
+                        union(i, j)
+                    }
+                }
+            }
 
-            val mergedText = blocksOrdered.joinToString("\n") { it.text }
-            val mergedTrans = blocksOrdered.joinToString("\n") { it.translation }.trim()
+            val groups = mutableMapOf<Int, MutableList<TranslationBlock>>()
+            for (i in 0 until n) {
+                val root = find(i)
+                groups.computeIfAbsent(root) { mutableListOf() }.add(blocks[i])
+            }
 
-            val lenA = getTextLength(a.text)
-            val lenB = getTextLength(b.text)
-            val totalLen = lenA + lenB
+            val mergedBlocks = mutableListOf<TranslationBlock>()
+            for ((_, group) in groups) {
+                val sortedGroup = group.sortedWith(compareBy({ it.y }, { it.x }))
 
-            val finalSymWidth = (a.symWidth * lenA + b.symWidth * lenB) / totalLen
-            val finalSymHeight = (a.symHeight * lenA + b.symHeight * lenB) / totalLen
+                val minX = sortedGroup.minOf { it.x }
+                val minY = sortedGroup.minOf { it.y }
+                val maxX = sortedGroup.maxOf { it.x + it.width }
+                val maxY = sortedGroup.maxOf { it.y + it.height }
 
-            return TranslationBlock(
-                text = mergedText,
-                translation = mergedTrans,
-                width = maxX - minX,
-                height = maxY - minY,
-                x = minX,
-                y = minY,
-                angle = (a.angle + b.angle) / 2,
-                symWidth = finalSymWidth,
-                symHeight = finalSymHeight
-            )
+                val totalLen =
+                    sortedGroup.sumOf { it.text.length.coerceAtLeast(1) }
+
+                val finalSymWidth =
+                    sortedGroup.sumOf {
+                        it.symWidth * it.text.length.coerceAtLeast(1)
+                    } / totalLen
+
+                val finalSymHeight =
+                    sortedGroup.sumOf {
+                        it.symHeight * it.text.length.coerceAtLeast(1)
+                    } / totalLen
+
+                // الميلان النهائي = الأقرب للصفر
+                var finalAngle = sortedGroup.first().angle
+                for (b in sortedGroup) {
+                    if (abs(b.angle) < abs(finalAngle)) {
+                        finalAngle = b.angle
+                    }
+                }
+
+                val mergedText =
+                    sortedGroup.joinToString("\n") { it.text }
+
+                val mergedTrans =
+                    sortedGroup.joinToString("\n") { it.translation }.trim()
+
+                mergedBlocks.add(
+                    TranslationBlock(
+                        text = mergedText,
+                        translation = mergedTrans,
+                        x = minX,
+                        y = minY,
+                        width = maxX - minX,
+                        height = maxY - minY,
+                        angle = finalAngle,
+                        symWidth = finalSymWidth,
+                        symHeight = finalSymHeight
+                    )
+                )
+            }
+
+            return mergedBlocks
         }
     }
 }
