@@ -91,12 +91,12 @@ class GeminiTranslator(
             for ((k, v) in pages) {
                 v.blocks.forEachIndexed { i, b ->
                     run {
-                        v.blocks.forEach { block ->
+                    
     // إذا كان الميلان كبير أو عدد الأحرف الفريدة أقل من 3، اجعل الفقاعة فارغة
-    if (block.angle < -15.0f || block.angle > 15.0f) {
+    if (b.angle < -15.0f || b.angle > 15.0f) {
         block.translation = ""
     }
-                        }
+                        
                         val res = resJson.optJSONArray(k)?.optString(i, "NULL")
                         b.translation = if (res == null || res == "NULL") b.text else res
                     }
