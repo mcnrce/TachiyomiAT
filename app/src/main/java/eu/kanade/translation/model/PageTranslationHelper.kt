@@ -79,12 +79,8 @@ class PageTranslationHelper {
                 sumSymH += b.symHeight * len
             }
 
-            val baseAngle = ordered.minBy { abs(it.angle) }.angle
-            val finalAngle = ordered
-                .filter { abs(it.angle - baseAngle) < 10 }
-                .map { it.angle }
-                .average()
-                .toFloat()
+            // اختيار زاوية واحدة فقط: الأقرب للصفر
+            val finalAngle = ordered.minBy { abs(it.angle) }.angle
 
             return TranslationBlock(
                 text = ordered.joinToString("\n") { it.text },
