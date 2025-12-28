@@ -89,21 +89,21 @@ class GeminiTranslator(
             val response = model.generateContent(json.toString())
             val resJson = JSONObject("${response.text}")
             for ((k, v) in pages) {
-                v.blocks.forEachIndexed { i, b ->
-                    run {
-                    
-    // إذا كان الميلان كبير أو عدد الأحرف الفريدة أقل من 3، اجعل الفقاعة فارغة
-    if (b.angle < -15.0f || b.angle > 15.0f) {
-        block.translation = ""
+    v.blocks.forEachIndexed { i, b ->
+        // 2. التحقق من الشروط (الميلان أو عدد الأحرف الفريدة)
+        if (b.angle < -15.0f || b.angle > 15.0f) {
+            b.translation = ""
+        } else {
+            // 3. جلب الترجمة فقط إذا لم تتحقق شروط الإفراغ أعلاه
+            val res = resJson.optJSONArray(k)?.optString(i, "NULL")
+            b.translation = if (res == null || res == "NULL") b.text else res
+        }
     }
-                        
-                        val res = resJson.optJSONArray(k)?.optString(i, "NULL")
-                        b.translation = if (res == null || res == "NULL") b.text else res
-                    }
-                }
-                v.blocks =
-                    v.blocks.filterNot { it.translation.contains("RTMTH") }.toMutableList()
-            }
+    
+    // 4. تصفية الكتل التي تحتوي على وسم الحذف
+    v.blocks = v.blocks.filterNot { it.translation.contains("RTMTH") }.toMutableList()
+}
+
         } catch (e: Exception) {
             logcat { "Image Translation Error : ${e.stackTraceToString()}" }
             throw e
