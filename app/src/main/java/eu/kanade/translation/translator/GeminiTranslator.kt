@@ -15,12 +15,13 @@ import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
 import logcat.logcat
 import org.json.JSONObject
+
 @Suppress
 class GeminiTranslator(
     override val fromLang: TextRecognizerLanguage,
     override val toLang: TextTranslatorLanguage,
-     apiKey: String,
-     modelName: String,
+    apiKey: String,
+    modelName: String,
     val maxOutputToken: Int,
     val temp: Float,
 ) : TextTranslator {
@@ -77,8 +78,7 @@ class GeminiTranslator(
                     "* Be meticulous in removing all watermarks and site links.\n" +
                     "* Ensure the output JSON structure perfectly mirrors the input structure.\n" +
                     "Return {[key:string]:Array<String>}",
-
-                )
+            )
         },
     )
 
@@ -87,23 +87,31 @@ class GeminiTranslator(
             val data = pages.mapValues { (k, v) -> v.blocks.map { b -> b.text } }
             val json = JSONObject(data)
             val response = model.generateContent(json.toString())
-            val resJson = JSONObject("${response.text}")
-            for ((k, v) in pages) {
-    v.blocks.forEachIndexed { i, b ->
-        // 2. التحقق من الشروط (الميلان أو عدد الأحرف الفريدة)
-        if (b.angle < -15.0f || b.angle > 15.0f) {
-            b.translation = ""
-        } else {
-            // 3. جلب الترجمة فقط إذا لم تتحقق شروط الإفراغ أعلاه
-            val res = resJson.optJSONArray(k)?.optString(i, "NULL")
-            b.translation = if (res == null || res == "NULL") b.text else res
-        }
-    }
-    
-    // 4. تصفية الكتل التي تحتوي على وسم الحذف
-    v.blocks = v.blocks.filterNot { it.translation.contains("RTMTH") }.toMutableList()
-}
+            
+            // حل مشكلة النصوص الزائدة قبل أو بعد الـ JSON
+            val rawText = response.text ?: ""
+            val startIndex = rawText.indexOf('{')
+            val endIndex = rawText.lastIndexOf('}')
+            
+            val jsonContent = if (startIndex != -1 && endIndex != -1 && endIndex > startIndex) {
+                rawText.substring(startIndex, endIndex + 1)
+            } else {
+                rawText
+            }
 
+            val resJson = JSONObject(jsonContent)
+            
+            for ((k, v) in pages) {
+                v.blocks.forEachIndexed { i, b ->
+                    if (b.angle < -15.0f || b.angle > 15.0f) {
+                        b.translation = ""
+                    } else {
+                        val res = resJson.optJSONArray(k)?.optString(i, "NULL")
+                        b.translation = if (res == null || res == "NULL") b.text else res
+                    }
+                }
+                v.blocks = v.blocks.filterNot { it.translation.contains("RTMTH") }.toMutableList()
+            }
         } catch (e: Exception) {
             logcat { "Image Translation Error : ${e.stackTraceToString()}" }
             throw e
@@ -112,6 +120,4 @@ class GeminiTranslator(
 
     override fun close() {
     }
-
-
 }
