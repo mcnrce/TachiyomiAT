@@ -6,11 +6,6 @@ import com.google.ai.client.generativeai.type.HarmCategory
 import com.google.ai.client.generativeai.type.SafetySetting
 import com.google.ai.client.generativeai.type.content
 import com.google.ai.client.generativeai.type.generationConfig
-import com.google.android.gms.tasks.Tasks
-import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.TranslatorOptions
 import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
 import logcat.logcat
@@ -58,48 +53,63 @@ class GeminiTranslator(
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
         try {
-            // 1) بناء JSON الإدخال
-            val data = pages.mapValues { (_, v) -> v.blocks.map { it.text } }
-            val inputJson = JSONObject(data)
+            val pageEntries = pages.entries.toList()
+            val batches = pageEntries.chunked(15)
 
-            // 2) استدعاء النموذج
-            val response = model.generateContent(inputJson.toString())
-            val rawText = response.text ?: ""
+            for ((batchIndex, batch) in batches.withIndex()) {
 
-            // 3) استخراج JSON بشكل دفاعي
-            val start = rawText.indexOf('{')
-            val end = rawText.lastIndexOf('}')
+                // 1) بناء JSON للدفعة الحالية
+                val batchData = batch.associate { (key, page) ->
+                    key to page.blocks.map { it.text }
+                }
+                val inputJson = JSONObject(batchData)
 
-            if (start == -1 || end == -1 || end <= start) {
-                // فشل كامل في الاستجابة → لا نعدّل أي ترجمة
-                logcat { "Invalid JSON response from model" }
-                return
-            }
+                // 2) إرسال الطلب
+                val response = model.generateContent(inputJson.toString())
+                val rawText = try {
+    response.text ?: ""
+} catch (e: Exception) {
+    ""
+                }
 
-            val jsonContent = rawText.substring(start, end + 1)
+                // 3) استخراج JSON دفاعيًا
+                val start = rawText.indexOf('{')
+                val end = rawText.lastIndexOf('}')
 
-            val resJson = try {
-                JSONObject(jsonContent)
-            } catch (e: Exception) {
-                // JSON غير صالح → تجاهل الترجمة بالكامل
-                logcat { "JSON parse error: ${e.message}" }
-                return
-            }
+                if (start == -1 || end == -1 || end <= start) {
+                    logcat { "Invalid JSON response in batch $batchIndex" }
+                    continue
+                }
 
-            // 4) تطبيق الترجمة بدون كسر البنية
-            for ((key, page) in pages) {
-                val arr = resJson.optJSONArray(key)
+                val jsonContent = rawText.substring(start, end + 1)
 
-                page.blocks.forEachIndexed { index, block ->
-    val translated = arr?.optString(index, "__NULL__")
+                val resJson = try {
+                    JSONObject(jsonContent)
+                } catch (e: Exception) {
+                    logcat { "JSON parse error in batch $batchIndex: ${e.message}" }
+                    continue
+                }
 
-    block.translation = when {
-        block.angle < -15.0f || block.angle > 15.0f -> ""
-        translated == null -> block.text
-        translated == "__NULL__" -> block.text
-        translated == "RTMTH" -> ""
-        else -> translated
-    }
+                // 4) تطبيق الترجمة على الصفحات الأصلية
+                for ((key, page) in batch) {
+                    val arr = resJson.optJSONArray(key)
+
+                    page.blocks.forEachIndexed { index, block ->
+                        val translated = arr?.optString(index, "__NULL__")
+
+                        block.translation = when {
+                            block.angle < -15.0f || block.angle > 15.0f -> ""
+                            translated == null -> block.text
+                            translated == "__NULL__" -> block.text
+                            translated == "RTMTH" -> ""
+                            else -> translated
+                        }
+                    }
+                }
+
+                // 5) انتظار 1 ثانية قبل الدفعة التالية
+                if (batchIndex < batches.lastIndex) {
+                    Thread.sleep(1000)
                 }
             }
 
