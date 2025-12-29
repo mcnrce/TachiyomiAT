@@ -15,6 +15,7 @@ import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
 import logcat.logcat
 import org.json.JSONObject
+
 @Suppress
 class GeminiTranslator(
     override val fromLang: TextRecognizerLanguage,
@@ -43,62 +44,71 @@ class GeminiTranslator(
         ),
         systemInstruction = content {
             text(
-                "System Instruction – Comic Translation (Strict JSON, OCR Blocks)\n" +
-                "You are an AI translator specialized in manhwa, manga, and manhua text extracted from scanned comic images using OCR.\n" +
-                "Each string represents one independent text block or speech bubble, already segmented and ordered by the OCR system.\n" +
-                "You MUST follow these rules strictly:\n" +
-                "Input format:\n" +
-                "Input is a JSON object.\n" +
-                "Keys are image filenames (e.g. \"001.jpg\").\n" +
-                "Values are arrays of strings.\n" +
-                "Each string is one OCR text block.\n" +
-                "Translation rules:\n" +
-                "Translate every string into natural, fluent ${toLang.label}.\n" +
-                "Preserve tone, emotion, and intent appropriate for comics.\n" +
-                "Translate each block independently.\n" +
-                "Do NOT merge, split, reorder, infer, expand, or complete text.\n" +
-                "Watermarks and site links:\n" +
-                "If a string is a website name, URL, scan credit, or advertisement, replace it with exactly \"RTMTH\".\n" +
-                "Do NOT translate such strings.\n" +
-                "Structure preservation (CRITICAL):\n" +
-                "Output MUST be valid JSON only.\n" +
-                "Keys MUST remain identical and in the same order.\n" +
-                "Each array MUST have the exact same length as the input.\n" +
-                "Index-to-index correspondence MUST be preserved.\n" +
-                "Output rules:\n" +
-                "Output JSON ONLY.\n" +
-                "No explanations.\n" +
-                "No comments.\n" +
-                "No markdown.\n" +
-                "No extra characters.\n" +
-                "Return type: { [key: string]: Array }"
+                "System Instruction – Comic Translation (Strict JSON Mode)\n" +
+                "You are an AI translator specialized in manhwa, manga, and manhua OCR text.\n" +
+                "Input is a JSON object: keys are image filenames, values are arrays of strings.\n" +
+                "Translate each string independently into ${toLang.label}.\n" +
+                "If a string is a watermark, URL, or scan credit, replace it with \"RTMTH\".\n" +
+                "Do not merge, split, reorder, infer, or expand text.\n" +
+                "Output MUST be valid JSON only, same structure, same lengths.\n" +
+                "No explanations. No comments. No extra text."
             )
         }
     )
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
         try {
-            val data = pages.mapValues { (k, v) -> v.blocks.map { b -> b.text } }
-            val json = JSONObject(data)
-            val response = model.generateContent(json.toString())
-            val resJson = JSONObject(response.text ?: "{}")
+            // 1) بناء JSON الإدخال
+            val data = pages.mapValues { (_, v) -> v.blocks.map { it.text } }
+            val inputJson = JSONObject(data)
 
-            for ((k, v) in pages) {
-                v.blocks.forEachIndexed { i, b ->
-                    b.translation = if (b.angle < -15.0f || b.angle > 15.0f) {
-                        ""
-                    } else {
-                        val res = resJson.optJSONArray(k)?.optString(i, "NULL")
-                        if (res == null || res == "NULL") b.text else res
-                    }
-                }
-                v.blocks = v.blocks.filterNot { it.translation.contains("RTMTH") }.toMutableList()
+            // 2) استدعاء النموذج
+            val response = model.generateContent(inputJson.toString())
+            val rawText = response.text ?: ""
+
+            // 3) استخراج JSON بشكل دفاعي
+            val start = rawText.indexOf('{')
+            val end = rawText.lastIndexOf('}')
+
+            if (start == -1 || end == -1 || end <= start) {
+                // فشل كامل في الاستجابة → لا نعدّل أي ترجمة
+                logcat { "Invalid JSON response from model" }
+                return
             }
+
+            val jsonContent = rawText.substring(start, end + 1)
+
+            val resJson = try {
+                JSONObject(jsonContent)
+            } catch (e: Exception) {
+                // JSON غير صالح → تجاهل الترجمة بالكامل
+                logcat { "JSON parse error: ${e.message}" }
+                return
+            }
+
+            // 4) تطبيق الترجمة بدون كسر البنية
+            for ((key, page) in pages) {
+                val arr = resJson.optJSONArray(key)
+
+                page.blocks.forEachIndexed { index, block ->
+    val translated = arr?.optString(index, "__NULL__")
+
+    block.translation = when {
+        block.angle < -15.0f || block.angle > 15.0f -> ""
+        translated == null -> block.text
+        translated == "__NULL__" -> block.text
+        translated == "RTMTH" -> ""
+        else -> translated
+    }
+                }
+            }
+
         } catch (e: Exception) {
             logcat { "Image Translation Error : ${e.stackTraceToString()}" }
             throw e
         }
     }
 
-    override fun close() {}
+    override fun close() {
+    }
 }
