@@ -62,20 +62,35 @@ class GoogleTranslator(
 
 
     private suspend fun translateText(lang: String, text: String): String {
-        val access = getTranslateUrl(lang, text)
-        val build: Request = Request.Builder().url(access).build()
-        val newCall = okHttpClient.newCall(build)
-        val response = newCall.await()
-        val body = response.body
-        val string = body.string()
-        try {
-            val jSONArray = JSONArray(string).getJSONArray(0).getJSONArray(0)
-            return jSONArray.getString(0)
-        } catch (e: Exception) {
-            logcat { "Image Translation Error : $e" }
+    val access = getTranslateUrl(lang, text)
+    val build: Request = Request.Builder().url(access).build()
+    val response = okHttpClient.newCall(build).await()
+    val string = response.body?.string() ?: return ""
+
+    return try {
+        // الاستجابة من جوجل تكون مصفوفة بداخلها مصفوفات
+        val rootArray = JSONArray(string)
+        val sentencesArray = rootArray.getJSONArray(0)
+        val result = StringBuilder()
+
+        // 💡 التعديل الجوهري هنا:
+        // نمر على كل العناصر في المصفوفة الأولى ونجمعها
+        // لأن جوجل يضع كل جزء مترجم في عنصر منفصل
+        for (i in 0 until sentencesArray.length()) {
+            val sentence = sentencesArray.getJSONArray(i)
+            // التأكد من وجود نص مترجم في هذا الجزء
+            if (!sentence.isNull(0)) {
+                result.append(sentence.getString(0))
+            }
         }
-        return ""
+        
+        result.toString()
+    } catch (e: Exception) {
+        logcat { "Image Translation Error : $e" }
+        ""
     }
+}
+
 
     private fun getTranslateUrl(lang: String, text: String): String {
         try {
