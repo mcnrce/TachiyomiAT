@@ -19,11 +19,52 @@ class GoogleTranslator(
     val okHttpClient = OkHttpClient()
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
-        pages.mapValues { (_, v) ->
-            v.blocks.map { b ->
-                b.translation = translateText(toLang.code, b.text)
+    pages.forEach { (_, page) ->
+
+        if (page.blocks.isEmpty()) return@forEach
+
+        // 1️⃣ بناء النص الموحّد مع فواصل
+        val mergedText = buildString {
+            page.blocks.forEachIndexed { index, block ->
+                append("⟦⟦BLOCK_$index⟧⟧ ")
+                append(block.text.replace("\n", " "))
+                append(" ")
             }
         }
+
+        // 2️⃣ ترجمة النص كاملًا
+        val translatedMergedText = try {
+            translateText(toLang.code, mergedText)
+        } catch (e: Exception) {
+            ""
+        }
+
+        if (translatedMergedText.isBlank()) {
+            page.blocks.forEach { it.translation = "" }
+            return@forEach
+        }
+
+        // 3️⃣ إعادة التقسيم باستخدام نفس الفواصل
+        val regex = Regex("⟦⟦BLOCK_(\\d+)⟧⟧")
+        val matches = regex.findAll(translatedMergedText).toList()
+
+        for (i in matches.indices) {
+            val start = matches[i].range.last + 1
+            val end = if (i + 1 < matches.size)
+                matches[i + 1].range.first
+            else
+                translatedMergedText.length
+
+            val blockIndex = matches[i].groupValues[1].toInt()
+            val text = translatedMergedText
+                .substring(start, end)
+                .trim()
+
+            if (blockIndex < page.blocks.size) {
+                page.blocks[blockIndex].translation = text
+            }
+        }
+    }
     }
 
     private suspend fun translateText(lang: String, text: String): String {
