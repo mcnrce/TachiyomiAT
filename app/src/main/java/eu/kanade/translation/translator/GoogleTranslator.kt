@@ -20,22 +20,18 @@ class GoogleTranslator(
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
     pages.forEach { (_, page) ->
-
         if (page.blocks.isEmpty()) return@forEach
 
-        // 1️⃣ بناء النص الموحّد مع فواصل
-        val mergedText = buildString {
-            page.blocks.forEachIndexed { index, block ->
-                append("⟦⟦BLOCK_$index⟧⟧ ")
-                append(block.text.replace("\n", " "))
-                append(" ")
-            }
-        }
+        // 1️⃣ تجميع النصوص باستخدام فاصل سطر بسيط
+        // جوجل يحافظ على ترتيب الأسطر غالباً، وهو أخف من الرموز المعقدة
+        val blocksToTranslate = page.blocks.map { it.text.replace("\n", " ") }
+        val mergedText = blocksToTranslate.joinToString("\n")
 
-        // 2️⃣ ترجمة النص كاملًا
+        // 2️⃣ إرسال النص للترجمة
         val translatedMergedText = try {
             translateText(toLang.code, mergedText)
         } catch (e: Exception) {
+            logcat { "Translation request failed: ${e.message}" }
             ""
         }
 
@@ -44,28 +40,51 @@ class GoogleTranslator(
             return@forEach
         }
 
-        // 3️⃣ إعادة التقسيم باستخدام نفس الفواصل
-        val regex = Regex("⟦⟦BLOCK_(\\d+)⟧⟧")
-        val matches = regex.findAll(translatedMergedText).toList()
+        // 3️⃣ تقسيم النص المترجم بناءً على الأسطر
+        // نستخدم split("\n") للحصول على الترجمة لكل كتلة بنفس الترتيب
+        val translatedLines = translatedMergedText.lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
 
-        for (i in matches.indices) {
-            val start = matches[i].range.last + 1
-            val end = if (i + 1 < matches.size)
-                matches[i + 1].range.first
-            else
-                translatedMergedText.length
-
-            val blockIndex = matches[i].groupValues[1].toInt()
-            val text = translatedMergedText
-                .substring(start, end)
-                .trim()
-
-            if (blockIndex < page.blocks.size) {
-                page.blocks[blockIndex].translation = text
+        // 4️⃣ إسقاط الترجمات على الكتل الأصلية
+        page.blocks.forEachIndexed { index, block ->
+            if (index < translatedLines.size) {
+                block.translation = translatedLines[index]
+            } else {
+                // في حال جوجل دمج سطرين مع بعض، نحاول عدم ترك الحقل فارغاً
+                block.translation = "" 
             }
         }
     }
+}
+
+private suspend fun translateText(lang: String, text: String): String {
+    val access = getTranslateUrl(lang, text)
+    val build: Request = Request.Builder().url(access).build()
+    
+    return try {
+        val response = okHttpClient.newCall(build).await()
+        val string = response.body.string()
+        
+        // معالجة JSON المتقدمة: جوجل يقسم النصوص الطويلة إلى مصفوفات داخل المصفوفة
+        val rootArray = JSONArray(string)
+        val sentencesArray = rootArray.getJSONArray(0)
+        val result = StringBuilder()
+        
+        for (i in 0 until sentencesArray.length()) {
+            val sentence = sentencesArray.getJSONArray(i)
+            val translatedPart = sentence.optString(0)
+            if (translatedPart != null && translatedPart != "null") {
+                result.append(translatedPart)
+            }
+        }
+        result.toString()
+    } catch (e: Exception) {
+        logcat { "JSON Parsing Error: $e" }
+        ""
     }
+}
+
 
     private suspend fun translateText(lang: String, text: String): String {
         val access = getTranslateUrl(lang, text)
