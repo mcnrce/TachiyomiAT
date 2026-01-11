@@ -14,9 +14,12 @@ class PageTranslationHelper {
 
             if (blocks.isEmpty()) return mutableListOf()
 
+            // 1. الفلترة المبدئية والترتيب (مهم جداً للترتيب المنطقي)
+            // نرتب أولاً حسب Y (الأعلى أولاً) ثم حسب X (الأيمن أولاً - للمانجا)
             val result = blocks.filter { block ->
                 block.text.isNotBlank() && block.width > 2 && block.height > 2
-            }.toMutableList()
+            }.sortedWith(compareBy<TranslationBlock> { it.y }.thenByDescending { it.x })
+            .toMutableList()
 
             var mergedAny: Boolean
             do {
@@ -43,79 +46,58 @@ class PageTranslationHelper {
             return result
         }
 
-        private fun getTextLength(text: String): Int {
-            val count = text.length
-            return if (count < 1) 1 else count
-        }
-
         private fun shouldMerge(
             r1: TranslationBlock,
             r2: TranslationBlock,
             xThreshold: Float,
             yThresholdFactor: Float
         ): Boolean {
-
-            val angleSimilar = abs(abs(r1.angle) - abs(r2.angle)) < 10
+            val angleSimilar = abs(abs(r1.angle) - abs(r2.angle)) < 12
 
             val r1Bottom = r1.y + r1.height
             val r2Bottom = r2.y + r2.height
-
-            val verticalGap =
-                if (r1.y < r2.y) r2.y - r1Bottom
-                else r1.y - r2Bottom
-
+            val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
+            
             val avgSymHeight = (r1.symHeight + r2.symHeight) / 2f
             val closeVertically = verticalGap <= avgSymHeight * yThresholdFactor
 
-            val left1 = r1.x
-            val right1 = r1.x + r1.width
-            val left2 = r2.x
-            val right2 = r2.x + r2.width
-
-            val horizontalOverlap =
-                maxOf(0f, minOf(right1, right2) - maxOf(left1, left2))
-
+            // قياس المراكز + فحص التداخل (لحل مشكلة المثال الأخير)
+            val r1CenterX = r1.x + (r1.width / 2f)
+            val r2CenterX = r2.x + (r2.width / 2f)
+            val centerDiff = abs(r1CenterX - r2CenterX)
+            
+            val overlap = minOf(r1.x + r1.width, r2.x + r2.width) - maxOf(r1.x, r2.x)
             val avgSymWidth = (r1.symWidth + r2.symWidth) / 2f
-            val closeHorizontally =
-                horizontalOverlap > 0 ||
-                abs(left1 - left2) <= avgSymWidth * xThreshold
+            
+            // ادمج إذا كانت المراكز متقاربة أو كان هناك تداخل أفقي واضح
+            val closeHorizontally = (centerDiff <= avgSymWidth * xThreshold) || (overlap > 0)
 
             return angleSimilar && closeVertically && closeHorizontally
         }
 
         private fun performMerge(a: TranslationBlock, b: TranslationBlock): TranslationBlock {
-
             val minX = minOf(a.x, b.x)
             val minY = minOf(a.y, b.y)
             val maxX = maxOf(a.x + a.width, b.x + b.width)
             val maxY = maxOf(a.y + a.height, b.y + b.height)
 
-            val blocksOrdered =
-                if (a.y < b.y || (a.y == b.y && a.x <= b.x))
-                    listOf(a, b)
-                else
-                    listOf(b, a)
+            // الترتيب داخل الدمج: الأعلى أولاً، وإذا تساويا فالأيمن أولاً
+            val blocksOrdered = if (a.y < b.y - (a.symHeight / 2)) {
+                listOf(a, b)
+            } else if (b.y < a.y - (b.symHeight / 2)) {
+                listOf(b, a)
+            } else {
+                // إذا كانا على نفس السطر تقريباً، الأيمن (X أكبر) يسبق الأيسر
+                if (a.x > b.x) listOf(a, b) else listOf(b, a)
+            }
 
-            val mergedText =
-                blocksOrdered[0].text + "\n" + blocksOrdered[1].text
+            val mergedText = blocksOrdered.joinToString(" ") { it.text.trim() }
+            val mergedTrans = blocksOrdered.joinToString(" ") { it.translation.trim() }.trim()
 
-            val mergedTrans =
-                (blocksOrdered[0].translation + "\n" +
-                 blocksOrdered[1].translation).trim()
-
-            val lenA = getTextLength(a.text)
-            val lenB = getTextLength(b.text)
-            val totalLen = lenA + lenB
-
-            val finalSymWidth =
-                (a.symWidth * lenA + b.symWidth * lenB) / totalLen
-
-            val finalSymHeight =
-                (a.symHeight * lenA + b.symHeight * lenB) / totalLen
-
-            // الميلان النهائي = الأقرب للصفر
-            val finalAngle =
-                if (abs(a.angle) <= abs(b.angle)) a.angle else b.angle
+            val totalLen = maxOf(1, a.text.length + b.text.length)
+            val finalSymWidth = (a.symWidth * a.text.length + b.symWidth * b.text.length) / totalLen
+            val finalSymHeight = (a.symHeight * a.text.length + b.symHeight * b.text.length) / totalLen
+            val finalAngle = if (abs(a.angle) <= abs(b.angle)) a.angle else b.angle
 
             return TranslationBlock(
                 text = mergedText,
