@@ -8,14 +8,18 @@ class PageTranslationHelper {
 
         fun smartMergeBlocks(
             blocks: List<TranslationBlock>,
-            xThreshold: Float = 2.5f,
-            yThresholdFactor: Float = 1.6f
+            imgWidth: Float,
+            imgHeight: Float
         ): MutableList<TranslationBlock> {
 
             if (blocks.isEmpty()) return mutableListOf()
 
-            // 1. الفلترة المبدئية والترتيب (مهم جداً للترتيب المنطقي)
-            // نرتب أولاً حسب Y (الأعلى أولاً) ثم حسب X (الأيمن أولاً - للمانجا)
+            // جعل المتغيرات ديناميكية بناءً على أبعاد الصورة
+            // تم اختيار 1200x2000 كأبعاد مرجعية (Baseline)
+            val xThreshold = 2.5f * (imgWidth / 1200f).coerceAtLeast(1.0f)
+            val yThresholdFactor = 1.6f * (imgHeight / 2000f).coerceAtLeast(1.0f)
+
+            // 1. الفلترة المبدئية والترتيب
             val result = blocks.filter { block ->
                 block.text.isNotBlank() && block.width > 2 && block.height > 2
             }.sortedWith(compareBy<TranslationBlock> { it.y }.thenByDescending { it.x })
@@ -46,48 +50,32 @@ class PageTranslationHelper {
             return result
         }
 
-                private fun shouldMerge(
+        private fun shouldMerge(
             r1: TranslationBlock,
             r2: TranslationBlock,
             xThreshold: Float,
             yThresholdFactor: Float
         ): Boolean {
-            // 1. زيادة المرونة في الزاوية إلى 20 درجة (المانجا غالباً بها نصوص مائلة)
-            val angleSimilar = abs(abs(r1.angle) - abs(r2.angle)) < 20
+            val angleSimilar = abs(abs(r1.angle) - abs(r2.angle)) < 12
 
-            // 2. حساب المسافة الرأسية مع معالجة حالة التداخل
-            val r1Top = r1.y
             val r1Bottom = r1.y + r1.height
-            val r2Top = r2.y
             val r2Bottom = r2.y + r2.height
-
-            // إذا كان هناك أي تداخل رأسي، نعتبر المسافة صفر (أي ادمج فوراً)
-            val isVerticalOverlap = maxOf(r1Top, r2Top) < minOf(r1Bottom, r2Bottom)
+            val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
             
-            val verticalGap = if (isVerticalOverlap) 0f 
-                             else if (r1Bottom < r2Top) r2Top - r1Bottom 
-                             else r1Top - r2Bottom
+            val avgSymHeight = maxOf(r1.symHeight, r2.symHeight)
+            val closeVertically = verticalGap <= avgSymHeight * yThresholdFactor
 
-            // استخدام الحجم الأكبر (Max) بدلاً من المتوسط لضمان عدم فشل الدمج في الفقاعات الكبيرة
-            val referenceHeight = maxOf(r1.symHeight, r2.symHeight)
-            val closeVertically = verticalGap <= (referenceHeight * yThresholdFactor)
-
-            // 3. التقارب الأفقي (المراكز + التداخل)
             val r1CenterX = r1.x + (r1.width / 2f)
             val r2CenterX = r2.x + (r2.width / 2f)
             val centerDiff = abs(r1CenterX - r2CenterX)
             
+            val overlap = minOf(r1.x + r1.width, r2.x + r2.width) - maxOf(r1.x, r2.x)
             val avgSymWidth = (r1.symWidth + r2.symWidth) / 2f
             
-            // هل أحدهما "يغطي" الآخر أفقياً؟
-            val hasHorizontalOverlap = minOf(r1.x + r1.width, r2.x + r2.width) > maxOf(r1.x, r2.x)
-
-            // ادمج إذا كانت المراكز متقاربة أو كان هناك تداخل أفقي
-            val closeHorizontally = (centerDiff <= avgSymWidth * xThreshold) || hasHorizontalOverlap
+            val closeHorizontally = (centerDiff <= avgSymWidth * xThreshold) || (overlap > 0)
 
             return angleSimilar && closeVertically && closeHorizontally
         }
-
 
         private fun performMerge(a: TranslationBlock, b: TranslationBlock): TranslationBlock {
             val minX = minOf(a.x, b.x)
@@ -95,13 +83,11 @@ class PageTranslationHelper {
             val maxX = maxOf(a.x + a.width, b.x + b.width)
             val maxY = maxOf(a.y + a.height, b.y + b.height)
 
-            // الترتيب داخل الدمج: الأعلى أولاً، وإذا تساويا فالأيمن أولاً
             val blocksOrdered = if (a.y < b.y - (a.symHeight / 2)) {
                 listOf(a, b)
             } else if (b.y < a.y - (b.symHeight / 2)) {
                 listOf(b, a)
             } else {
-                // إذا كانا على نفس السطر تقريباً، الأيمن (X أكبر) يسبق الأيسر
                 if (a.x > b.x) listOf(a, b) else listOf(b, a)
             }
 
