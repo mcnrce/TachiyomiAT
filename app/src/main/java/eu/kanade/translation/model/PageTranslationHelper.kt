@@ -44,15 +44,17 @@ class PageTranslationHelper {
                 do {
                     mergedAny = false
                     var i = 0
-                    // إضافة شرط !mergedAny لضمان الخروج الفوري عند حدوث دمج
-                    while (i < result.size && !mergedAny) {
+                    // إعادة تصميم الحلقة: عند حدوث دمج نعيد البدء من العنصر 0 لضمان عدم تفويت أزواج
+                    outer@ while (i < result.size) {
                         var j = i + 1
                         while (j < result.size) {
                             if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
                                 result[i] = performMerge(result[i], result[j], isWebtoon)
                                 result.removeAt(j)
                                 mergedAny = true
-                                break // الخروج من حلقة j للبدء من جديد بالقائمة المحدثة
+                                // بعد الدمج، نعيد الفحص من البداية
+                                i = 0
+                                continue@outer
                             }
                             j++
                         }
