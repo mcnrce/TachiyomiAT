@@ -17,83 +17,88 @@ class PageTranslationHelper {
 
             val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
-            // 1. التصفية والترتيب الأولي
+            // 1. التصفية
             val filteredBlocks = blocks.onEach { block ->
                 val cleanText = block.text.trim()
-                if ((isWebtoon && NOISE_REGEX.matches(cleanText)) || block.width <= 2 || block.height <= 2) {
+                val isLink = isWebtoon && NOISE_REGEX.matches(cleanText)
+                if (isLink || block.width <= 2 || block.height <= 2) {
                     block.translation = ""
                 }
             }.filter { it.text.isNotBlank() }
 
-            var result = filteredBlocks.sortedWith(compareBy<TranslationBlock> { it.y }.thenBy { it.x }).toMutableList()
+            // 2. الترتيب الابتدائي
+            val sortedBlocks = if (isWebtoon) {
+                filteredBlocks.sortedWith(compareBy<TranslationBlock> { it.y }.thenBy { it.x })
+            } else {
+                filteredBlocks.sortedWith(compareBy<TranslationBlock> { it.y }.thenByDescending { it.x })
+            }
 
-            // ضبط العتبات
+            var result = sortedBlocks.toMutableList()
+
+            // 3. ضبط العتبات
             val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
             val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
 
-            // 2. الجولة الأولى: التركيز على الدمج الرأسي (الأسطر فوق بعضها)
-            // هنا نضع شروطاً صارمة للأفقية ومرنة للرأسية لتشكيل الأعمدة أولاً
-            result = runMergeCycle(result, isWebtoon) { b1, b2 ->
-                shouldMergeVerticalFirst(b1, b2, xThreshold, yThresholdFactor)
-            }
-
-            // 3. الجولة الثانية: دمج الأعمدة المكتملة بجانب بعضها (أفقياً)
-            // هنا نفتح المجال لدمج الكتل التي تقع بجوار بعضها لتكوين الفقاعة
-            result = runMergeCycle(result, isWebtoon) { b1, b2 ->
-                shouldMergeHorizontalSecond(b1, b2, xThreshold)
+            // 4. حلقة الدمج بتكرار مرتين لضمان دمج الكتل البعيدة
+            repeat(2) {
+                var mergedAny: Boolean
+                do {
+                    mergedAny = false
+                    var i = 0
+                    while (i < result.size) {
+                        var j = i + 1
+                        while (j < result.size) {
+                            if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
+                                result[i] = performMerge(result[i], result[j], isWebtoon)
+                                result.removeAt(j)
+                                mergedAny = true
+                            } else {
+                                j++
+                            }
+                        }
+                        i++
+                    }
+                } while (mergedAny)
             }
 
             return result
         }
 
-        // دالة تشكيل الأعمدة (الأسطر فوق بعضها)
-        private fun shouldMergeVerticalFirst(r1: TranslationBlock, r2: TranslationBlock, xT: Float, yT: Float): Boolean {
-            val angleSimilar = abs(abs(r1.angle) - abs(r2.angle)) < 12
+        private fun shouldMerge(
+            r1: TranslationBlock,
+            r2: TranslationBlock,
+            xThreshold: Float,
+            yThresholdFactor: Float
+        ): Boolean {
+            // تشابه الزوايا
+            val angleDiff = abs(r1.angle - r2.angle)
+            val angleSimilar = angleDiff < 15 || abs(angleDiff - 180) < 15
+
+            // التقارب الرأسي
+            val r1Bottom = r1.y + r1.height
+            val r2Bottom = r2.y + r2.height
+            val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
+            val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
             
-            val vGap = if (r1.y < r2.y) r2.y - (r1.y + r1.height) else r1.y - (r2.y + r2.height)
+            val avgSymHeight = maxOf(r1.symHeight, r2.symHeight)
+            // ينجح إذا كانت الفجوة الرأسية صغيرة أو كان هناك تداخل رأسي (مهم للياباني)
+            val closeVertically = verticalGap <= avgSymHeight * yThresholdFactor || vOverlap > 0
+
+            // التقارب الأفقي المحسن (خاصة للزاوية 90)
+            val centerDiff = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
             val hOverlap = minOf(r1.x + r1.width, r2.x + r2.width) - maxOf(r1.x, r2.x)
-            
-            // يجب أن يكون هناك تداخل أفقي (واحد فوق الآخر) وفجوة رأسية صغيرة
-            val closeVertically = vGap <= maxOf(r1.symHeight, r2.symHeight) * yT
-            val isStacked = hOverlap > 0 || abs((r1.x + r1.width/2f) - (r2.x + r2.width/2f)) < (r1.symWidth * xT)
-
-            return angleSimilar && closeVertically && isStacked
-        }
-
-        // دالة دمج الأعمدة بجانب بعضها (الفقاعة اليابانية)
-        private fun shouldMergeHorizontalSecond(r1: TranslationBlock, r2: TranslationBlock, xT: Float): Boolean {
-            val angleSimilar = abs(r1.angle - r2.angle) < 15 || abs(abs(r1.angle - r2.angle) - 180) < 15
-            
             val hGap = if (r1.x < r2.x) r2.x - (r1.x + r1.width) else r1.x - (r2.x + r2.width)
-            val vOverlap = minOf(r1.y + r1.height, r2.y + r2.height) - maxOf(r1.y, r2.y)
             
-            // تقارب أفقي (جنباً إلى جنب) مع وجود تداخل رأسي (الأعمدة متوازية)
-            val closeHorizontally = hGap <= ((r1.symWidth + r2.symWidth) / 2f) * xT
-            val isParallel = vOverlap > 0
+            val avgSymWidth = (r1.symWidth + r2.symWidth) / 2f
+            
+            // تحققنا من الزاوية: إذا كانت عمودية (قريبة من 90)، نزيد التسامح الأفقي
+            val isVerticalText = abs(r1.angle) in 80.0..100.0 || abs(r2.angle) in 80.0..100.0
+            val xTolerance = if (isVerticalText) xThreshold * 1.3f else xThreshold
 
-            return angleSimilar && closeHorizontally && isParallel
-        }
+            // شرط الدمج الأفقي: (المراكز قريبة) OR (تداخل حواف) OR (فجوة أفقية صغيرة جداً)
+            val closeHorizontally = (centerDiff <= avgSymWidth * xTolerance) || (hOverlap > 0) || (hGap < avgSymWidth * 0.8f)
 
-        private fun runMergeCycle(list: MutableList<TranslationBlock>, isWebtoon: Boolean, checkLogic: (TranslationBlock, TranslationBlock) -> Boolean): MutableList<TranslationBlock> {
-            var mergedAny: Boolean
-            do {
-                mergedAny = false
-                var i = 0
-                while (i < list.size) {
-                    var j = i + 1
-                    while (j < list.size) {
-                        if (checkLogic(list[i], list[j])) {
-                            list[i] = performMerge(list[i], list[j], isWebtoon)
-                            list.removeAt(j)
-                            mergedAny = true
-                        } else {
-                            j++
-                        }
-                    }
-                    i++
-                }
-            } while (mergedAny)
-            return list
+            return angleSimilar && closeVertically && closeHorizontally
         }
 
         private fun performMerge(a: TranslationBlock, b: TranslationBlock, isWebtoon: Boolean): TranslationBlock {
