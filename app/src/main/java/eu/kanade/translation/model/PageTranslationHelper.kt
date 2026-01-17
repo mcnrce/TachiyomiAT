@@ -66,42 +66,57 @@ class PageTranslationHelper {
         }
 
         private fun shouldMerge(
-            r1: TranslationBlock,
-            r2: TranslationBlock,
-            xThreshold: Float,
-            yThresholdFactor: Float
-        ): Boolean {
-            // تشابه الزوايا
-            val angleDiff = abs(r1.angle - r2.angle)
-            val angleSimilar = angleDiff < 15 || abs(angleDiff - 180) < 15
+    r1: TranslationBlock,
+    r2: TranslationBlock,
+    xThreshold: Float,
+    yThresholdFactor: Float
+): Boolean {
+    // 1. تشابه الزوايا (تحسين للنص العمودي)
+    val angleDiff = abs(r1.angle - r2.angle)
+    val angleSimilar = angleDiff < 15 || abs(angleDiff - 180) < 15
+    
+    // 2. التقارب الرأسي
+    val r1Bottom = r1.y + r1.height
+    val r2Bottom = r2.y + r2.height
+    val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
+    val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
+    
+    val avgSymHeight = maxOf(r1.symHeight, r2.symHeight)
+    val closeVertically = verticalGap <= avgSymHeight * yThresholdFactor * 2f || vOverlap > 0
 
-            // التقارب الرأسي
-            val r1Bottom = r1.y + r1.height
-            val r2Bottom = r2.y + r2.height
-            val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
-            val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
-            
-            val avgSymHeight = maxOf(r1.symHeight, r2.symHeight)
-            // ينجح إذا كانت الفجوة الرأسية صغيرة أو كان هناك تداخل رأسي (مهم للياباني)
-            val closeVertically = verticalGap <= avgSymHeight * yThresholdFactor || vOverlap > 0
-
-            // التقارب الأفقي المحسن (خاصة للزاوية 90)
-            val centerDiff = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
-            val hOverlap = minOf(r1.x + r1.width, r2.x + r2.width) - maxOf(r1.x, r2.x)
-            val hGap = if (r1.x < r2.x) r2.x - (r1.x + r1.width) else r1.x - (r2.x + r2.width)
-            
-            val avgSymWidth = (r1.symWidth + r2.symWidth) / 2f
-            
-            // تحققنا من الزاوية: إذا كانت عمودية (قريبة من 90)، نزيد التسامح الأفقي
-            val isVerticalText = abs(r1.angle) in 80.0..100.0 || abs(r2.angle) in 80.0..100.0
-            val xTolerance = if (isVerticalText) xThreshold * 1.3f else xThreshold
-
-            // شرط الدمج الأفقي: (المراكز قريبة) OR (تداخل حواف) OR (فجوة أفقية صغيرة جداً)
-            val closeHorizontally = (centerDiff <= avgSymWidth * xTolerance) || (hOverlap > 0) || (hGap < avgSymWidth * 0.8f)
-
-            return angleSimilar && closeVertically && closeHorizontally
+    // 3. التقارب الأفقي (تحسين خاص للنص العمودي)
+    val isVerticalText = abs(r1.angle) in 80.0..100.0 || abs(r2.angle) in 80.0..100.0
+    
+    if (isVerticalText) {
+        // للنص العمودي، نتحقق من المحاذاة الأفقية بشكل مختلف
+        val leftDiff = abs(r1.x - r2.x)
+        val rightDiff = abs((r1.x + r1.width) - (r2.x + r2.width))
+        val avgCharWidth = maxOf(r1.symWidth, r2.symWidth)
+        
+        val horizontallyAligned = leftDiff <= avgCharWidth * 3f || rightDiff <= avgCharWidth * 3f
+        
+        // للنص العمودي، نكون أكثر تساهلاً مع الفجوة الأفقية
+        val hOverlap = minOf(r1.x + r1.width, r2.x + r2.width) - maxOf(r1.x, r2.x)
+        val hGap = if (r1.x < r2.x) r2.x - (r1.x + r1.width) else r1.x - (r2.x + r2.width)
+        
+        val closeHorizontally = horizontallyAligned || hOverlap > -avgCharWidth * 2f
+        val closeVerticallyForVerticalText = vOverlap > avgSymHeight * 0.3f || verticalGap < avgSymHeight * 1.5f
+        
+        return angleSimilar && closeVerticallyForVerticalText && closeHorizontally
+    } else {
+        // النص الأفقي (الكود الأصلي مع تحسينات طفيفة)
+        val centerDiff = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
+        val hOverlap = minOf(r1.x + r1.width, r2.x + r2.width) - maxOf(r1.x, r2.x)
+        val hGap = if (r1.x < r2.x) r2.x - (r1.x + r1.width) else r1.x - (r2.x + r2.width)
+        
+        val avgSymWidth = (r1.symWidth + r2.symWidth) / 2f
+        val closeHorizontally = (centerDiff <= avgSymWidth * xThreshold) || 
+                               (hOverlap > 0) || 
+                               (hGap < avgSymWidth * 1.2f)
+        
+        return angleSimilar && closeVertically && closeHorizontally
+    }
         }
-
         private fun performMerge(a: TranslationBlock, b: TranslationBlock, isWebtoon: Boolean): TranslationBlock {
             val minX = minOf(a.x, b.x)
             val minY = minOf(a.y, b.y)
