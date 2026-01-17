@@ -38,29 +38,28 @@ class PageTranslationHelper {
             // 3. ضبط العتبات
             val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
             val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
-
             // 4. حلقة الدمج بتكرار مرتين لضمان دمج الكتل البعيدة
             repeat(2) {
                 var mergedAny: Boolean
                 do {
                     mergedAny = false
                     var i = 0
-                    while (i < result.size) {
+                    // إضافة شرط !mergedAny لضمان الخروج الفوري عند حدوث دمج
+                    while (i < result.size && !mergedAny) {
                         var j = i + 1
                         while (j < result.size) {
                             if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
                                 result[i] = performMerge(result[i], result[j], isWebtoon)
                                 result.removeAt(j)
                                 mergedAny = true
-                            } else {
-                                j++
+                                break // الخروج من حلقة j للبدء من جديد بالقائمة المحدثة
                             }
+                            j++
                         }
                         i++
                     }
                 } while (mergedAny)
             }
-
             return result
         }
 
