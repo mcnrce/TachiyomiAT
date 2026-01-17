@@ -14,17 +14,35 @@ class PageTranslationHelper {
 
             if (blocks.isEmpty()) return mutableListOf()
 
-            // جعل المتغيرات ديناميكية بناءً على أبعاد الصورة
-            // تم اختيار 1200x2000 كأبعاد مرجعية (Baseline)
-            val xThreshold = 2.5f * (imgWidth / 1200f).coerceAtLeast(1.0f)
-            val yThresholdFactor = 1.6f * (imgHeight / 2000f).coerceAtLeast(1.0f)
+            // 1. تحديد نوع المحتوى: مانهوا/ويب تون (طولي) أم مانجا تقليدية
+            val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
-            // 1. الفلترة المبدئية والترتيب
-            val result = blocks.filter { block ->
-                block.text.isNotBlank() && block.width > 2 && block.height > 2
-            }.sortedWith(compareBy<TranslationBlock> { it.y }.thenByDescending { it.x })
-            .toMutableList()
+            // 2. تصفية النصوص والروابط الضارة
+            val noisePatterns = listOf(".com", ".net", ".org", ".co", ".me", "discord.gg", "www.", "http", ".link")
+            
+            val filteredBlocks = blocks.onEach { block ->
+                val cleanText = block.text.lowercase().trim()
+                val isLink = noisePatterns.any { cleanText.contains(it) }
+                
+                if (isLink || block.width <= 2 || block.height <= 2) {
+                    block.translation = ""
+                }
+            }.filter { it.text.isNotBlank() }
 
+            // 3. الترتيب الابتدائي حسب اتجاه القراءة
+            val sortedBlocks = if (isWebtoon) {
+                filteredBlocks.sortedWith(compareBy<TranslationBlock> { it.y }.thenBy { it.x })
+            } else {
+                filteredBlocks.sortedWith(compareBy<TranslationBlock> { it.y }.thenByDescending { it.x })
+            }
+
+            val result = sortedBlocks.toMutableList()
+
+            // 4. ضبط عتبات المسافة مع سقف حماية (Cap)
+            val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(5f)).coerceAtLeast(1.0f)
+            val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(3f)).coerceAtLeast(1.0f)
+
+            // 5. حلقة الدمج الذكية
             var mergedAny: Boolean
             do {
                 mergedAny = false
@@ -36,7 +54,8 @@ class PageTranslationHelper {
                         val second = result[j]
 
                         if (shouldMerge(first, second, xThreshold, yThresholdFactor)) {
-                            result[i] = performMerge(first, second)
+                            // تم تمرير isWebtoon لضمان ترتيب الكلمات داخل السطر بشكل صحيح
+                            result[i] = performMerge(first, second, isWebtoon)
                             result.removeAt(j)
                             mergedAny = true
                         } else {
@@ -68,36 +87,41 @@ class PageTranslationHelper {
             val r1CenterX = r1.x + (r1.width / 2f)
             val r2CenterX = r2.x + (r2.width / 2f)
             val centerDiff = abs(r1CenterX - r2CenterX)
-            
             val overlap = minOf(r1.x + r1.width, r2.x + r2.width) - maxOf(r1.x, r2.x)
-            val avgSymWidth = (r1.symWidth + r2.symWidth) / 2f
             
+            val avgSymWidth = (r1.symWidth + r2.symWidth) / 2f
             val closeHorizontally = (centerDiff <= avgSymWidth * xThreshold) || (overlap > 0)
 
             return angleSimilar && closeVertically && closeHorizontally
         }
 
-        private fun performMerge(a: TranslationBlock, b: TranslationBlock): TranslationBlock {
+        private fun performMerge(a: TranslationBlock, b: TranslationBlock, isWebtoon: Boolean): TranslationBlock {
             val minX = minOf(a.x, b.x)
             val minY = minOf(a.y, b.y)
             val maxX = maxOf(a.x + a.width, b.x + b.width)
             val maxY = maxOf(a.y + a.height, b.y + b.height)
 
-            val blocksOrdered = if (a.y < b.y - (a.symHeight / 2)) {
-                listOf(a, b)
-            } else if (b.y < a.y - (b.symHeight / 2)) {
-                listOf(b, a)
+            // ترتيب العناصر المدمجة بناءً على السياق (رأسي أولاً ثم أفقي حسب النوع)
+            val blocksOrdered = if (abs(a.y - b.y) > maxOf(a.symHeight, b.symHeight) * 0.5f) {
+                if (a.y < b.y) listOf(a, b) else listOf(b, a)
             } else {
-                if (a.x > b.x) listOf(a, b) else listOf(b, a)
+                if (isWebtoon) {
+                    if (a.x < b.x) listOf(a, b) else listOf(b, a) // LTR
+                } else {
+                    if (a.x > b.x) listOf(a, b) else listOf(b, a) // RTL (Manga)
+                }
             }
 
             val mergedText = blocksOrdered.joinToString(" ") { it.text.trim() }
             val mergedTrans = blocksOrdered.joinToString(" ") { it.translation.trim() }.trim()
 
-            val totalLen = maxOf(1, a.text.length + b.text.length)
-            val finalSymWidth = (a.symWidth * a.text.length + b.symWidth * b.text.length) / totalLen
-            val finalSymHeight = (a.symHeight * a.text.length + b.symHeight * b.text.length) / totalLen
-            val finalAngle = if (abs(a.angle) <= abs(b.angle)) a.angle else b.angle
+            // حساب الأوزان بناءً على طول النص لضمان دقة قياس الحروف (Weighted Mean)
+            val lenA = a.text.length.coerceAtLeast(1)
+            val lenB = b.text.length.coerceAtLeast(1)
+            val totalLen = lenA + lenB
+
+            val finalSymWidth = (a.symWidth * lenA + b.symWidth * lenB) / totalLen
+            val finalSymHeight = (a.symHeight * lenA + b.symHeight * lenB) / totalLen
 
             return TranslationBlock(
                 text = mergedText,
@@ -106,7 +130,7 @@ class PageTranslationHelper {
                 height = maxY - minY,
                 x = minX,
                 y = minY,
-                angle = finalAngle,
+                angle = if (abs(a.angle) <= abs(b.angle)) a.angle else b.angle,
                 symWidth = finalSymWidth,
                 symHeight = finalSymHeight
             )
