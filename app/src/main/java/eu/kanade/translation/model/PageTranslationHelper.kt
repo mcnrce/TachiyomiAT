@@ -135,7 +135,7 @@ class PageTranslationHelper {
                 height = maxY - minY,
                 x = minX,
                 y = minY,
-                angle = if (abs(a.angle) <= abs(b.angle)) a.angle else b.angle,
+                angle = if (lenA >= lenB) a.angle else b.angle,
                 symWidth = (a.symWidth * lenA + b.symWidth * lenB) / totalLen,
                 symHeight = (a.symHeight * lenA + b.symHeight * lenB) / totalLen
             )
