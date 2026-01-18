@@ -66,28 +66,49 @@ class PageTranslationHelper {
         }
 
         private fun shouldMerge(
-            r1: TranslationBlock,
-            r2: TranslationBlock,
-            xThreshold: Float,
-            yThresholdFactor: Float
-        ): Boolean {
-            val angleSimilar = abs(abs(r1.angle) - abs(r2.angle)) < 12
+    r1: TranslationBlock,
+    r2: TranslationBlock,
+    xThreshold: Float,
+    yThresholdFactor: Float
+): Boolean {
+    // 1. تشابه الزوايا: للنصوص الإنجليزية، يجب أن تكون الزوايا متطابقة تقريباً (أفقية)
+    val angleDiff = abs(r1.angle - r2.angle)
+    val angleSimilar = angleDiff < 8 || abs(angleDiff - 180) < 8
 
-            val r1Bottom = r1.y + r1.height
-            val r2Bottom = r2.y + r2.height
-            val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
-            
-            val avgSymHeight = maxOf(r1.symHeight, r2.symHeight)
-            val closeVertically = verticalGap <= avgSymHeight * yThresholdFactor
+    // 2. التحقق من التقارب الرأسي (الأسطر تحت بعضها)
+    val r1Bottom = r1.y + r1.height
+    val r2Bottom = r2.y + r2.height
+    val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
+    
+    // في الإنجليزية، الفجوة الرأسية بين الأسطر يجب أن تكون صغيرة (أقل من حجم الخط)
+    val avgSymHeight = (r1.symHeight + r2.symHeight) / 2f
+    val closeVertically = verticalGap <= avgSymHeight * (yThresholdFactor * 0.8f)
 
-            val centerDiff = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
-            val overlap = minOf(r1.x + r1.width, r2.x + r2.width) - maxOf(r1.x, r2.x)
-            
-            val avgSymWidth = (r1.symWidth + r2.symWidth) / 2f
-            val closeHorizontally = (centerDiff <= avgSymWidth * xThreshold) || (overlap > 0)
+    // 3. التحقق من التقارب الأفقي (الكلمات بجانب بعضها)
+    val r1Right = r1.x + r1.width
+    val r2Right = r2.x + r2.width
+    val hGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
+    
+    // حساب التداخل الأفقي (Horizontal Overlap)
+    val hOverlap = minOf(r1Right, r2Right) - maxOf(r1.x, r2.x)
+    val avgSymWidth = (r1.symWidth + r2.symWidth) / 2f
 
-            return angleSimilar && closeVertically && closeHorizontally
-        }
+    /* المنطق الذهبي لمنع دمج الفقاعات المجاورة:
+       - إذا كان هناك "تداخل أفقي" كبير (Overlap)، فهما غالباً سطران فوق بعضهما في نفس الفقاعة.
+       - إذا كانت هناك "فجوة أفقية" (hGap)، يجب أن تكون صغيرة جداً (مسافة كلمة واحدة فقط).
+    */
+    val closeHorizontally = if (hOverlap > avgSymWidth * 0.5f) {
+        // سطران فوق بعضهما: يكفي أن تكون المراكز متقاربة أفقياً
+        val centerDiff = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
+        centerDiff < avgSymWidth * xThreshold
+    } else {
+        // كلمات بجانب بعضها: يجب أن تكون الفجوة صغيرة جداً (لتجنب دمج فقاعتين متجاورتين)
+        hGap < avgSymWidth * 1.5f 
+    }
+
+    return angleSimilar && closeVertically && closeHorizontally
+}
+
 
         private fun performMerge(a: TranslationBlock, b: TranslationBlock, isWebtoon: Boolean): TranslationBlock {
             val minX = minOf(a.x, b.x)
