@@ -21,37 +21,46 @@ class MLKitTranslator(
     )
 
     private var conditions = DownloadConditions.Builder().build()
+    
+    // Regex لاكتشاف الروابط والمواقع
+    private val urlPattern = Regex("(?i)(https?://\\S+|www\\.\\S+|\\S+\\.(com|net|org|io|me|cc|tv|info))")
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
         Tasks.await(translator.downloadModelIfNeeded(conditions))
 
-        pages.mapValues { (_, page) ->
-            page.blocks.map { block ->
+        pages.forEach { (_, page) ->
+            page.blocks.forEach { block ->
                 
-                // 1️⃣ تنظيف النص من الأسطر والمسافات للفحص فقط
-                // نستخدم replace لضمان أن charCount يحسب الحروف الحقيقية فقط
-                val textForFiltering = block.text.replace("\n", "").replace(" ", "")
+                // 1️⃣ فحص الزاوية (أفقي وعمودي صريح فقط)
+                val isAcceptedAngle = (block.angle >= -15.0f && block.angle <= 15.0f) || 
+                                      (block.angle >= 75.0f && block.angle <= 105.0f) || 
+                                      (block.angle <= -75.0f && block.angle >= -105.0f)
 
-                // فحص الزاوية
-                val angleOk = block.angle >= -15.0 && block.angle <= 15.0
+                // 2️⃣ فحص الروابط
+                val isUrl = urlPattern.containsMatchIn(block.text)
 
-                // 3️⃣ التحقق من الشروط
-                if (angleOk) {
+                // 3️⃣ التحقق من الشروط قبل الترجمة
+                if (isAcceptedAngle && !isUrl) {
                     try {
-                        // هنا نعود للنص الأصلي (block.text) لتقسيم الأسطر بشكل صحيح
                         val lines = block.text.split("\n")
                         val originalWordCounts = lines.map { line ->
-                            line.split(" ").size
+                            line.split(Regex("\\s+")).filter { it.isNotEmpty() }.size
                         }
 
-                        // الترجمة (نستخدم مسافة بدلاً من السطر الجديد للسياق)
-                        val fullText = block.text.replace("\n", " ")
+                        // الترجمة (نرسل النص ككتلة واحدة للسياق المحلي)
+                        val fullText = block.text.replace("\n", " ").trim()
+                        if (fullText.isEmpty()) {
+                            block.translation = ""
+                            return@forEach
+                        }
+
                         val translatedText = Tasks.await(translator.translate(fullText))
 
-                        // إعادة البناء (منطقك الأصلي)
-                        val words = translatedText.split(" ")
+                        // إعادة بناء الأسطر (منطق الحفاظ على هيكل الفقاعة)
+                        val words = translatedText.split(Regex("\\s+")).filter { it.isNotEmpty() }
                         val rebuiltLines = mutableListOf<String>()
                         var index = 0
+                        
                         for (count in originalWordCounts) {
                             if (index >= words.size) break
                             val end = (index + count).coerceAtMost(words.size)
@@ -59,8 +68,10 @@ class MLKitTranslator(
                             index = end
                         }
 
+                        // إضافة أي كلمات متبقية للسطر الأخير
                         if (index < words.size && rebuiltLines.isNotEmpty()) {
-                            rebuiltLines[rebuiltLines.size - 1] += " " + words.subList(index, words.size).joinToString(" ")
+                            val lastIdx = rebuiltLines.size - 1
+                            rebuiltLines[lastIdx] = (rebuiltLines[lastIdx] + " " + words.subList(index, words.size).joinToString(" ")).trim()
                         }
 
                         block.translation = rebuiltLines.joinToString("\n")
@@ -68,6 +79,7 @@ class MLKitTranslator(
                         block.translation = ""
                     }
                 } else {
+                    // إذا كان مؤثراً صوتياً مائلاً أو رابطاً، نمسح النص
                     block.translation = ""
                 }
             }
