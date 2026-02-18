@@ -98,16 +98,19 @@ class GeminiTranslator(
                         val translated = arr?.optString(index, "__NULL__")
 
                         block.translation = when {
-    // النطاق الأول: النصوص الأفقية (من -15 إلى 15)
-    // النطاق الثاني: النصوص العمودية (من 70 إلى 110)
-    !((block.angle >= -15.0f && block.angle <= 15.0f) || 
-      (block.angle >= 70.0f && block.angle <= 110.0f)) -> ""
-    
-    translated == null -> block.text
-    translated == "__NULL__" -> block.text
+    // 1. فلترة الزوايا: نقبل فقط ما هو قريب من الأفقي (0) أو العمودي (90 أو -90)
+    !(
+        (block.angle >= -15.0f && block.angle <= 15.0f) ||   // النصوص الأفقية (فقاعات الحوار العادية)
+        (block.angle >= 75.0f && block.angle <= 105.0f) ||  // النصوص العمودية (المانجا اليابانية)
+        (block.angle <= -75.0f && block.angle >= -105.0f)   // النصوص العمودية المقلوبة
+    ) -> ""
+
+    // 2. معالجة النصوص المترجمة
+    translated == null || translated == "__NULL__" -> block.text
     translated == "RTMTH" -> ""
     else -> translated
 }
+
 
                     }
                 }
