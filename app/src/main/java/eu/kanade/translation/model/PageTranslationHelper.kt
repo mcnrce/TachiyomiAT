@@ -15,34 +15,38 @@ class PageTranslationHelper {
 
             if (blocks.isEmpty()) return mutableListOf()
 
-            // 1. تنظيف أولي سريع (بدون تصفية عدوانية قد تحذف الكتل المتقاربة)
-            val initialBlocks = blocks.filter { it.text.isNotBlank() }.toMutableList()
+            // 1. تنظيف أولي
+            val result = blocks.filter { it.text.isNotBlank() }.toMutableList()
 
-            // 2. ضبط عتبات المسافات بناءً على حجم الصورة
+            // 2. ضبط العتبات
             val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
             val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
             val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
-            var result = initialBlocks
-            var changed = true
-
-            // 3. حلقة الدمج الشاملة: تستمر في العمل طالما يوجد كتل يمكن دمجها
-            // هذا يحل مشكلة الكتل التي لا تندمج بسبب ترتيبها في المصفوفة
-            while (changed) {
-                changed = false
-                var i = 0
-                while (i < result.size) {
-                    var j = i + 1
-                    while (j < result.size) {
-                        if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
-                            result[i] = performMerge(result[i], result[j], isWebtoon)
-                            result.removeAt(j)
-                            changed = true
-                            // نستمر في فحص الكتلة المدمجة الجديدة مع بقية العناصر
-                            continue 
-                        }
-                        j++
+            // 3. حلقة الدمج مع إعادة الضبط للبداية (The Reset Logic)
+            var i = 0
+            while (i < result.size) {
+                var j = i + 1
+                var mergedInThisRound = false
+                
+                while (j < result.size) {
+                    if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
+                        // تنفيذ الدمج
+                        result[i] = performMerge(result[i], result[j], isWebtoon)
+                        // حذف العنصر المدمج
+                        result.removeAt(j)
+                        
+                        // --- التعديل الجوهري هنا ---
+                        // بمجرد نجاح الدمج، نعود للمؤشر 0 لنفحص الكتلة الجديدة مع الكل
+                        i = 0 
+                        mergedInThisRound = true
+                        break // اخرج من حلقة j لتبدأ من i=0 مجدداً
                     }
+                    j++
+                }
+                
+                // إذا لم يحدث دمج للكتلة الحالية مع أي كتلة أخرى، ننتقل للكتلة التالية
+                if (!mergedInThisRound) {
                     i++
                 }
             }
@@ -56,48 +60,36 @@ class PageTranslationHelper {
             xThreshold: Float,
             yThresholdFactor: Float
         ): Boolean {
-            // توسيع نطاق الزاوية لاستيعاب النصوص المائلة (مثل المؤثرات الصوتية)
             val angleDiff = abs(r1.angle - r2.angle)
             val angleSimilar = angleDiff < 15 || abs(angleDiff - 180) < 15
             if (!angleSimilar) return false
 
             val isVertical = abs(r1.angle) in 70.0..110.0
-
             val r1Right = r1.x + r1.width
             val r2Right = r2.x + r2.width
             val r1Bottom = r1.y + r1.height
             val r2Bottom = r2.y + r2.height
 
-            // صمام أمان: استخدام قيمة دنيا لـ symWidth/Height لمنع فشل الحسابات في حال أخطأ الـ OCR
             val sW = maxOf(r1.symWidth, r2.symWidth, 12f)
             val sH = maxOf(r1.symHeight, r2.symHeight, 12f)
 
             return if (isVertical) {
-                /* منطق المانجا العمودية - حل مشكلة الكتل التي أرسلتها */
-
                 val dx = abs(r1.x - r2.x)
                 val dy = abs(r1.y - r2.y)
                 
-                // أ- فحص "منطقة الانطلاق": إذا كانت الرؤوس العلوية قريبة جداً أفقياً ورأسياً
                 val isOriginsClose = dy < (sH * 2.2f) && dx < (sW * 4.5f)
-
-                // ب- فحص "التماس الجانبي": نهاية كتلة مع بداية أخرى (x+width و x)
                 val sideGap = if (r1.x < r2.x) abs(r2.x - r1Right) else abs(r1.x - r2Right)
                 val isSideBySide = sideGap < (sW * 2.5f) && dy < (sH * 2.2f)
 
-                // ج- فحص التداخل الرأسي المرن (حتى لو كانت الأطوال مختلفة تماماً)
                 val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
-                val alignedVertically = vOverlap > (sH * 0.15f) // يكفي تداخل بسيط جداً
+                val alignedVertically = vOverlap > (sH * 0.15f)
                 val hGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
                 val closeHorizontally = hGap < (sW * 2.2f)
 
                 isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
-
             } else {
-                /* منطق الأسطر الأفقية */
                 val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
                 val closeVertically = verticalGap <= sH * (yThresholdFactor * 0.9f)
-                
                 val hOverlap = minOf(r1Right, r2Right) - maxOf(r1.x, r2.x)
                 val dx = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
                 
@@ -122,13 +114,11 @@ class PageTranslationHelper {
 
             val isVertical = abs(a.angle) in 70.0..110.0
             if (isVertical) {
-                // زيادة العرض 30% مع الحفاظ على توازن الفقاعة
-                val expansion = finalWidth * 0.30f
+                val expansion = finalWidth * 0.50f
                 finalWidth += expansion
                 finalX -= expansion / 2f 
             }
 
-            // ترتيب الكتل (من اليمين لليسار في العمودي)
             val blocksOrdered = if (isVertical) {
                 if (a.x > b.x) listOf(a, b) else listOf(b, a)
             } else {
