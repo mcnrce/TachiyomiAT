@@ -75,28 +75,25 @@ class PageTranslationHelper {
             val avgSymHeight = (r1.symHeight + r2.symHeight) / 2f
 
             return if (isVertical) {
-                /* منطق المانجا العمودية المطور بناءً على اقتراحك */
+                /* منطق المانجا العمودية المحسن بناءً على بيانات المستخدم */
+                
+                val xDist = abs(r1.x - r2.x)
+                val yDist = abs(r1.y - r2.y)
+                
+                // 1. فحص قرب نقطة الأصل (Top-Left) مع رفع السماحية لـ 2.0f
+                val isOriginsClose = yDist < (avgSymHeight * 2.0f) && xDist < (avgSymWidth * 4.0f)
 
-                // 1. فحص تقارب نقطة الأصل (Top-Left) مع نقطة الأصل (Top-Left)
-                val distOriginToOriginX = abs(r1.x - r2.x)
-                val distOriginToOriginY = abs(r1.y - r2.y)
-                val isOriginsClose = distOriginToOriginY < (avgSymHeight * 1.2f) && distOriginToOriginX < (avgSymWidth * 3.0f)
+                // 2. فحص تقارب (x + width) لكتلة مع (x) للأخرى (الدمج المتسلسل)
+                val distRightToLeftX = if (r1.x < r2.x) abs(r1Right - r2.x) else abs(r2Right - r1.x)
+                val isEndToStartClose = yDist < (avgSymHeight * 2.0f) && distRightToLeftX < (avgSymWidth * 2.5f)
 
-                // 2. شرطك المحدد: فحص تقارب (x + width, y) للكتلة الأولى مع (x, y) للكتلة الثانية
-                // هذا يفحص إذا كان العمود الثاني يبدأ تقريباً من حيث ينتهي العمود الأول أفقياً
-                val distRightToLeftX = abs(r1Right - r2.x)
-                val distRightToLeftY = abs(r1.y - r2.y)
-                val isEndToStartClose = distRightToLeftY < (avgSymHeight * 1.2f) && distRightToLeftX < (avgSymWidth * 2.0f)
-
-                // 3. المنطق التقليدي للفجوات كاحتياط
+                // 3. المنطق الكلاسيكي للفجوات مع تقليل شرط التداخل الرأسي (0.2f)
                 val hGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
-                val closeHorizontally = hGap < avgSymWidth * 1.8f
+                val closeHorizontally = hGap < avgSymWidth * 2.0f
                 val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
-                val alignedVertically = vOverlap > avgSymHeight * 0.5f
+                val alignedVertically = vOverlap > (avgSymHeight * 0.2f) 
 
-                // دمج إذا تحقق أي من شروط تقارب الزوايا المباشر OR المنطق الكلاسيكي
                 isOriginsClose || isEndToStartClose || (closeHorizontally && alignedVertically)
-
             } else {
                 /* منطق الأسطر الأفقية */
                 val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
@@ -121,7 +118,16 @@ class PageTranslationHelper {
             val maxX = maxOf(a.x + a.width, b.x + b.width)
             val maxY = maxOf(a.y + a.height, b.y + b.height)
 
+            var finalWidth = maxX - minX
+            var finalX = minX
+
+            // زيادة العرض بنسبة 30% فقط للنصوص العمودية (المانجا)
             val isVertical = abs(a.angle) in 75.0..105.0
+            if (isVertical) {
+                val expansion = finalWidth * 0.30f
+                finalWidth += expansion
+                finalX -= expansion / 2f // التوسيع من المركز للحفاظ على التوازن
+            }
 
             val blocksOrdered = if (isVertical) {
                 if (a.x > b.x) listOf(a, b) else listOf(b, a)
@@ -142,9 +148,9 @@ class PageTranslationHelper {
             return TranslationBlock(
                 text = blocksOrdered.joinToString(" ") { it.text.trim() },
                 translation = blocksOrdered.joinToString(" ") { it.translation.trim() }.trim(),
-                width = maxX - minX,
+                width = finalWidth,
                 height = maxY - minY,
-                x = minX,
+                x = finalX,
                 y = minY,
                 angle = if (lenA >= lenB) a.angle else b.angle,
                 symWidth = (a.symWidth * lenA + b.symWidth * lenB) / totalLen,
