@@ -64,7 +64,6 @@ class PageTranslationHelper {
             val angleSimilar = angleDiff < 8 || abs(angleDiff - 180) < 8
             if (!angleSimilar) return false
 
-            // هل النص عمودي (ياباني أصلي)؟
             val isVertical = abs(r1.angle) in 75.0..105.0
 
             val r1Right = r1.x + r1.width
@@ -76,20 +75,30 @@ class PageTranslationHelper {
             val avgSymHeight = (r1.symHeight + r2.symHeight) / 2f
 
             return if (isVertical) {
-                /* منطق المانجا العمودية: الأعمدة تترتب بجانب بعضها أفقياً.
-                   1. الفجوة الأفقية بين الأعمدة يجب أن تكون صغيرة.
-                   2. يجب أن يكون هناك تداخل رأسي كبير (الأعمدة محاذية لبعضها).
-                */
+                /* منطق المانجا العمودية المطور بناءً على اقتراحك */
+
+                // 1. فحص تقارب نقطة الأصل (Top-Left) مع نقطة الأصل (Top-Left)
+                val distOriginToOriginX = abs(r1.x - r2.x)
+                val distOriginToOriginY = abs(r1.y - r2.y)
+                val isOriginsClose = distOriginToOriginY < (avgSymHeight * 1.2f) && distOriginToOriginX < (avgSymWidth * 3.0f)
+
+                // 2. شرطك المحدد: فحص تقارب (x + width, y) للكتلة الأولى مع (x, y) للكتلة الثانية
+                // هذا يفحص إذا كان العمود الثاني يبدأ تقريباً من حيث ينتهي العمود الأول أفقياً
+                val distRightToLeftX = abs(r1Right - r2.x)
+                val distRightToLeftY = abs(r1.y - r2.y)
+                val isEndToStartClose = distRightToLeftY < (avgSymHeight * 1.2f) && distRightToLeftX < (avgSymWidth * 2.0f)
+
+                // 3. المنطق التقليدي للفجوات كاحتياط
                 val hGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
-                val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
-                
                 val closeHorizontally = hGap < avgSymWidth * 1.8f
+                val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
                 val alignedVertically = vOverlap > avgSymHeight * 0.5f
-                
-                closeHorizontally && alignedVertically
+
+                // دمج إذا تحقق أي من شروط تقارب الزوايا المباشر OR المنطق الكلاسيكي
+                isOriginsClose || isEndToStartClose || (closeHorizontally && alignedVertically)
+
             } else {
-                /* منطق الأسطر الأفقية: الأسطر فوق بعضها.
-                */
+                /* منطق الأسطر الأفقية */
                 val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
                 val closeVertically = verticalGap <= avgSymHeight * (yThresholdFactor * 0.8f)
                 
@@ -114,9 +123,7 @@ class PageTranslationHelper {
 
             val isVertical = abs(a.angle) in 75.0..105.0
 
-            // ترتيب النصوص للدمج
             val blocksOrdered = if (isVertical) {
-                // في المانجا اليابانية، نقرأ من اليمين لليسار
                 if (a.x > b.x) listOf(a, b) else listOf(b, a)
             } else {
                 val isVerticalSplit = abs(a.y - b.y) > maxOf(a.symHeight, b.symHeight) * 0.5f
