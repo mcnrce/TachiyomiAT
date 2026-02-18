@@ -15,40 +15,36 @@ class PageTranslationHelper {
 
             if (blocks.isEmpty()) return mutableListOf()
 
-            val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
+            // 1. تنظيف أولي سريع (بدون تصفية عدوانية قد تحذف الكتل المتقاربة)
+            val initialBlocks = blocks.filter { it.text.isNotBlank() }.toMutableList()
 
-            val filteredBlocks = blocks.onEach { block ->
-                val cleanText = block.text.trim()
-                val isLink = NOISE_REGEX.matches(cleanText)
-                if (isLink || block.width <= 2 || block.height <= 2) {
-                    block.translation = ""
-                }
-            }.filter { it.text.isNotBlank() }
-
-            val sortedBlocks = if (isWebtoon) {
-                filteredBlocks.sortedWith(compareBy<TranslationBlock> { it.y }.thenBy { it.x })
-            } else {
-                filteredBlocks.sortedWith(compareBy<TranslationBlock> { it.y }.thenByDescending { it.x })
-            }
-
-            var result = sortedBlocks.toMutableList()
-
+            // 2. ضبط عتبات المسافات بناءً على حجم الصورة
             val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
             val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
+            val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
-            var i = 0
-            outer@ while (i < result.size) {
-                var j = i + 1
-                while (j < result.size) {
-                    if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
-                        result[i] = performMerge(result[i], result[j], isWebtoon)
-                        result.removeAt(j)
-                        i = 0
-                        continue@outer
+            var result = initialBlocks
+            var changed = true
+
+            // 3. حلقة الدمج الشاملة: تستمر في العمل طالما يوجد كتل يمكن دمجها
+            // هذا يحل مشكلة الكتل التي لا تندمج بسبب ترتيبها في المصفوفة
+            while (changed) {
+                changed = false
+                var i = 0
+                while (i < result.size) {
+                    var j = i + 1
+                    while (j < result.size) {
+                        if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
+                            result[i] = performMerge(result[i], result[j], isWebtoon)
+                            result.removeAt(j)
+                            changed = true
+                            // نستمر في فحص الكتلة المدمجة الجديدة مع بقية العناصر
+                            continue 
+                        }
+                        j++
                     }
-                    j++
+                    i++
                 }
-                i++
             }
 
             return result
@@ -60,54 +56,57 @@ class PageTranslationHelper {
             xThreshold: Float,
             yThresholdFactor: Float
         ): Boolean {
+            // توسيع نطاق الزاوية لاستيعاب النصوص المائلة (مثل المؤثرات الصوتية)
             val angleDiff = abs(r1.angle - r2.angle)
-            val angleSimilar = angleDiff < 8 || abs(angleDiff - 180) < 8
+            val angleSimilar = angleDiff < 15 || abs(angleDiff - 180) < 15
             if (!angleSimilar) return false
 
-            val isVertical = abs(r1.angle) in 75.0..105.0
+            val isVertical = abs(r1.angle) in 70.0..110.0
 
             val r1Right = r1.x + r1.width
             val r2Right = r2.x + r2.width
             val r1Bottom = r1.y + r1.height
             val r2Bottom = r2.y + r2.height
 
-            val avgSymWidth = (r1.symWidth + r2.symWidth) / 2f
-            val avgSymHeight = (r1.symHeight + r2.symHeight) / 2f
+            // صمام أمان: استخدام قيمة دنيا لـ symWidth/Height لمنع فشل الحسابات في حال أخطأ الـ OCR
+            val sW = maxOf(r1.symWidth, r2.symWidth, 12f)
+            val sH = maxOf(r1.symHeight, r2.symHeight, 12f)
 
             return if (isVertical) {
-                /* منطق المانجا العمودية المحسن بناءً على بيانات المستخدم */
-                
-                val xDist = abs(r1.x - r2.x)
-                val yDist = abs(r1.y - r2.y)
-                
-                // 1. فحص قرب نقطة الأصل (Top-Left) مع رفع السماحية لـ 2.0f
-                val isOriginsClose = yDist < (avgSymHeight * 2.0f) && xDist < (avgSymWidth * 4.0f)
+                /* منطق المانجا العمودية - حل مشكلة الكتل التي أرسلتها */
 
-                // 2. فحص تقارب (x + width) لكتلة مع (x) للأخرى (الدمج المتسلسل)
-                val distRightToLeftX = if (r1.x < r2.x) abs(r1Right - r2.x) else abs(r2Right - r1.x)
-                val isEndToStartClose = yDist < (avgSymHeight * 2.0f) && distRightToLeftX < (avgSymWidth * 2.5f)
+                val dx = abs(r1.x - r2.x)
+                val dy = abs(r1.y - r2.y)
+                
+                // أ- فحص "منطقة الانطلاق": إذا كانت الرؤوس العلوية قريبة جداً أفقياً ورأسياً
+                val isOriginsClose = dy < (sH * 2.2f) && dx < (sW * 4.5f)
 
-                // 3. المنطق الكلاسيكي للفجوات مع تقليل شرط التداخل الرأسي (0.2f)
-                val hGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
-                val closeHorizontally = hGap < avgSymWidth * 2.0f
+                // ب- فحص "التماس الجانبي": نهاية كتلة مع بداية أخرى (x+width و x)
+                val sideGap = if (r1.x < r2.x) abs(r2.x - r1Right) else abs(r1.x - r2Right)
+                val isSideBySide = sideGap < (sW * 2.5f) && dy < (sH * 2.2f)
+
+                // ج- فحص التداخل الرأسي المرن (حتى لو كانت الأطوال مختلفة تماماً)
                 val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
-                val alignedVertically = vOverlap > (avgSymHeight * 0.2f) 
+                val alignedVertically = vOverlap > (sH * 0.15f) // يكفي تداخل بسيط جداً
+                val hGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
+                val closeHorizontally = hGap < (sW * 2.2f)
 
-                isOriginsClose || isEndToStartClose || (closeHorizontally && alignedVertically)
+                isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
+
             } else {
                 /* منطق الأسطر الأفقية */
                 val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
-                val closeVertically = verticalGap <= avgSymHeight * (yThresholdFactor * 0.8f)
+                val closeVertically = verticalGap <= sH * (yThresholdFactor * 0.9f)
                 
                 val hOverlap = minOf(r1Right, r2Right) - maxOf(r1.x, r2.x)
-                val closeHorizontally = if (hOverlap > avgSymWidth * 0.5f) {
-                    val centerDiff = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
-                    centerDiff < avgSymWidth * xThreshold
+                val dx = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
+                
+                val closeHorizontally = if (hOverlap > sW * 0.5f) {
+                    dx < sW * xThreshold
                 } else {
                     val hGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
-                    hGap < avgSymWidth * 1.5f 
+                    hGap < sW * 2.0f 
                 }
-                
                 closeVertically && closeHorizontally
             }
         }
@@ -121,14 +120,15 @@ class PageTranslationHelper {
             var finalWidth = maxX - minX
             var finalX = minX
 
-            // زيادة العرض بنسبة 30% فقط للنصوص العمودية (المانجا)
-            val isVertical = abs(a.angle) in 75.0..105.0
+            val isVertical = abs(a.angle) in 70.0..110.0
             if (isVertical) {
+                // زيادة العرض 30% مع الحفاظ على توازن الفقاعة
                 val expansion = finalWidth * 0.30f
                 finalWidth += expansion
-                finalX -= expansion / 2f // التوسيع من المركز للحفاظ على التوازن
+                finalX -= expansion / 2f 
             }
 
+            // ترتيب الكتل (من اليمين لليسار في العمودي)
             val blocksOrdered = if (isVertical) {
                 if (a.x > b.x) listOf(a, b) else listOf(b, a)
             } else {
