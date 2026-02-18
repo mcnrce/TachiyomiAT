@@ -98,12 +98,17 @@ class GeminiTranslator(
                         val translated = arr?.optString(index, "__NULL__")
 
                         block.translation = when {
-                            block.angle < -15.0f || block.angle > 15.0f -> ""
-                            translated == null -> block.text
-                            translated == "__NULL__" -> block.text
-                            translated == "RTMTH" -> ""
-                            else -> translated
-                        }
+    // النطاق الأول: النصوص الأفقية (من -15 إلى 15)
+    // النطاق الثاني: النصوص العمودية (من 70 إلى 110)
+    !((block.angle >= -15.0f && block.angle <= 15.0f) || 
+      (block.angle >= 70.0f && block.angle <= 110.0f)) -> ""
+    
+    translated == null -> block.text
+    translated == "__NULL__" -> block.text
+    translated == "RTMTH" -> ""
+    else -> translated
+}
+
                     }
                 }
 
