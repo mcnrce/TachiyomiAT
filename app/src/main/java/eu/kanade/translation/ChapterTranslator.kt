@@ -285,8 +285,8 @@ class ChapterTranslator(
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
-    // تنظيف الكتل الفارغة
-    val result = blocks.filter { it.text.isNotBlank() }.toMutableList()
+    // 1. تنظيف الكتل الفارغة
+    val initialBlocks = blocks.filter { it.text.isNotBlank() }.toMutableList()
     
     // حساب عتبات الدمج بناءً على أبعاد الصورة
     val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
@@ -295,13 +295,13 @@ class ChapterTranslator(
 
     // --- المرحلة الأولى: دمج الكتل المتقاربة ---
     var i = 0
-    while (i < result.size) {
+    while (i < initialBlocks.size) {
         var j = i + 1
         var merged = false
-        while (j < result.size) {
-            if (shouldMergeTextBlock(result[i], result[j], xThreshold, yThresholdFactor)) {
-                result[i] = mergeTextBlock(result[i], result[j], isWebtoon)
-                result.removeAt(j)
+        while (j < initialBlocks.size) {
+            if (shouldMergeTextBlock(initialBlocks[i], initialBlocks[j], xThreshold, yThresholdFactor)) {
+                initialBlocks[i] = mergeTextBlock(initialBlocks[i], initialBlocks[j], isWebtoon)
+                initialBlocks.removeAt(j)
                 i = 0 
                 merged = true
                 break 
@@ -311,30 +311,26 @@ class ChapterTranslator(
         if (!merged) i++
     }
 
-    // --- المرحلة الثانية: إعادة بناء النصوص وتوسيع الفقاعات ميكانيكياً ---
-    val minSafeHeight = 35f // صمام الأمان لحجم الخط (بكسل)
+    // --- المرحلة الثانية: التحرير والتوسيع لضمان المقروئية ---
+    val minSafeHeight = 35f // الحد الأدنى المريح لبكسلات الخط
 
-    val finalResult = result.map { block ->
-        // 1. تحرير النص (Unwrapping): إزالة فواصل الأسطر القديمة لجعل النص "انسيابياً"
+    val expandedBlocks = initialBlocks.map { block ->
+        // تحرير النص من فواصل الأسطر القديمة لضمان انسيابية النص المترجم
         val cleanedText = block.text.replace("\n", " ").replace("\\s+".toRegex(), " ").trim()
         val cleanedTranslation = block.translation?.replace("\n", " ")?.replace("\\s+".toRegex(), " ")?.trim() ?: ""
 
         if (block.symHeight < minSafeHeight) {
             val scaleRatio = minSafeHeight / block.symHeight
-            
-            // 2. حساب المساحة الكلية الجديدة المطلوبة (Area-based Scaling)
             val totalArea = (block.width * block.height) * (scaleRatio * scaleRatio)
             
-            // 3. استراتيجية "التربيع الأفقي": النص العربي يفضل العرض أكثر من الطول النحيف
-            // سنعتمد نسبة عرض إلى طول 1.3:1 بدلاً من نسب المانجا العمودية
+            // استراتيجية التربيع الأفقي (مناسبة للعربية)
             val newWidth = kotlin.math.sqrt(totalArea * 1.3f).toFloat()
             val newHeight = (totalArea / newWidth).toFloat()
             
-            // 4. التمركز (Centering): التوسع من المركز للحفاظ على موقع الفقاعة الأصلي
             var newX = block.x - (newWidth - block.width) / 2
             var newY = block.y - (newHeight - block.height) / 2
             
-            // 5. حماية الحدود (Boundary Check): منع الفقاعة من الخروج خارج إطار الصورة
+            // حماية حدود الصورة الأصلية
             if (newX < 0) newX = 0f
             if (newX + newWidth > imgWidth) newX = imgWidth - newWidth
             if (newY < 0) newY = 0f
@@ -347,20 +343,61 @@ class ChapterTranslator(
                 height = newHeight,
                 x = newX,
                 y = newY,
-                symHeight = minSafeHeight, // خداع نظام الرسم بالحجم الجديد
+                symHeight = minSafeHeight,
                 symWidth = block.symWidth * scaleRatio
             )
         } else {
-            // حتى لو الحجم جيد، نحرر النص من الـ \n لضمان مرونة الـ Compose في الرسم
-            block.copy(
-                text = cleanedText,
-                translation = cleanedTranslation
-            )
+            block.copy(text = cleanedText, translation = cleanedTranslation)
         }
     }.toMutableList()
 
-    return finalResult
+    // --- المرحلة الثالثة: حل التصادم (Collision Resolution) ---
+    // مقارنة كل فقاعة مع جيرانها ومنع التداخل
+    for (idx in 0 until expandedBlocks.size) {
+        for (jdx in idx + 1 until expandedBlocks.size) {
+            val a = expandedBlocks[idx]
+            val b = expandedBlocks[jdx]
+            
+            if (isOverlapping(a, b)) {
+                // حساب مسافة التداخل في المحورين
+                val overlapX = minOf(a.x + a.width, b.x + b.width) - maxOf(a.x, b.x)
+                val overlapY = minOf(a.y + a.height, b.y + b.height) - maxOf(a.y, b.y)
+                
+                // حل التصادم بناءً على المحور الأقل تداخلاً (أقل ضرراً بالفقاعة)
+                if (overlapX < overlapY) {
+                    val shift = (overlapX / 2) + 2f // هامش أمان 2 بكسل
+                    if (a.x < b.x) {
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtLeast(10f))
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtLeast(10f), x = b.x + shift)
+                    } else {
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtLeast(10f), x = a.x + shift)
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtLeast(10f))
+                    }
+                } else {
+                    val shift = (overlapY / 2) + 2f
+                    if (a.y < b.y) {
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtLeast(10f))
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtLeast(10f), y = b.y + shift)
+                    } else {
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtLeast(10f), y = a.y + shift)
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtLeast(10f))
+                    }
+                }
+            }
+        }
+    }
+
+    return expandedBlocks
 }
+
+// دالة مساعدة لفحص التداخل بين كتل النصوص
+private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
+    return a.x < b.x + b.width &&
+           a.x + a.width > b.x &&
+           a.y < b.y + b.height &&
+           a.y + a.height > b.y
+}
+
 
 
 
