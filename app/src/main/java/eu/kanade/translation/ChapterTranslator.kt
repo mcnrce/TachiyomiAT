@@ -284,14 +284,13 @@ class ChapterTranslator(
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
-    // تنظيف الكتل الفارغة
     val result = blocks.filter { it.text.isNotBlank() }.toMutableList()
     
-    // حساب عتبات ذكية بناءً على حجم الصورة
     val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
     val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
     val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
+    // --- مرحلة الدمج (كما هي) ---
     var i = 0
     while (i < result.size) {
         var j = i + 1
@@ -300,7 +299,7 @@ class ChapterTranslator(
             if (shouldMergeTextBlock(result[i], result[j], xThreshold, yThresholdFactor)) {
                 result[i] = mergeTextBlock(result[i], result[j], isWebtoon)
                 result.removeAt(j)
-                i = 0 // العودة للصفر لضمان عدم ترك أي قطعة غير مدمجة
+                i = 0 
                 merged = true
                 break 
             }
@@ -308,8 +307,39 @@ class ChapterTranslator(
         }
         if (!merged) i++
     }
-    return result
+
+    // --- المرحلة الجديدة: تكبير البوكس لضمان سهولة القراءة ---
+    // هذه المرحلة تعالج مشكلة المثال الثاني الذي ذكرته (symHeight = 26)
+    val finalResult = result.map { block ->
+        val minSafeHeight = 35f // الحد الأدنى المريح لبكسلات الخط في الصورة
+        
+        if (block.symHeight < minSafeHeight) {
+            val scaleRatio = minSafeHeight / block.symHeight
+            
+            // نوسع أبعاد الفقاعة بناءً على النسبة المطلوبة للوصول للحجم المريح
+            val newWidth = block.width * scaleRatio
+            val newHeight = block.height * scaleRatio
+            
+            // تحديث الإحداثيات ليبقى النص في منتصف مكانه الأصلي
+            val newX = block.x - (newWidth - block.width) / 2
+            val newY = block.y - (newHeight - block.height) / 2
+            
+            block.copy(
+                width = newWidth,
+                height = newHeight,
+                x = newX,
+                y = newY,
+                symHeight = minSafeHeight, // نخدع كود الرسم بأن الحجم الأصلي كبير
+                symWidth = block.symWidth * scaleRatio
+            )
+        } else {
+            block
+        }
+    }.toMutableList()
+
+    return finalResult
 }
+
 
 
     private fun shouldMergeTextBlock(
