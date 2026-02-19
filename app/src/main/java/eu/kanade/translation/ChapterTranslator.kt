@@ -277,20 +277,23 @@ class ChapterTranslator(
 }
 
 
-    private fun smartMergeBlocks(
+    
+            private fun smartMergeBlocks(
     blocks: List<TranslationBlock>,
     imgWidth: Float,
     imgHeight: Float
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
+    // تنظيف الكتل الفارغة
     val result = blocks.filter { it.text.isNotBlank() }.toMutableList()
     
+    // حساب عتبات الدمج بناءً على أبعاد الصورة
     val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
     val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
     val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
-    // --- مرحلة الدمج (كما هي) ---
+    // --- المرحلة الأولى: دمج الكتل المتقاربة ---
     var i = 0
     while (i < result.size) {
         var j = i + 1
@@ -308,37 +311,57 @@ class ChapterTranslator(
         if (!merged) i++
     }
 
-    // --- المرحلة الجديدة: تكبير البوكس لضمان سهولة القراءة ---
-    // هذه المرحلة تعالج مشكلة المثال الثاني الذي ذكرته (symHeight = 26)
+    // --- المرحلة الثانية: إعادة بناء النصوص وتوسيع الفقاعات ميكانيكياً ---
+    val minSafeHeight = 35f // صمام الأمان لحجم الخط (بكسل)
+
     val finalResult = result.map { block ->
-        val minSafeHeight = 35f // الحد الأدنى المريح لبكسلات الخط في الصورة
-        
+        // 1. تحرير النص (Unwrapping): إزالة فواصل الأسطر القديمة لجعل النص "انسيابياً"
+        val cleanedText = block.text.replace("\n", " ").replace("\\s+".toRegex(), " ").trim()
+        val cleanedTranslation = block.translation?.replace("\n", " ")?.replace("\\s+".toRegex(), " ")?.trim() ?: ""
+
         if (block.symHeight < minSafeHeight) {
             val scaleRatio = minSafeHeight / block.symHeight
             
-            // نوسع أبعاد الفقاعة بناءً على النسبة المطلوبة للوصول للحجم المريح
-            val newWidth = block.width * scaleRatio
-            val newHeight = block.height * scaleRatio
+            // 2. حساب المساحة الكلية الجديدة المطلوبة (Area-based Scaling)
+            val totalArea = (block.width * block.height) * (scaleRatio * scaleRatio)
             
-            // تحديث الإحداثيات ليبقى النص في منتصف مكانه الأصلي
-            val newX = block.x - (newWidth - block.width) / 2
-            val newY = block.y - (newHeight - block.height) / 2
+            // 3. استراتيجية "التربيع الأفقي": النص العربي يفضل العرض أكثر من الطول النحيف
+            // سنعتمد نسبة عرض إلى طول 1.3:1 بدلاً من نسب المانجا العمودية
+            val newWidth = kotlin.math.sqrt(totalArea * 1.3f).toFloat()
+            val newHeight = (totalArea / newWidth).toFloat()
             
+            // 4. التمركز (Centering): التوسع من المركز للحفاظ على موقع الفقاعة الأصلي
+            var newX = block.x - (newWidth - block.width) / 2
+            var newY = block.y - (newHeight - block.height) / 2
+            
+            // 5. حماية الحدود (Boundary Check): منع الفقاعة من الخروج خارج إطار الصورة
+            if (newX < 0) newX = 0f
+            if (newX + newWidth > imgWidth) newX = imgWidth - newWidth
+            if (newY < 0) newY = 0f
+            if (newY + newHeight > imgHeight) newY = imgHeight - newHeight
+
             block.copy(
+                text = cleanedText,
+                translation = cleanedTranslation,
                 width = newWidth,
                 height = newHeight,
                 x = newX,
                 y = newY,
-                symHeight = minSafeHeight, // نخدع كود الرسم بأن الحجم الأصلي كبير
+                symHeight = minSafeHeight, // خداع نظام الرسم بالحجم الجديد
                 symWidth = block.symWidth * scaleRatio
             )
         } else {
-            block
+            // حتى لو الحجم جيد، نحرر النص من الـ \n لضمان مرونة الـ Compose في الرسم
+            block.copy(
+                text = cleanedText,
+                translation = cleanedTranslation
+            )
         }
     }.toMutableList()
 
     return finalResult
 }
+
 
 
 
