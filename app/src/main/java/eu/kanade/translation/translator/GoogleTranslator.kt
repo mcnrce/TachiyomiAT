@@ -18,14 +18,12 @@ class GoogleTranslator(
     private val client2 = "webapp"
     val okHttpClient = OkHttpClient()
 
-    // Regex لاكتشاف الروابط والمواقع بشكل ذكي (com, net, org, etc.)
     private val urlPattern = Regex("(?i)(https?://\\S+|www\\.\\S+|\\S+\\.(com|net|org|io|me|cc|tv|info))")
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
         pages.forEach { (_, page) ->
             if (page.blocks.isEmpty()) return@forEach
 
-            // 1️⃣ بناء النص الموحد مع تغليف كل سطر بأقواس واقية「 」
             val mergedText = buildString {
                 page.blocks.forEach { block ->
                     val isAcceptedAngle = (block.angle >= -15.0f && block.angle <= 15.0f) || 
@@ -35,9 +33,11 @@ class GoogleTranslator(
                     val isUrl = urlPattern.containsMatchIn(block.text)
 
                     if (isAcceptedAngle && !isUrl) {
-                        // إضافة الأقواس حول النص لإجبار المحرك على ترجمة المحتوى كحوار
-                        append("「 ${block.text.replace("\n", " ").trim()} 」")
-                        append("\n")
+                        // استخدام دوال نصية بسيطة بدلاً من Regex المعقد
+                        val cleanText = block.text.replace("\n", " ").trim()
+                        append("「 ")
+                        append(cleanText)
+                        append(" 」\n")
                     }
                 }
             }
@@ -47,7 +47,6 @@ class GoogleTranslator(
                 return@forEach
             }
 
-            // 2️⃣ إرسال النص المفلتر للترجمة
             val translatedMergedText = try {
                 translateText(toLang.code, mergedText)
             } catch (e: Exception) {
@@ -59,16 +58,17 @@ class GoogleTranslator(
                 return@forEach
             }
 
-            // 3️⃣ تقسيم النص المترجم وتنظيفه من الأقواس الواقية
-            val translatedLines = translatedMergedText.split("\n")
-                .map { 
-                    it.trim()
-                      .replace("「", "").replace("」", "")
-                      .replace("『", "").replace("』", "") // احتياطاً لبعض تنويعات جوجل
+            // استخدام تقسيم بسيط بناءً على سطر جديد فقط
+            val translatedLines = translatedMergedText.split('\n')
+                .map { line ->
+                    line.trim()
+                        .replace("「", "")
+                        .replace("」", "")
+                        .replace("『", "")
+                        .replace("』", "")
                 }
                 .filter { it.isNotEmpty() }
 
-            // 4️⃣ توزيع الترجمة مع ضمان المزامنة (Index Sync)
             var translationIndex = 0
             page.blocks.forEach { block ->
                 val isAcceptedAngle = (block.angle >= -15.0f && block.angle <= 15.0f) || 
@@ -121,6 +121,7 @@ class GoogleTranslator(
         }
     }
 
+    // --- الدوال الرياضية لحساب التوكن (لا تغيير فيها لضمان الاستقرار) ---
     private fun calculateToken(str: String): String {
         val list = mutableListOf<Int>()
         var i = 0
