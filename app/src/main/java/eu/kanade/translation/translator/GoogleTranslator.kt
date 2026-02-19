@@ -3,93 +3,84 @@ package eu.kanade.translation.translator
 import eu.kanade.tachiyomi.network.await
 import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
-import kotlinx.coroutines.delay
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import tachiyomi.core.common.util.system.logcat
+import java.io.UnsupportedEncodingException
 import java.net.URLEncoder
-import java.util.Random
 
 class GoogleTranslator(
     override val fromLang: TextRecognizerLanguage,
     override val toLang: TextTranslatorLanguage,
 ) : TextTranslator {
-    
     private val client1 = "gtx"
-    private val okHttpClient = OkHttpClient()
-    private val random = Random()
+    private val client2 = "webapp"
+    val okHttpClient = OkHttpClient()
 
-    // Regex لاكتشاف الروابط والمواقع
+    // Regex لاكتشاف الروابط والمواقع بشكل ذكي (com, net, org, etc.)
     private val urlPattern = Regex("(?i)(https?://\\S+|www\\.\\S+|\\S+\\.(com|net|org|io|me|cc|tv|info))")
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
         pages.forEach { (_, page) ->
             if (page.blocks.isEmpty()) return@forEach
 
-            page.blocks.forEachIndexed { index, block ->
-                
-                // 1) فحص الشروط: الزاوية والروابط
+            // 1️⃣ بناء النص الموحد مع تغليف كل سطر بأقواس واقية「 」
+            val mergedText = buildString {
+                page.blocks.forEach { block ->
+                    val isAcceptedAngle = (block.angle >= -15.0f && block.angle <= 15.0f) || 
+                                          (block.angle >= 75.0f && block.angle <= 105.0f) || 
+                                          (block.angle <= -75.0f && block.angle >= -105.0f)
+                    
+                    val isUrl = urlPattern.containsMatchIn(block.text)
+
+                    if (isAcceptedAngle && !isUrl) {
+                        // إضافة الأقواس حول النص لإجبار المحرك على ترجمة المحتوى كحوار
+                        append("「 ${block.text.replace("\n", " ").trim()} 」")
+                        append("\n")
+                    }
+                }
+            }
+
+            if (mergedText.isBlank()) {
+                page.blocks.forEach { it.translation = "" }
+                return@forEach
+            }
+
+            // 2️⃣ إرسال النص المفلتر للترجمة
+            val translatedMergedText = try {
+                translateText(toLang.code, mergedText)
+            } catch (e: Exception) {
+                ""
+            }
+
+            if (translatedMergedText.isBlank()) {
+                page.blocks.forEach { it.translation = "" }
+                return@forEach
+            }
+
+            // 3️⃣ تقسيم النص المترجم وتنظيفه من الأقواس الواقية
+            val translatedLines = translatedMergedText.split("\n")
+                .map { 
+                    it.trim()
+                      .replace("「", "").replace("」", "")
+                      .replace("『", "").replace("』", "") // احتياطاً لبعض تنويعات جوجل
+                }
+                .filter { it.isNotEmpty() }
+
+            // 4️⃣ توزيع الترجمة مع ضمان المزامنة (Index Sync)
+            var translationIndex = 0
+            page.blocks.forEach { block ->
                 val isAcceptedAngle = (block.angle >= -15.0f && block.angle <= 15.0f) || 
                                       (block.angle >= 75.0f && block.angle <= 105.0f) || 
                                       (block.angle <= -75.0f && block.angle >= -105.0f)
                 
                 val isUrl = urlPattern.containsMatchIn(block.text)
 
-                if (isAcceptedAngle && !isUrl) {
-                    try {
-                        // 2) حفظ هيكلية الأسطر الأصلية (نهج MLKit)
-                        val originalLines = block.text.split("\n")
-                        val originalWordCounts = originalLines.map { line ->
-                            line.split(Regex("\\s+")).filter { it.isNotEmpty() }.size
-                        }
-
-                        val fullText = block.text.replace("\n", " ").trim()
-                        if (fullText.isEmpty()) {
-                            block.translation = ""
-                            return@forEachIndexed
-                        }
-
-                        // 3) انتظار عشوائي ذكي (بين 200 و 500 مللي ثانية)
-                        // لمنع أنظمة الحماية من اكتشاف النمط الآلي
-                        if (index > 0) {
-                            val randomDelay = 200L + random.nextInt(300).toLong()
-                            delay(randomDelay)
-                        }
-
-                        // 4) إرسال الطلب لمحرك جوجل
-                        val translatedText = translateText(toLang.code, fullText)
-
-                        if (translatedText.isNotBlank()) {
-                            // 5) إعادة بناء الأسطر بناءً على توزيع الكلمات الأصلي (نهج MLKit)
-                            val words = translatedText.split(Regex("\\s+")).filter { it.isNotEmpty() }
-                            val rebuiltLines = mutableListOf<String>()
-                            var wordIndex = 0
-                            
-                            for (count in originalWordCounts) {
-                                if (wordIndex >= words.size) break
-                                val end = (wordIndex + count).coerceAtMost(words.size)
-                                rebuiltLines.add(words.subList(wordIndex, end).joinToString(" "))
-                                wordIndex = end
-                            }
-
-                            // دمج الكلمات المتبقية في السطر الأخير لضمان عدم ضياع أي كلمة
-                            if (wordIndex < words.size && rebuiltLines.isNotEmpty()) {
-                                val lastIdx = rebuiltLines.size - 1
-                                rebuiltLines[lastIdx] = (rebuiltLines[lastIdx] + " " + words.subList(wordIndex, words.size).joinToString(" ")).trim()
-                            }
-
-                            block.translation = rebuiltLines.joinToString("\n")
-                        } else {
-                            block.translation = ""
-                        }
-
-                    } catch (e: Exception) {
-                        logcat { "Google Translate Error in block $index: ${e.message}" }
-                        block.translation = ""
-                    }
+                if (isAcceptedAngle && !isUrl && translationIndex < translatedLines.size) {
+                    block.translation = translatedLines[translationIndex]
+                    translationIndex++
                 } else {
-                    // مسح الترجمة للمؤثرات المائلة أو الروابط
                     block.translation = ""
                 }
             }
@@ -97,13 +88,13 @@ class GoogleTranslator(
     }
 
     private suspend fun translateText(lang: String, text: String): String {
-        return try {
-            val url = getTranslateUrl(lang, text)
-            val request = Request.Builder().url(url).build()
-            val response = okHttpClient.newCall(request).await()
-            val body = response.body?.string() ?: return ""
+        val access = getTranslateUrl(lang, text)
+        val build: Request = Request.Builder().url(access).build()
+        val response = okHttpClient.newCall(build).await()
+        val string = response.body?.string() ?: return ""
 
-            val rootArray = JSONArray(body)
+        return try {
+            val rootArray = JSONArray(string)
             val sentencesArray = rootArray.getJSONArray(0)
             val result = StringBuilder()
 
@@ -115,22 +106,21 @@ class GoogleTranslator(
             }
             result.toString()
         } catch (e: Exception) {
-            logcat { "Parsing/Network Error: ${e.message}" }
+            logcat { "Google Translation Parsing Error: $e" }
             ""
         }
     }
 
     private fun getTranslateUrl(lang: String, text: String): String {
         return try {
-            val token = calculateToken(text)
-            val encodedText = URLEncoder.encode(text, "utf-8")
-            "https://translate.google.com/translate_a/single?client=$client1&sl=auto&tl=$lang&dt=t&tk=$token&q=$encodedText"
+            val calculateToken = calculateToken(text)
+            val encode: String = URLEncoder.encode(text, "utf-8")
+            "https://translate.google.com/translate_a/single?client=$client1&sl=auto&tl=$lang&dt=t&tk=$calculateToken&q=$encode"
         } catch (e: Exception) {
             "https://translate.google.com/translate_a/single?client=$client1&sl=auto&tl=$lang&dt=t&q=$text"
         }
     }
 
-    // --- توابع حساب الـ Token و الـ RL (خوارزمية جوجل الرسمية) ---
     private fun calculateToken(str: String): String {
         val list = mutableListOf<Int>()
         var i = 0
