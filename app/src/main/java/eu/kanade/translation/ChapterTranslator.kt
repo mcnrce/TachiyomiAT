@@ -252,79 +252,156 @@ class ChapterTranslator(
     }
 
     private fun convertToPageTranslation(blocks: List<Text.TextBlock>, width: Int, height: Int): PageTranslation {
-        val translation = PageTranslation(imgWidth = width.toFloat(), imgHeight = height.toFloat())
-        for (block in blocks) {
-            val bounds = block.boundingBox!!
-            val symBounds = block.lines.first().elements.first().symbols.first().boundingBox!!
-            translation.blocks.add(
-                TranslationBlock(
-                    text = block.text,
-                    width = bounds.width().toFloat(),
-                    height = bounds.height().toFloat(),
-                    symWidth = symBounds.width().toFloat(),
-                    symHeight = symBounds.height().toFloat(),
-                    angle = block.lines.first().angle,
-                    x = bounds.left.toFloat(),
-                    y = bounds.top.toFloat(),
-                ),
-            )
-        }
-        // Smart merge overlapping text blocks
-        translation.blocks = smartMergeBlocks(translation.blocks, 50, 30, 30)
-
-        return translation
-    }
-
-    private fun smartMergeBlocks(
-        blocks: List<TranslationBlock>,
-        widthThreshold: Int,
-        xThreshold: Int,
-        yThreshold: Int,
-    ): MutableList<TranslationBlock> {
-        if (blocks.isEmpty()) return mutableListOf()
-
-        val merged = mutableListOf<TranslationBlock>()
-        var current = blocks[0]
-        for (i in 1 until blocks.size) {
-            val next = blocks[i]
-            if (shouldMergeTextBlock(current, next, widthThreshold, xThreshold, yThreshold)) {
-                current = mergeTextBlock(current, next)
-            } else {
-                merged.add(current)
-                current = next
-            }
-        }
-        merged.add(current)
-        return merged
-    }
-
-    private fun shouldMergeTextBlock(
-        a: TranslationBlock,
-        b: TranslationBlock,
-        widthThreshold: Int,
-        xThreshold: Int,
-        yThreshold: Int,
-    ): Boolean {
-        val isWidthSimilar = (b.width < a.width) || (abs(a.width - b.width) < widthThreshold)
-        val isXClose = abs(a.x - b.x) < xThreshold
-        val isYClose = (b.y - (a.y + a.height)) < yThreshold
-        return isWidthSimilar && isXClose && isYClose
-    }
-
-    private fun mergeTextBlock(a: TranslationBlock, b: TranslationBlock): TranslationBlock {
-        val newX = kotlin.math.min(a.x, b.x)
-        val newY = a.y
-        val newWidth = kotlin.math.max(a.x + a.width, b.x + b.width) - newX
-        val newHeight = kotlin.math.max(a.y + a.height, b.y + b.height) - newY
-        return TranslationBlock(
-            a.text + " " + b.text,
-            a.translation + " " + b.translation,
-            newWidth,
-            newHeight,
-            newX, newY, a.symHeight,
-            a.symWidth, a.angle,
+    val translation = PageTranslation(imgWidth = width.toFloat(), imgHeight = height.toFloat())
+    for (block in blocks) {
+        val bounds = block.boundingBox!!
+        val symBounds = block.lines.first().elements.first().symbols.first().boundingBox!!
+        translation.blocks.add(
+            TranslationBlock(
+                text = block.text,
+                width = bounds.width().toFloat(),
+                height = bounds.height().toFloat(),
+                symWidth = symBounds.width().toFloat(),
+                symHeight = symBounds.height().toFloat(),
+                angle = block.lines.first().angle,
+                x = bounds.left.toFloat(),
+                y = bounds.top.toFloat(),
+            ),
         )
     }
+    
+    // التعديل هنا: نمرر عرض وطول الصورة بدلاً من أرقام ثابتة
+    translation.blocks = smartMergeBlocks(translation.blocks, width.toFloat(), height.toFloat())
+
+    return translation
+}
+
+
+    private fun smartMergeBlocks(
+    blocks: List<TranslationBlock>,
+    imgWidth: Float,
+    imgHeight: Float
+): MutableList<TranslationBlock> {
+    if (blocks.isEmpty()) return mutableListOf()
+
+    // تنظيف الكتل الفارغة
+    val result = blocks.filter { it.text.isNotBlank() }.toMutableList()
+    
+    // حساب عتبات ذكية بناءً على حجم الصورة
+    val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
+    val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
+    val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
+
+    var i = 0
+    while (i < result.size) {
+        var j = i + 1
+        var merged = false
+        while (j < result.size) {
+            if (shouldMergeTextBlock(result[i], result[j], xThreshold, yThresholdFactor)) {
+                result[i] = mergeTextBlock(result[i], result[j], isWebtoon)
+                result.removeAt(j)
+                i = 0 // العودة للصفر لضمان عدم ترك أي قطعة غير مدمجة
+                merged = true
+                break 
+            }
+            j++
+        }
+        if (!merged) i++
+    }
+    return result
+}
+
+
+    private fun shouldMergeTextBlock(
+    a: TranslationBlock,
+    b: TranslationBlock,
+    xThreshold: Float,
+    yThresholdFactor: Float
+): Boolean {
+    // فحص تقارب الزوايا
+    val angleDiff = abs(a.angle - b.angle)
+    if (!(angleDiff < 15 || abs(angleDiff - 180) < 15)) return false
+
+    val isVertical = abs(a.angle) in 70.0..110.0
+    
+    val aRight = a.x + a.width
+    val bRight = b.x + b.width
+    val aBottom = a.y + a.height
+    val bBottom = b.y + b.height
+
+    // استخدام حجم الرموز للحساب (أدق بكثير من البكسلات الثابتة)
+    val sW = maxOf(a.symWidth, b.symWidth, 12f)
+    val sH = maxOf(a.symHeight, b.symHeight, 12f)
+
+    val hGap = maxOf(0f, if (a.x < b.x) b.x - aRight else a.x - bRight)
+    val vGap = maxOf(0f, if (a.y < b.y) b.y - aBottom else a.y - bBottom)
+    val vOverlap = minOf(aBottom, bBottom) - maxOf(a.y, b.y)
+
+    return if (isVertical) {
+        // منطق دمج أعمدة المانجا
+        val dx = abs(a.x - b.x)
+        val dy = abs(a.y - b.y)
+        val originsClose = dy < (sH * 2.5f) && dx < (sW * 4.5f)
+        val sideBySide = hGap < (sW * 2.5f) && dy < (sH * 2.2f)
+        val aligned = vOverlap > (sH * 0.15f) && hGap < (sW * 2.2f)
+        
+        originsClose || sideBySide || aligned
+    } else {
+        // منطق دمج النصوص الأفقية (مانهوا/كوميكس)
+        val closeVertically = vGap <= sH * (yThresholdFactor * 0.9f)
+        val hOverlap = minOf(aRight, bRight) - maxOf(a.x, b.x)
+        val dxCenter = abs((a.x + a.width / 2f) - (b.x + b.width / 2f))
+        
+        val closeHorizontally = if (hOverlap > sW * 0.5f) dxCenter < sW * xThreshold else hGap < sW * 2.0f
+        
+        closeVertically && closeHorizontally
+    }
+}
+
+
+    private fun mergeTextBlock(a: TranslationBlock, b: TranslationBlock, isWebtoon: Boolean): TranslationBlock {
+    val minX = minOf(a.x, b.x)
+    val minY = minOf(a.y, b.y)
+    val maxX = maxOf(a.x + a.width, b.x + b.width)
+    val maxY = maxOf(a.y + a.height, b.y + b.height)
+
+    var finalWidth = maxX - minX
+    var finalX = minX
+    val isVertical = abs(a.angle) in 70.0..110.0
+
+    // توسيع العرض للترجمة العربية (30%)
+    if (isVertical) {
+        val expansion = finalWidth * 0.30f
+        finalWidth += expansion
+        finalX -= expansion / 2f 
+    }
+
+    // ترتيب النص (يمين ليسار للمانجا)
+    val ordered = if (isVertical) {
+        if (a.x > b.x) listOf(a, b) else listOf(b, a)
+    } else {
+        if (abs(a.y - b.y) > maxOf(a.symHeight, b.symHeight) * 0.5f) {
+            if (a.y < b.y) listOf(a, b) else listOf(b, a)
+        } else {
+            if (isWebtoon) (if (a.x < b.x) listOf(a, b) else listOf(b, a))
+            else (if (a.x > b.x) listOf(a, b) else listOf(b, a))
+        }
+    }
+
+    val totalLen = (a.text.length + b.text.length).coerceAtLeast(1)
+    return TranslationBlock(
+        text = ordered.joinToString(" ") { it.text.trim() },
+        translation = ordered.joinToString(" ") { it.translation.trim() }.trim(),
+        width = finalWidth,
+        height = maxY - minY,
+        x = finalX,
+        y = minY,
+        angle = if (a.text.length >= b.text.length) a.angle else b.angle,
+        symWidth = (a.symWidth * a.text.length + b.symWidth * b.text.length) / totalLen,
+        symHeight = (a.symHeight * a.text.length + b.symHeight * b.text.length) / totalLen
+    )
+}
+
 
     private fun getChapterPages(chapterPath: UniFile): List<Pair<String, () -> InputStream>> {
         if (chapterPath.isFile) {
