@@ -276,7 +276,6 @@ class ChapterTranslator(
     }
 
     private fun smartMergeBlocks(
-        private fun smartMergeBlocks(
         blocks: List<TranslationBlock>,
         widthThreshold: Int,
         xThreshold: Int,
@@ -284,112 +283,48 @@ class ChapterTranslator(
     ): MutableList<TranslationBlock> {
         if (blocks.isEmpty()) return mutableListOf()
 
-        val result = blocks.toMutableList()
-        var i = 0
-        while (i < result.size) {
-            var j = i + 1
-            var mergedInThisRound = false
-            
-            while (j < result.size) {
-                if (shouldMergeTextBlock(result[i], result[j], widthThreshold, xThreshold, yThreshold)) {
-                    // تنفيذ الدمج
-                    result[i] = mergeTextBlock(result[i], result[j])
-                    // حذف العنصر المدمج
-                    result.removeAt(j)
-                    
-                    // العودة للبداية لفحص الكتلة الجديدة مع الكل
-                    i = 0 
-                    mergedInThisRound = true
-                    break 
-                }
-                j++
+        val merged = mutableListOf<TranslationBlock>()
+        var current = blocks[0]
+        for (i in 1 until blocks.size) {
+            val next = blocks[i]
+            if (shouldMergeTextBlock(current, next, widthThreshold, xThreshold, yThreshold)) {
+                current = mergeTextBlock(current, next)
+            } else {
+                merged.add(current)
+                current = next
             }
-            if (!mergedInThisRound) i++
         }
-        return result
+        merged.add(current)
+        return merged
     }
 
-
-        private fun shouldMergeTextBlock(
+    private fun shouldMergeTextBlock(
         a: TranslationBlock,
         b: TranslationBlock,
         widthThreshold: Int,
-        xThreshold: Int, // سنستخدمه كمرجع للمسافات الأفقية
-        yThreshold: Int, // سنستخدمه كمرجع للمسافات الرأسية
+        xThreshold: Int,
+        yThreshold: Int,
     ): Boolean {
-        // فحص تقارب الزوايا (15 درجة تسامح)
-        val angleDiff = abs(a.angle - b.angle)
-        if (!(angleDiff < 15 || abs(angleDiff - 180) < 15)) return false
-
-        val isVertical = abs(a.angle) in 70.0..110.0
-        
-        // حساب الفجوات والتداخلات باستخدام القيمة المطلقة
-        val aRight = a.x + a.width
-        val bRight = b.x + b.width
-        val aBottom = a.y + a.height
-        val bBottom = b.y + b.height
-
-        val hGap = maxOf(0f, if (a.x < b.x) b.x - aRight else a.x - bRight)
-        val vGap = maxOf(0f, if (a.y < b.y) b.y - aBottom else a.y - bBottom)
-        val vOverlap = minOf(aBottom, bBottom) - maxOf(a.y, b.y)
-
-        return if (isVertical) {
-            // منطق المانجا (أعمدة عمودية بجانب بعضها)
-            // نستخدم xThreshold للتحكم في المسافة بين الأعمدة
-            val closeHorizontally = hGap < xThreshold.toFloat()
-            val alignedVertically = vOverlap > (maxOf(a.symHeight, b.symHeight) * 0.2f)
-            val originsClose = abs(a.y - b.y) < yThreshold.toFloat()
-
-            (closeHorizontally && alignedVertically) || (closeHorizontally && originsClose)
-        } else {
-            // منطق النصوص الأفقية (أسطر تحت بعضها)
-            val closeVertically = vGap < yThreshold.toFloat()
-            val hOverlap = minOf(aRight, bRight) - maxOf(a.x, b.x)
-            val alignedHorizontally = hOverlap > (maxOf(a.symWidth, b.symWidth) * -0.5f)
-
-            closeVertically && alignedHorizontally
-        }
+        val isWidthSimilar = (b.width < a.width) || (abs(a.width - b.width) < widthThreshold)
+        val isXClose = abs(a.x - b.x) < xThreshold
+        val isYClose = (b.y - (a.y + a.height)) < yThreshold
+        return isWidthSimilar && isXClose && isYClose
     }
 
-
-        private fun mergeTextBlock(a: TranslationBlock, b: TranslationBlock): TranslationBlock {
-        val minX = minOf(a.x, b.x)
-        val minY = minOf(a.y, b.y)
-        val maxX = maxOf(a.x + a.width, b.x + b.width)
-        val maxY = maxOf(a.y + a.height, b.y + b.height)
-        
-        var finalWidth = maxX - minX
-        var finalX = minX
-
-        val isVertical = abs(a.angle) in 70.0..110.0
-        
-        // توسيع العرض للعمودي (30%) ليناسب الترجمة العربية لاحقاً
-        if (isVertical) {
-            val expansion = finalWidth * 0.30f
-            finalWidth += expansion
-            finalX -= expansion / 2f
-        }
-
-        // ترتيب النصوص
-        val ordered = if (isVertical) {
-            if (a.x > b.x) listOf(a, b) else listOf(b, a) // من اليمين لليسار
-        } else {
-            if (a.y < b.y) listOf(a, b) else listOf(b, a) // من الأعلى للأسفل
-        }
-
+    private fun mergeTextBlock(a: TranslationBlock, b: TranslationBlock): TranslationBlock {
+        val newX = kotlin.math.min(a.x, b.x)
+        val newY = a.y
+        val newWidth = kotlin.math.max(a.x + a.width, b.x + b.width) - newX
+        val newHeight = kotlin.math.max(a.y + a.height, b.y + b.height) - newY
         return TranslationBlock(
-            text = ordered.joinToString(" ") { it.text.trim() },
-            translation = ordered.joinToString(" ") { it.translation.trim() }.trim(),
-            width = finalWidth,
-            height = maxY - minY,
-            x = finalX,
-            y = minY,
-            symHeight = (a.symHeight + b.symHeight) / 2f,
-            symWidth = (a.symWidth + b.symWidth) / 2f,
-            angle = if (a.text.length >= b.text.length) a.angle else b.angle
+            a.text + " " + b.text,
+            a.translation + " " + b.translation,
+            newWidth,
+            newHeight,
+            newX, newY, a.symHeight,
+            a.symWidth, a.angle,
         )
     }
-
 
     private fun getChapterPages(chapterPath: UniFile): List<Pair<String, () -> InputStream>> {
         if (chapterPath.isFile) {
