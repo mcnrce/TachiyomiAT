@@ -24,6 +24,7 @@ class GoogleTranslator(
         pages.forEach { (_, page) ->
             if (page.blocks.isEmpty()) return@forEach
 
+            // 1️⃣ بناء النص الموحد مع إضافة مفتاح السياق "Say: " لكل بلوك
             val mergedText = buildString {
                 page.blocks.forEach { block ->
                     val isAcceptedAngle = (block.angle >= -15.0f && block.angle <= 15.0f) || 
@@ -33,11 +34,10 @@ class GoogleTranslator(
                     val isUrl = urlPattern.containsMatchIn(block.text)
 
                     if (isAcceptedAngle && !isUrl) {
-                        // استخدام دوال نصية بسيطة بدلاً من Regex المعقد
-                        val cleanText = block.text.replace("\n", " ").trim()
-                        append("「 ")
-                        append(cleanText)
-                        append(" 」\n")
+                        // إضافة بادئة "Say: " لإجبار المحرك على ترجمة النص مهما كان قصيراً
+                        append("Say: ")
+                        append(block.text.replace("\n", " ").trim())
+                        append("\n")
                     }
                 }
             }
@@ -47,6 +47,7 @@ class GoogleTranslator(
                 return@forEach
             }
 
+            // 2️⃣ إرسال النص للترجمة
             val translatedMergedText = try {
                 translateText(toLang.code, mergedText)
             } catch (e: Exception) {
@@ -58,17 +59,21 @@ class GoogleTranslator(
                 return@forEach
             }
 
-            // استخدام تقسيم بسيط بناءً على سطر جديد فقط
-            val translatedLines = translatedMergedText.split('\n')
+            // 3️⃣ تقسيم النص المترجم وتنظيفه بناءً على أول ظهور لعلامة ":"
+            val translatedLines = translatedMergedText.split("\n")
                 .map { line ->
-                    line.trim()
-                        .replace("「", "")
-                        .replace("」", "")
-                        .replace("『", "")
-                        .replace("』", "")
+                    val firstColonPos = line.indexOf(':')
+                    if (firstColonPos != -1) {
+                        // حذف كل ما قبل أول نقطتين بما في ذلك النقطتين أنفسهم
+                        line.substring(firstColonPos + 1).trim()
+                    } else {
+                        // تنظيف احتياطي في حال غياب النقطتين
+                        line.replace("Say", "").replace("قل", "").trim()
+                    }
                 }
                 .filter { it.isNotEmpty() }
 
+            // 4️⃣ توزيع الترجمة على البلوكات الأصلية
             var translationIndex = 0
             page.blocks.forEach { block ->
                 val isAcceptedAngle = (block.angle >= -15.0f && block.angle <= 15.0f) || 
@@ -121,7 +126,6 @@ class GoogleTranslator(
         }
     }
 
-    // --- الدوال الرياضية لحساب التوكن (لا تغيير فيها لضمان الاستقرار) ---
     private fun calculateToken(str: String): String {
         val list = mutableListOf<Int>()
         var i = 0
