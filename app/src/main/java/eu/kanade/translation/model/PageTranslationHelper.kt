@@ -15,15 +15,15 @@ class PageTranslationHelper {
 
             if (blocks.isEmpty()) return mutableListOf()
 
-            // 1. تنظيف أولي
+            // 1. تنظيف أولي للكتل الفارغة
             val result = blocks.filter { it.text.isNotBlank() }.toMutableList()
 
-            // 2. ضبط العتبات
+            // 2. ضبط العتبات بناءً على حجم الصورة
             val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
             val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
             val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
-            // 3. حلقة الدمج مع إعادة الضبط للبداية (The Reset Logic)
+            // 3. حلقة الدمج الشاملة مع إعادة الضبط (Reset) لضمان فحص كل الروابط الممكنة
             var i = 0
             while (i < result.size) {
                 var j = i + 1
@@ -33,19 +33,17 @@ class PageTranslationHelper {
                     if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
                         // تنفيذ الدمج
                         result[i] = performMerge(result[i], result[j], isWebtoon)
-                        // حذف العنصر المدمج
+                        // حذف العنصر المدمج الثاني
                         result.removeAt(j)
                         
-                        // --- التعديل الجوهري هنا ---
-                        // بمجرد نجاح الدمج، نعود للمؤشر 0 لنفحص الكتلة الجديدة مع الكل
+                        // إعادة المؤشر للبداية لفحص الكتلة المدمجة الجديدة مع الجميع مجدداً
                         i = 0 
                         mergedInThisRound = true
-                        break // اخرج من حلقة j لتبدأ من i=0 مجدداً
+                        break 
                     }
                     j++
                 }
                 
-                // إذا لم يحدث دمج للكتلة الحالية مع أي كتلة أخرى، ننتقل للكتلة التالية
                 if (!mergedInThisRound) {
                     i++
                 }
@@ -60,11 +58,14 @@ class PageTranslationHelper {
             xThreshold: Float,
             yThresholdFactor: Float
         ): Boolean {
+            // توحيد الزوايا (حماية ضد فرق الزاوية البسيط)
             val angleDiff = abs(r1.angle - r2.angle)
             val angleSimilar = angleDiff < 15 || abs(angleDiff - 180) < 15
             if (!angleSimilar) return false
 
             val isVertical = abs(r1.angle) in 70.0..110.0
+            
+            // تعريف الحدود بدقة
             val r1Right = r1.x + r1.width
             val r2Right = r2.x + r2.width
             val r1Bottom = r1.y + r1.height
@@ -73,30 +74,40 @@ class PageTranslationHelper {
             val sW = maxOf(r1.symWidth, r2.symWidth, 12f)
             val sH = maxOf(r1.symHeight, r2.symHeight, 12f)
 
+            // حساب الفجوات (Gaps) مع حماية ضد القيم السالبة الناتجة عن التداخل
+            val hGap = maxOf(0f, if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right)
+            val vGap = maxOf(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
+            
+            // حساب التداخل (Overlap) - يكون موجباً فقط في حال وجود تقاطع فعلي
+            val hOverlap = minOf(r1Right, r2Right) - maxOf(r1.x, r2.x)
+            val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
+
             return if (isVertical) {
+                /* --- منطق الدمج العمودي (المانجا) المحصن --- */
+                
                 val dx = abs(r1.x - r2.x)
                 val dy = abs(r1.y - r2.y)
                 
-                val isOriginsClose = dy < (sH * 2.2f) && dx < (sW * 4.5f)
-                val sideGap = if (r1.x < r2.x) abs(r2.x - r1Right) else abs(r1.x - r2Right)
-                val isSideBySide = sideGap < (sW * 2.5f) && dy < (sH * 2.2f)
+                // أ- تقارب الأصول (Top-Left): دمج الأعمدة التي تبدأ من نفس المستوى تقريباً
+                val isOriginsClose = dy < (sH * 2.5f) && dx < (sW * 4.5f)
+                
+                // ب- التماس الجانبي: نهاية عمود مع بداية عمود آخر أفقياً
+                val isSideBySide = hGap < (sW * 2.5f) && dy < (sH * 2.2f)
 
-                val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
+                // ج- المحاذاة العمودية مع تقارب أفقي: (لدمج الأجزاء المقطوعة من نفس العمود)
                 val alignedVertically = vOverlap > (sH * 0.15f)
-                val hGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
                 val closeHorizontally = hGap < (sW * 2.2f)
 
                 isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
             } else {
-                val verticalGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
-                val closeVertically = verticalGap <= sH * (yThresholdFactor * 0.9f)
-                val hOverlap = minOf(r1Right, r2Right) - maxOf(r1.x, r2.x)
-                val dx = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
+                /* --- منطق الدمج الأفقي المحصن --- */
+                
+                val closeVertically = vGap <= sH * (yThresholdFactor * 0.9f)
+                val dxCenter = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
                 
                 val closeHorizontally = if (hOverlap > sW * 0.5f) {
-                    dx < sW * xThreshold
+                    dxCenter < sW * xThreshold
                 } else {
-                    val hGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
                     hGap < sW * 2.0f 
                 }
                 closeVertically && closeHorizontally
@@ -114,14 +125,18 @@ class PageTranslationHelper {
 
             val isVertical = abs(a.angle) in 70.0..110.0
             if (isVertical) {
-                val expansion = finalWidth * 0.30f
+                // زيادة العرض 30% وتوسيط الفقاعة المدمجة
+                val expansion = finalWidth * 0.50f
                 finalWidth += expansion
                 finalX -= expansion / 2f 
             }
 
+            // ترتيب الكتل للنص النهائي
             val blocksOrdered = if (isVertical) {
+                // في المانجا: من اليمين إلى اليسار
                 if (a.x > b.x) listOf(a, b) else listOf(b, a)
             } else {
+                // في الأفقي: من الأعلى للأسفل، ثم من اليسار لليمين
                 val isVerticalSplit = abs(a.y - b.y) > maxOf(a.symHeight, b.symHeight) * 0.5f
                 if (isVerticalSplit) {
                     if (a.y < b.y) listOf(a, b) else listOf(b, a)
