@@ -278,22 +278,24 @@ class ChapterTranslator(
 
 
     
-                 private fun smartMergeBlocks(
+           import kotlin.math.sqrt
+
+private fun smartMergeBlocks(
     blocks: List<TranslationBlock>,
     imgWidth: Float,
     imgHeight: Float
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
-    // 1. تنظيف الكتل
+    // 1. تنظيف الكتل الفارغة
     val initialBlocks = blocks.filter { it.text.isNotBlank() }.toMutableList()
     
-    // حساب عتبات الدمج
+    // حساب عتبات الدمج بناءً على أبعاد الصورة
     val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
     val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
     val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
-    // --- المرحلة الأولى: الدمج ---
+    // --- المرحلة الأولى: دمج الكتل المتقاربة ---
     var i = 0
     while (i < initialBlocks.size) {
         var j = i + 1
@@ -311,39 +313,37 @@ class ChapterTranslator(
         if (!merged) i++
     }
 
-    // --- المرحلة الثانية: التوسيع الذكي المعتمد على "مساحة النص" ---
-    // الهدف: توفير مساحة كافية للترجمة دون مبالغة في الـ Padding
-    val targetFontSize = 28f // حجم خط مثالي ومريح (أقل قليلاً لتجنب الضخامة)
-    val charAreaFactor = 0.7f // تقدير مساحة الحرف العربي بالنسبة للمربع
-    val MAX_ALLOWED_SCALE = 1.3f // سقف التوسع 30%
+    // --- المرحلة الثانية: التوسيع الذكي والمقيد (بناءً على مساحة النص) ---
+    val targetFontSize = 28f 
+    val charAreaFactor = 0.7f 
+    val MAX_ALLOWED_SCALE = 1.3f // سقف التوسع 130% من الحجم الأصلي
 
     val expandedBlocks = initialBlocks.map { block ->
         val cleanedText = block.text.replace("\n", " ").trim()
         val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
-        
-        // 1. حساب المساحة المطلوبة فعلياً للنص الجديد
+
+        // حساب المساحة المطلوبة للنص المترجم ليظهر بوضوح
         val translatedLen = cleanedTranslation.length.coerceAtLeast(1)
         val requiredArea = translatedLen * (targetFontSize * targetFontSize) * charAreaFactor
-        
-        // 2. مساحة البلوك الحالية
         val currentArea = (block.width * block.height).coerceAtLeast(1f)
         
-        // 3. نسبة العجز في المساحة
-        var scaleNeeded = kotlin.math.sqrt(requiredArea / currentArea).coerceAtLeast(1.0f)
+        // حساب نسبة التوسع المطلوبة للأبعاد (Scale Ratio)
+        // نأخذ الجذر التربيعي لأن المساحة تزيد بالتربيع
+        var scaleNeeded = sqrt((requiredArea / currentArea).toDouble()).toFloat().coerceAtLeast(1.0f)
         
-        // 4. القيد الصارم: لا نتجاوز 1.3 من المساحة (أي جذر 1.3 للأبعاد)
-        val maxDimScale = kotlin.math.sqrt(MAX_ALLOWED_SCALE) 
+        // تطبيق الحد الأقصى للتوسع (جذر 1.3 لضمان عدم تخطي المساحة الكلية 1.3)
+        val maxDimScale = sqrt(MAX_ALLOWED_SCALE.toDouble()).toFloat()
         if (scaleNeeded > maxDimScale) scaleNeeded = maxDimScale
 
-        // 5. التوسيع عند الحاجة فقط
-        if (scaleNeeded > 1.05f) { // لا نوسع إذا كانت الزيادة أقل من 5%
+        // التنفيذ إذا كان هناك حاجة فعلية للتكبير
+        if (scaleNeeded > 1.05f) {
             val newWidth = block.width * scaleNeeded
             val newHeight = block.height * scaleNeeded
             
-            var newX = block.x - (newWidth - block.width) / 2
-            var newY = block.y - (newHeight - block.height) / 2
+            var newX = block.x - (newWidth - block.width) / 2f
+            var newY = block.y - (newHeight - block.height) / 2f
             
-            // حماية الحدود
+            // حماية حدود الصورة
             if (newX < 0) newX = 0f
             if (newX + newWidth > imgWidth) newX = (imgWidth - newWidth).coerceAtLeast(0f)
             if (newY < 0) newY = 0f
@@ -356,8 +356,7 @@ class ChapterTranslator(
                 height = newHeight,
                 x = newX,
                 y = newY,
-                // تحديث symHeight و symWidth بشكل متوازن 
-                // لكي لا تنفجر خلفية التكست في PagerTranslationsView
+                // symHeight يؤثر على الـ Padding في العرض، لذا نقيده بـ targetFontSize
                 symHeight = (block.symHeight * scaleNeeded).coerceAtMost(targetFontSize),
                 symWidth = block.symWidth * scaleNeeded
             )
@@ -366,32 +365,34 @@ class ChapterTranslator(
         }
     }.toMutableList()
 
-    // --- المرحلة الثالثة: حل التصادم ---
-    // (نفس كود التصادم السابق دون تغيير لضمان عدم التداخل)
-    for (idx in 0 until expandedBlocks.size) {
+    // --- المرحلة الثالثة: حل التصادم (Collision Resolution) ---
+    for (idx in expandedBlocks.indices) {
         for (jdx in idx + 1 until expandedBlocks.size) {
             val a = expandedBlocks[idx]
             val b = expandedBlocks[jdx]
+            
             if (isOverlapping(a, b)) {
+                // حساب مسافة التداخل باستخدام دوال كوتلن القياسية
                 val overlapX = minOf(a.x + a.width, b.x + b.width) - maxOf(a.x, b.x)
                 val overlapY = minOf(a.y + a.height, b.y + b.height) - maxOf(a.y, b.y)
+                
                 if (overlapX < overlapY) {
-                    val shift = (overlapX / 2) + 1f
+                    val shift = (overlapX / 2f) + 1f // هامش أمان بسيط
                     if (a.x < b.x) {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtMost(a.width))
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtMost(b.width), x = b.x + shift)
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtLeast(10f))
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtLeast(10f), x = b.x + shift)
                     } else {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtMost(a.width), x = a.x + shift)
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtMost(b.width))
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtLeast(10f), x = a.x + shift)
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtLeast(10f))
                     }
                 } else {
-                    val shift = (overlapY / 2) + 1f
+                    val shift = (overlapY / 2f) + 1f
                     if (a.y < b.y) {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtMost(a.height))
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtMost(b.height), y = b.y + shift)
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtLeast(10f))
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtLeast(10f), y = b.y + shift)
                     } else {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtMost(a.height), y = a.y + shift)
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtMost(b.height))
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtLeast(10f), y = a.y + shift)
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtLeast(10f))
                     }
                 }
             }
@@ -400,7 +401,14 @@ class ChapterTranslator(
 
     return expandedBlocks
 }
-           
+
+private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
+    return a.x < b.x + b.width &&
+           a.x + a.width > b.x &&
+           a.y < b.y + b.height &&
+           a.y + a.height > b.y
+}
+
 
 
 
