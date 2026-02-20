@@ -285,13 +285,28 @@ private fun smartMergeBlocks(
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
-    val initialBlocks = blocks.filter { it.text.isNotBlank() }.toMutableList()
+    // 1. تنظيف أولي
+    val filteredBlocks = blocks.filter { it.text.isNotBlank() }
     
-    val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
-    val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
     val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
-    // المرحلة 1: الدمج
+    // 2. الترتيب قبل الدمج (هذا هو الجزء الناقص الذي ذكرته)
+    // لضمان أن الدمج يبدأ من الأعلى للأسفل، ومن اليمين لليسار (مانجا) أو العكس (ويب تون)
+    val sortedBlocks = if (isWebtoon) {
+        // ويب تون: من الأعلى للأسفل، ثم من اليسار لليمين
+        filteredBlocks.sortedWith(compareBy<TranslationBlock> { it.y }.thenBy { it.x })
+    } else {
+        // مانجا: من الأعلى للأسفل، ثم من اليمين لليسار
+        filteredBlocks.sortedWith(compareBy<TranslationBlock> { it.y }.thenByDescending { it.x })
+    }
+
+    var initialBlocks = sortedBlocks.toMutableList()
+    
+    // إعدادات العتبات
+    val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
+    val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
+
+    // المرحلة 1: الدمج (الآن ستعمل بترتيب صحيح)
     var i = 0
     while (i < initialBlocks.size) {
         var j = i + 1
@@ -308,6 +323,7 @@ private fun smartMergeBlocks(
         }
         if (!merged) i++
     }
+
 
     // المرحلة 2: التوسيع الموزون (بدون لمس symWidth/Height)
     val minSafeHeight = 25f 
