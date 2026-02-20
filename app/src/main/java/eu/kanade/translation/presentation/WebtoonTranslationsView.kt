@@ -65,23 +65,28 @@ class WebtoonTranslationsView :
 
     @Composable
     override fun Content() {
-        var size by remember { mutableStateOf(IntSize.Zero) }
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .onSizeChanged {
-                    size = it
-                    if (size == IntSize.Zero) {
-                        hide()
-                    } else {
-                        show()
-                    }
-                },
-        ) {
-            if (size == IntSize.Zero) return
-            val scaleFactor = size.width / translation.imgWidth
-            TextBlockBackground(scaleFactor)
-            TextBlockContent(scaleFactor)
+        // الـ key يضمن تحديث الواجهة بالكامل عند تغيير بيانات الصفحة (translation)
+        // ويحل مشكلة ظهور فقاعات الصفحات السابقة في وضع الويبتون
+        androidx.compose.runtime.key(translation) {
+            var size by remember { mutableStateOf(IntSize.Zero) }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onSizeChanged {
+                        size = it
+                        if (size == IntSize.Zero) {
+                            hide()
+                        } else {
+                            show()
+                        }
+                    },
+            ) {
+                if (size == IntSize.Zero || translation == PageTranslation.EMPTY) return@Box
+                
+                val scaleFactor = size.width.toFloat() / translation.imgWidth
+                TextBlockBackground(scaleFactor)
+                TextBlockContent(scaleFactor)
+            }
         }
     }
 
