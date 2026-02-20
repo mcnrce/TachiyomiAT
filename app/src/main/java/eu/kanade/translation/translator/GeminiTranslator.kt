@@ -10,6 +10,7 @@ import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
 import logcat.logcat
 import org.json.JSONObject
+import kotlinx.coroutines.delay
 
 @Suppress
 class GeminiTranslator(
@@ -54,79 +55,103 @@ class GeminiTranslator(
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
         try {
             val pageEntries = pages.entries.toList()
-            val batches = pageEntries.chunked(15)
+            var currentIndex = 0
+            
+            // الحدود الديناميكية للدفعة الواحدة
+            val MAX_WORDS_PER_BATCH = 500  // حد الكلمات (آمن جداً لجيميناي)
+            val MAX_PAGES_PER_BATCH = 40   // حد الصفحات الأقصى في الطلب الواحد
+            val MAX_BLOCKS_PER_BATCH = 100 // حد البلوكات الأقصى لضمان عدم الهلوسة
 
-            for ((batchIndex, batch) in batches.withIndex()) {
+            while (currentIndex < pageEntries.size) {
+                val currentBatch = mutableListOf<Map.Entry<String, PageTranslation>>()
+                var currentBatchWordCount = 0
+                var currentBatchBlockCount = 0
 
-                // 1) بناء JSON للدفعة الحالية
-                val batchData = batch.associate { (key, page) ->
+                // تجميع الصفحات بناءً على المحتوى وليس العدد الثابت
+                while (currentIndex < pageEntries.size && 
+                       currentBatch.size < MAX_PAGES_PER_BATCH && 
+                       currentBatchWordCount < MAX_WORDS_PER_BATCH &&
+                       currentBatchBlockCount < MAX_BLOCKS_PER_BATCH) {
+                    
+                    val entry = pageEntries[currentIndex]
+                    val pageText = entry.value.blocks.joinToString(" ") { it.text }
+                    val wordCount = pageText.split(Regex("\\s+")).size
+                    val blockCount = entry.value.blocks.size
+
+                    // إضافة الصفحة للدفعة وتحديث العدادات
+                    currentBatch.add(entry)
+                    currentBatchWordCount += wordCount
+                    currentBatchBlockCount += blockCount
+                    currentIndex++
+
+                    // إذا كانت الصفحة الواحدة تحتوي على نص ضخم جداً، توقف عندها وأرسل
+                    if (wordCount > MAX_WORDS_PER_BATCH) break
+                }
+
+                if (currentBatch.isEmpty()) break
+
+                // 1) بناء JSON للدفعة الديناميكية
+                val batchData = currentBatch.associate { (key, page) ->
                     key to page.blocks.map { it.text }
                 }
                 val inputJson = JSONObject(batchData)
 
                 // 2) إرسال الطلب
-                val response = model.generateContent(inputJson.toString())
-                val rawText = try {
-    response.text ?: ""
-} catch (e: Exception) {
-    ""
+                val response = try {
+                    model.generateContent(inputJson.toString())
+                } catch (e: Exception) {
+                    logcat { "Gemini API Call Error: ${e.message}" }
+                    null
                 }
 
-                // 3) استخراج JSON دفاعيًا
+                val rawText = response?.text ?: ""
+
+                // 3) استخراج وتدقيق JSON
                 val start = rawText.indexOf('{')
                 val end = rawText.lastIndexOf('}')
 
                 if (start == -1 || end == -1 || end <= start) {
-                    logcat { "Invalid JSON response in batch $batchIndex" }
+                    logcat { "Invalid JSON response from Gemini" }
                     continue
                 }
 
                 val jsonContent = rawText.substring(start, end + 1)
+                val resJson = try { JSONObject(jsonContent) } catch (e: Exception) { null }
 
-                val resJson = try {
-                    JSONObject(jsonContent)
-                } catch (e: Exception) {
-                    logcat { "JSON parse error in batch $batchIndex: ${e.message}" }
-                    continue
-                }
-
-                // 4) تطبيق الترجمة على الصفحات الأصلية
-                for ((key, page) in batch) {
-                    val arr = resJson.optJSONArray(key)
+                // 4) تطبيق الترجمة على البلوكات
+                for ((key, page) in currentBatch) {
+                    val arr = resJson?.optJSONArray(key)
 
                     page.blocks.forEachIndexed { index, block ->
                         val translated = arr?.optString(index, "__NULL__")
 
                         block.translation = when {
-    // 1. فلترة الزوايا: نقبل فقط ما هو قريب من الأفقي (0) أو العمودي (90 أو -90)
-    !(
-        (block.angle >= -15.0f && block.angle <= 15.0f) ||   // النصوص الأفقية (فقاعات الحوار العادية)
-        (block.angle >= 75.0f && block.angle <= 105.0f) ||  // النصوص العمودية (المانجا اليابانية)
-        (block.angle <= -75.0f && block.angle >= -105.0f)   // النصوص العمودية المقلوبة
-    ) -> ""
+                            // فلترة الزوايا
+                            !(
+                                (block.angle >= -15.0f && block.angle <= 15.0f) ||
+                                (block.angle >= 75.0f && block.angle <= 105.0f) ||
+                                (block.angle <= -75.0f && block.angle >= -105.0f)
+                            ) -> ""
 
-    // 2. معالجة النصوص المترجمة
-    translated == null || translated == "__NULL__" -> block.text
-    translated == "RTMTH" -> ""
-    else -> translated
-}
-
-
+                            // معالجة النصوص
+                            translated == null || translated == "__NULL__" -> block.text
+                            translated == "RTMTH" -> ""
+                            else -> translated
+                        }
                     }
                 }
 
-                // 5) انتظار 1 ثانية قبل الدفعة التالية
-                if (batchIndex < batches.lastIndex) {
-                    Thread.sleep(1000)
+                // 5) انتظار قصير (800ms) لضمان عدم تجاوز حدود الطلبات المجانية
+                if (currentIndex < pageEntries.size) {
+                    delay(800)
                 }
             }
 
         } catch (e: Exception) {
-            logcat { "Image Translation Error : ${e.stackTraceToString()}" }
+            logcat { "Dynamic Batch Translation Error : ${e.stackTraceToString()}" }
             throw e
         }
     }
 
-    override fun close() {
-    }
+    override fun close() {}
 }
