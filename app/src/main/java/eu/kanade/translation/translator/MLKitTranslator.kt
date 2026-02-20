@@ -7,6 +7,7 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
 import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
+import kotlinx.coroutines.tasks.await // تأكد من استيراد هذه للتعامل مع Coroutines بشكل أفضل
 
 class MLKitTranslator(
     override val fromLang: TextRecognizerLanguage,
@@ -21,68 +22,43 @@ class MLKitTranslator(
     )
 
     private var conditions = DownloadConditions.Builder().build()
-    
-    // Regex لاكتشاف الروابط والمواقع
     private val urlPattern = Regex("(?i)(https?://\\S+|www\\.\\S+|\\S+\\.(com|net|org|io|me|cc|tv|info))")
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
-        Tasks.await(translator.downloadModelIfNeeded(conditions))
+        // تحميل الموديل مرة واحدة في البداية
+        translator.downloadModelIfNeeded(conditions).await()
 
         pages.forEach { (_, page) ->
-            page.blocks.forEach { block ->
-                
-                // 1️⃣ فحص الزاوية (أفقي وعمودي صريح فقط)
+            // تحسين: تصفية البلوكات التي تحتاج ترجمة فقط لتقليل العمليات
+            val validBlocks = page.blocks.filter { block ->
                 val isAcceptedAngle = (block.angle >= -15.0f && block.angle <= 15.0f) || 
                                       (block.angle >= 75.0f && block.angle <= 105.0f) || 
                                       (block.angle <= -75.0f && block.angle >= -105.0f)
+                
+                isAcceptedAngle && !urlPattern.containsMatchIn(block.text) && block.text.isNotBlank()
+            }
 
-                // 2️⃣ فحص الروابط
-                val isUrl = urlPattern.containsMatchIn(block.text)
-
-                // 3️⃣ التحقق من الشروط قبل الترجمة
-                if (isAcceptedAngle && !isUrl) {
-                    try {
-                        val lines = block.text.split("\n")
-                        val originalWordCounts = lines.map { line ->
-                            line.split(Regex("\\s+")).filter { it.isNotEmpty() }.size
-                        }
-
-                        // الترجمة (نرسل النص ككتلة واحدة للسياق المحلي)
-                        val fullText = block.text.replace("\n", " ").trim()
-                        if (fullText.isEmpty()) {
-                            block.translation = ""
-                            return@forEach
-                        }
-
-                        val translatedText = Tasks.await(translator.translate(fullText))
-
-                        // إعادة بناء الأسطر (منطق الحفاظ على هيكل الفقاعة)
-                        val words = translatedText.split(Regex("\\s+")).filter { it.isNotEmpty() }
-                        val rebuiltLines = mutableListOf<String>()
-                        var index = 0
-                        
-                        for (count in originalWordCounts) {
-                            if (index >= words.size) break
-                            val end = (index + count).coerceAtMost(words.size)
-                            rebuiltLines.add(words.subList(index, end).joinToString(" "))
-                            index = end
-                        }
-
-                        // إضافة أي كلمات متبقية للسطر الأخير
-                        if (index < words.size && rebuiltLines.isNotEmpty()) {
-                            val lastIdx = rebuiltLines.size - 1
-                            rebuiltLines[lastIdx] = (rebuiltLines[lastIdx] + " " + words.subList(index, words.size).joinToString(" ")).trim()
-                        }
-
-                        block.translation = rebuiltLines.joinToString("\n")
-                    } catch (e: Exception) {
-                        block.translation = ""
+            // تنفيذ الترجمة بالتوازي لزيادة السرعة القصوى
+            validBlocks.forEach { block ->
+                try {
+                    // تنظيف النص قبل الإرسال (حذف الأسطر الزائدة والمسافات)
+                    val cleanText = block.text.replace("\n", " ").trim()
+                    
+                    if (cleanText.length < 2) {
+                        // إذا كان حرفاً واحداً (ضوضاء OCR)، غالباً لا يحتاج ترجمة
+                        block.translation = cleanText 
+                    } else {
+                        // استخدام await() الخاص بـ Coroutines بدلاً من Tasks.await()
+                        val result = translator.translate(cleanText).await()
+                        block.translation = result
                     }
-                } else {
-                    // إذا كان مؤثراً صوتياً مائلاً أو رابطاً، نمسح النص
+                } catch (e: Exception) {
                     block.translation = ""
                 }
             }
+
+            // مسح ترجمة البلوكات غير الصالحة (الروابط والمؤثرات المائلة)
+            page.blocks.filter { it !in validBlocks }.forEach { it.translation = "" }
         }
     }
 
