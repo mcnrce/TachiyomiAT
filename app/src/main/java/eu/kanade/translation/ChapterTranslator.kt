@@ -310,8 +310,8 @@ private fun smartMergeBlocks(
     }
 
     // المرحلة 2: التوسيع الموزون (بدون لمس symWidth/Height)
-    val minSafeHeight = 30f 
-    val MAX_SCALE_LIMIT = 1.3f 
+    val minSafeHeight = 25f 
+    val MAX_SCALE_LIMIT = 1.25f 
 
     val expandedBlocks = initialBlocks.map { block ->
         val cleanedText = block.text.replace("\n", " ").trim()
