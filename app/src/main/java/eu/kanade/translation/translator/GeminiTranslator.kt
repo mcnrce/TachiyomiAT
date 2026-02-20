@@ -57,17 +57,16 @@ class GeminiTranslator(
             val pageEntries = pages.entries.toList()
             var currentIndex = 0
             
-            // الحدود الديناميكية للدفعة الواحدة
-            val MAX_WORDS_PER_BATCH = 500  // حد الكلمات (آمن جداً لجيميناي)
-            val MAX_PAGES_PER_BATCH = 40   // حد الصفحات الأقصى في الطلب الواحد
-            val MAX_BLOCKS_PER_BATCH = 100 // حد البلوكات الأقصى لضمان عدم الهلوسة
+            val MAX_WORDS_PER_BATCH = 450 // تقليل القيمة قليلاً لزيادة الاستقرار
+            val MAX_PAGES_PER_BATCH = 25 
+            val MAX_BLOCKS_PER_BATCH = 80
 
             while (currentIndex < pageEntries.size) {
                 val currentBatch = mutableListOf<Map.Entry<String, PageTranslation>>()
                 var currentBatchWordCount = 0
                 var currentBatchBlockCount = 0
 
-                // تجميع الصفحات بناءً على المحتوى وليس العدد الثابت
+                // تجميع الدفعة
                 while (currentIndex < pageEntries.size && 
                        currentBatch.size < MAX_PAGES_PER_BATCH && 
                        currentBatchWordCount < MAX_WORDS_PER_BATCH &&
@@ -78,77 +77,76 @@ class GeminiTranslator(
                     val wordCount = pageText.split(Regex("\\s+")).size
                     val blockCount = entry.value.blocks.size
 
-                    // إضافة الصفحة للدفعة وتحديث العدادات
                     currentBatch.add(entry)
                     currentBatchWordCount += wordCount
                     currentBatchBlockCount += blockCount
                     currentIndex++
-
-                    // إذا كانت الصفحة الواحدة تحتوي على نص ضخم جداً، توقف عندها وأرسل
                     if (wordCount > MAX_WORDS_PER_BATCH) break
                 }
 
                 if (currentBatch.isEmpty()) break
 
-                // 1) بناء JSON للدفعة الديناميكية
-                val batchData = currentBatch.associate { (key, page) ->
-                    key to page.blocks.map { it.text }
-                }
-                val inputJson = JSONObject(batchData)
+                // منطق إعادة المحاولة (Retry Logic)
+                var retryCount = 0
+                val maxRetries = 3
+                var resJson: JSONObject? = null
 
-                // 2) إرسال الطلب
-                val response = try {
-                    model.generateContent(inputJson.toString())
-                } catch (e: Exception) {
-                    logcat { "Gemini API Call Error: ${e.message}" }
-                    null
-                }
+                while (retryCount < maxRetries && resJson == null) {
+                    try {
+                        val batchData = currentBatch.associate { (key, page) ->
+                            key to page.blocks.map { it.text }
+                        }
+                        val inputJson = JSONObject(batchData)
 
-                val rawText = response?.text ?: ""
+                        val response = model.generateContent(inputJson.toString())
+                        val rawText = response.text ?: ""
 
-                // 3) استخراج وتدقيق JSON
-                val start = rawText.indexOf('{')
-                val end = rawText.lastIndexOf('}')
+                        val start = rawText.indexOf('{')
+                        val end = rawText.lastIndexOf('}')
 
-                if (start == -1 || end == -1 || end <= start) {
-                    logcat { "Invalid JSON response from Gemini" }
-                    continue
-                }
-
-                val jsonContent = rawText.substring(start, end + 1)
-                val resJson = try { JSONObject(jsonContent) } catch (e: Exception) { null }
-
-                // 4) تطبيق الترجمة على البلوكات
-                for ((key, page) in currentBatch) {
-                    val arr = resJson?.optJSONArray(key)
-
-                    page.blocks.forEachIndexed { index, block ->
-                        val translated = arr?.optString(index, "__NULL__")
-
-                        block.translation = when {
-                            // فلترة الزوايا
-                            !(
-                                (block.angle >= -15.0f && block.angle <= 15.0f) ||
-                                (block.angle >= 75.0f && block.angle <= 105.0f) ||
-                                (block.angle <= -75.0f && block.angle >= -105.0f)
-                            ) -> ""
-
-                            // معالجة النصوص
-                            translated == null || translated == "__NULL__" -> block.text
-                            translated == "RTMTH" -> ""
-                            else -> translated
+                        if (start != -1 && end != -1 && end > start) {
+                            val jsonContent = rawText.substring(start, end + 1)
+                            resJson = JSONObject(jsonContent)
+                        } else {
+                            throw Exception("Invalid JSON format in response")
+                        }
+                    } catch (e: Exception) {
+                        retryCount++
+                        logcat { "Batch Error (Attempt $retryCount/$maxRetries): ${e.message}" }
+                        if (retryCount < maxRetries) {
+                            delay(2000L * retryCount) // انتظار متزايد (2ث، 4ث، 6ث)
+                        } else {
+                            logcat { "Failed all retries for batch. Skipping or keeping original text." }
                         }
                     }
                 }
 
-                // 5) انتظار قصير (800ms) لضمان عدم تجاوز حدود الطلبات المجانية
+                // تطبيق الترجمة (فقط إذا نجحنا في الحصول على JSON)
+                if (resJson != null) {
+                    for ((key, page) in currentBatch) {
+                        val arr = resJson.optJSONArray(key)
+                        page.blocks.forEachIndexed { index, block ->
+                            val translated = arr?.optString(index, "__NULL__")
+                            block.translation = when {
+                                !(
+                                    (block.angle >= -15.0f && block.angle <= 15.0f) ||
+                                    (block.angle >= 75.0f && block.angle <= 105.0f) ||
+                                    (block.angle <= -75.0f && block.angle >= -105.0f)
+                                ) -> ""
+                                translated == null || translated == "__NULL__" -> block.text
+                                translated == "RTMTH" -> ""
+                                else -> translated
+                            }
+                        }
+                    }
+                }
+
                 if (currentIndex < pageEntries.size) {
-                    delay(800)
+                    delay(1000) // ثانية كاملة للأمان
                 }
             }
-
         } catch (e: Exception) {
-            logcat { "Dynamic Batch Translation Error : ${e.stackTraceToString()}" }
+            logcat { "Critical Translation Error: ${e.stackTraceToString()}" }
             throw e
         }
     }
