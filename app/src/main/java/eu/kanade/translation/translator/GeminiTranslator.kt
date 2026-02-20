@@ -10,7 +10,6 @@ import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
 import logcat.logcat
 import org.json.JSONObject
-import kotlinx.coroutines.delay
 
 @Suppress
 class GeminiTranslator(
@@ -57,96 +56,85 @@ class GeminiTranslator(
             val pageEntries = pages.entries.toList()
             var currentIndex = 0
             
-            val MAX_WORDS_PER_BATCH = 450 // تقليل القيمة قليلاً لزيادة الاستقرار
-            val MAX_PAGES_PER_BATCH = 25 
-            val MAX_BLOCKS_PER_BATCH = 80
+            // نستخدم 500 كلمة كحد أقصى للدفعة الواحدة لضمان رد JSON كامل
+            val MAX_WORDS_PER_BATCH = 450
+            val MAX_PAGES_PER_BATCH = 25
 
             while (currentIndex < pageEntries.size) {
-                val currentBatch = mutableListOf<Map.Entry<String, PageTranslation>>()
-                var currentBatchWordCount = 0
-                var currentBatchBlockCount = 0
+                val batch = mutableListOf<Map.Entry<String, PageTranslation>>()
+                var batchWordCount = 0
 
-                // تجميع الدفعة
+                // تجميع الصفحات حتى نصل للحد الأقصى للكلمات أو عدد الصفحات
                 while (currentIndex < pageEntries.size && 
-                       currentBatch.size < MAX_PAGES_PER_BATCH && 
-                       currentBatchWordCount < MAX_WORDS_PER_BATCH &&
-                       currentBatchBlockCount < MAX_BLOCKS_PER_BATCH) {
+                       batch.size < MAX_PAGES_PER_BATCH && 
+                       batchWordCount < MAX_WORDS_PER_BATCH) {
                     
                     val entry = pageEntries[currentIndex]
                     val pageText = entry.value.blocks.joinToString(" ") { it.text }
                     val wordCount = pageText.split(Regex("\\s+")).size
-                    val blockCount = entry.value.blocks.size
 
-                    currentBatch.add(entry)
-                    currentBatchWordCount += wordCount
-                    currentBatchBlockCount += blockCount
+                    // حماية: إذا كانت الصفحة الأولى نفسها ضخمة، نرسلها وحدها
+                    if (batch.isNotEmpty() && batchWordCount + wordCount > MAX_WORDS_PER_BATCH) break
+
+                    batch.add(entry)
+                    batchWordCount += wordCount
                     currentIndex++
-                    if (wordCount > MAX_WORDS_PER_BATCH) break
                 }
 
-                if (currentBatch.isEmpty()) break
+                // 1) بناء JSON للدفعة
+                val batchData = batch.associate { (key, page) ->
+                    key to page.blocks.map { it.text }
+                }
+                val inputJson = JSONObject(batchData)
 
-                // منطق إعادة المحاولة (Retry Logic)
-                var retryCount = 0
-                val maxRetries = 3
-                var resJson: JSONObject? = null
+                // 2) إرسال الطلب (مع محاولة إعادة بسيطة في حال الرد الفارغ)
+                var responseText = ""
+                var attempt = 0
+                while (attempt < 2 && responseText.isBlank()) {
+                    val response = model.generateContent(inputJson.toString())
+                    responseText = response.text ?: ""
+                    if (responseText.isBlank()) {
+                        attempt++
+                        if (attempt < 2) Thread.sleep(2000) 
+                    }
+                }
 
-                while (retryCount < maxRetries && resJson == null) {
-                    try {
-                        val batchData = currentBatch.associate { (key, page) ->
-                            key to page.blocks.map { it.text }
-                        }
-                        val inputJson = JSONObject(batchData)
+                // 3) استخراج JSON دفاعيًا
+                val start = responseText.indexOf('{')
+                val end = responseText.lastIndexOf('}')
 
-                        val response = model.generateContent(inputJson.toString())
-                        val rawText = response.text ?: ""
+                if (start == -1 || end == -1 || end <= start) {
+                    logcat { "Invalid or Empty JSON response at index $currentIndex" }
+                    // إذا فشلت الدفعة تماماً، نرمي خطأ لنعرف أن الترجمة لم تكتمل
+                    throw Exception("فشل الحصول على رد من الذكاء الاصطناعي للدفعة الحالية")
+                }
 
-                        val start = rawText.indexOf('{')
-                        val end = rawText.lastIndexOf('}')
+                val resJson = JSONObject(responseText.substring(start, end + 1))
 
-                        if (start != -1 && end != -1 && end > start) {
-                            val jsonContent = rawText.substring(start, end + 1)
-                            resJson = JSONObject(jsonContent)
-                        } else {
-                            throw Exception("Invalid JSON format in response")
-                        }
-                    } catch (e: Exception) {
-                        retryCount++
-                        logcat { "Batch Error (Attempt $retryCount/$maxRetries): ${e.message}" }
-                        if (retryCount < maxRetries) {
-                            delay(2000L * retryCount) // انتظار متزايد (2ث، 4ث، 6ث)
-                        } else {
-                            logcat { "Failed all retries for batch. Skipping or keeping original text." }
+                // 4) تطبيق الترجمة (نفس منطقك الأصلي تماماً)
+                for ((key, page) in batch) {
+                    val arr = resJson.optJSONArray(key)
+
+                    page.blocks.forEachIndexed { index, block ->
+                        val translated = arr?.optString(index, "__NULL__")
+
+                        block.translation = when {
+                            block.angle < -15.0f || block.angle > 15.0f -> ""
+                            translated == null || translated == "__NULL__" -> block.text
+                            translated == "RTMTH" -> ""
+                            else -> translated
                         }
                     }
                 }
 
-                // تطبيق الترجمة (فقط إذا نجحنا في الحصول على JSON)
-                if (resJson != null) {
-                    for ((key, page) in currentBatch) {
-                        val arr = resJson.optJSONArray(key)
-                        page.blocks.forEachIndexed { index, block ->
-                            val translated = arr?.optString(index, "__NULL__")
-                            block.translation = when {
-                                !(
-                                    (block.angle >= -15.0f && block.angle <= 15.0f) ||
-                                    (block.angle >= 75.0f && block.angle <= 105.0f) ||
-                                    (block.angle <= -75.0f && block.angle >= -105.0f)
-                                ) -> ""
-                                translated == null || translated == "__NULL__" -> block.text
-                                translated == "RTMTH" -> ""
-                                else -> translated
-                            }
-                        }
-                    }
-                }
-
+                // 5) انتظار 1 ثانية (ضمان الثبات)
                 if (currentIndex < pageEntries.size) {
-                    delay(1000) // ثانية كاملة للأمان
+                    Thread.sleep(1000)
                 }
             }
+
         } catch (e: Exception) {
-            logcat { "Critical Translation Error: ${e.stackTraceToString()}" }
+            logcat { "Image Translation Error : ${e.stackTraceToString()}" }
             throw e
         }
     }
