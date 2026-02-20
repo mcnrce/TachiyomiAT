@@ -31,7 +31,9 @@ import eu.kanade.translation.model.PageTranslation
 class WebtoonTranslationsView :
     AbstractComposeView {
 
-    private val translation: PageTranslation
+    // جعلنا الـ translation متغير قابل للتحديث (var) بدلاً من val 
+    // إذا كان الكود الخارجي يسمح بذلك، وإلا سنكتفي بـ remember
+    private var translation: PageTranslation = PageTranslation.EMPTY
     private val font: TranslationFont
     private val fontFamily: FontFamily
 
@@ -40,7 +42,6 @@ class WebtoonTranslationsView :
         attrs: AttributeSet? = null,
         defStyleAttr: Int = 0,
     ) : super(context, attrs, defStyleAttr) {
-        this.translation = PageTranslation.EMPTY
         this.font = TranslationFont.ANIME_ACE
         this.fontFamily = Font(
             resId = font.res,
@@ -65,24 +66,29 @@ class WebtoonTranslationsView :
 
     @Composable
     override fun Content() {
-        // التعديل الوحيد هنا: ربط الحالة بكائن الترجمة 
-        // لضمان تصفير الحجم عند تغيير الصفحة في الويبتون
+        // استخدام remember(translation) هو المفتاح، ولكن أضفنا فحصاً داخلياً
         var size by remember(translation) { mutableStateOf(IntSize.Zero) }
-        
+
+        // إذا كانت الترجمة فارغة، لا ترسم أي شيء نهائياً
+        if (translation == PageTranslation.EMPTY) {
+            hide()
+            return
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .onSizeChanged {
                     size = it
-                    if (size == IntSize.Zero) {
-                        hide()
-                    } else {
-                        show()
-                    }
+                    if (size == IntSize.Zero) hide() else show()
                 },
         ) {
-            if (size == IntSize.Zero) return@Box
+            // نستخدم return@Box لضمان عدم رسم أي بلوكات إذا لم يتحدد الحجم بعد
+            if (size.width <= 0) return@Box
+
             val scaleFactor = size.width.toFloat() / translation.imgWidth
+            
+            // رسم الطبقات
             TextBlockBackground(scaleFactor)
             TextBlockContent(scaleFactor)
         }
