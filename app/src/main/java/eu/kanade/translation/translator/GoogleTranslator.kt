@@ -18,36 +18,38 @@ class GoogleTranslator(
     private val client2 = "webapp"
     val okHttpClient = OkHttpClient()
 
+    // Regex لاكتشاف الروابط والمواقع بشكل ذكي (com, net, org, etc.)
     private val urlPattern = Regex("(?i)(https?://\\S+|www\\.\\S+|\\S+\\.(com|net|org|io|me|cc|tv|info))")
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
         pages.forEach { (_, page) ->
             if (page.blocks.isEmpty()) return@forEach
 
-            // 1️⃣ بناء النص الموحد مع إضافة مفتاح السياق "Say: " لكل بلوك
+            // 1️⃣ بناء النص الموحد مع الفلترة (زوايا + روابط)
             val mergedText = buildString {
                 page.blocks.forEach { block ->
+                    // التحقق من الزاوية (نفس منطق Gemini الخاص بك)
                     val isAcceptedAngle = (block.angle >= -15.0f && block.angle <= 15.0f) || 
                                           (block.angle >= 75.0f && block.angle <= 105.0f) || 
                                           (block.angle <= -75.0f && block.angle >= -105.0f)
                     
+                    // التحقق من الروابط
                     val isUrl = urlPattern.containsMatchIn(block.text)
 
                     if (isAcceptedAngle && !isUrl) {
-                        // إضافة بادئة "Say: " لإجبار المحرك على ترجمة النص مهما كان قصيراً
-                        append("Say: ")
                         append(block.text.replace("\n", " ").trim())
                         append("\n")
                     }
                 }
             }
 
+            // إذا لم يتبقَ نص صالح للترجمة بعد الفلترة
             if (mergedText.isBlank()) {
                 page.blocks.forEach { it.translation = "" }
                 return@forEach
             }
 
-            // 2️⃣ إرسال النص للترجمة
+            // 2️⃣ إرسال النص المفلتر للترجمة
             val translatedMergedText = try {
                 translateText(toLang.code, mergedText)
             } catch (e: Exception) {
@@ -59,21 +61,12 @@ class GoogleTranslator(
                 return@forEach
             }
 
-            // 3️⃣ تقسيم النص المترجم وتنظيفه بناءً على أول ظهور لعلامة ":"
+            // 3️⃣ تقسيم النص المترجم لأسطر
             val translatedLines = translatedMergedText.split("\n")
-                .map { line ->
-                    val firstColonPos = line.indexOf(':')
-                    if (firstColonPos != -1) {
-                        // حذف كل ما قبل أول نقطتين بما في ذلك النقطتين أنفسهم
-                        line.substring(firstColonPos + 1).trim()
-                    } else {
-                        // تنظيف احتياطي في حال غياب النقطتين
-                        line.replace("Say", "").replace("قل", "").trim()
-                    }
-                }
+                .map { it.trim() }
                 .filter { it.isNotEmpty() }
 
-            // 4️⃣ توزيع الترجمة على البلوكات الأصلية
+            // 4️⃣ توزيع الترجمة مع ضمان المزامنة (Index Sync)
             var translationIndex = 0
             page.blocks.forEach { block ->
                 val isAcceptedAngle = (block.angle >= -15.0f && block.angle <= 15.0f) || 
@@ -82,10 +75,12 @@ class GoogleTranslator(
                 
                 val isUrl = urlPattern.containsMatchIn(block.text)
 
+                // نضع الترجمة فقط للبلوكات التي أرسلناها فعلياً
                 if (isAcceptedAngle && !isUrl && translationIndex < translatedLines.size) {
                     block.translation = translatedLines[translationIndex]
                     translationIndex++
                 } else {
+                    // مسح ترجمة المؤثرات الصوتية والروابط
                     block.translation = ""
                 }
             }
@@ -126,6 +121,7 @@ class GoogleTranslator(
         }
     }
 
+    // --- توابع حساب الـ Token (نفس منطقك الأصلي دون تغيير) ---
     private fun calculateToken(str: String): String {
         val list = mutableListOf<Int>()
         var i = 0
