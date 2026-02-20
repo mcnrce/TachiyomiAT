@@ -278,22 +278,22 @@ class ChapterTranslator(
 
 
     
-            private fun smartMergeBlocks(
+                 private fun smartMergeBlocks(
     blocks: List<TranslationBlock>,
     imgWidth: Float,
     imgHeight: Float
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
-    // 1. تنظيف الكتل الفارغة
+    // 1. تنظيف الكتل
     val initialBlocks = blocks.filter { it.text.isNotBlank() }.toMutableList()
     
-    // حساب عتبات الدمج بناءً على أبعاد الصورة
+    // حساب عتبات الدمج
     val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
     val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
     val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
-    // --- المرحلة الأولى: دمج الكتل المتقاربة ---
+    // --- المرحلة الأولى: الدمج ---
     var i = 0
     while (i < initialBlocks.size) {
         var j = i + 1
@@ -311,81 +311,87 @@ class ChapterTranslator(
         if (!merged) i++
     }
 
-    // --- المرحلة الثانية: التحرير والتوسيع لضمان المقروئية ومنع خروج النص ---
-    val minSafeHeight = 30f // الحد الأدنى المريح لبكسلات الخط
-    val paddingFactor = 1.25f // إضافة هامش أمان بنسبة 25% داخل الفقاعة لمنع خروج الأطراف
+    // --- المرحلة الثانية: التوسيع الذكي المعتمد على "مساحة النص" ---
+    // الهدف: توفير مساحة كافية للترجمة دون مبالغة في الـ Padding
+    val targetFontSize = 28f // حجم خط مثالي ومريح (أقل قليلاً لتجنب الضخامة)
+    val charAreaFactor = 0.7f // تقدير مساحة الحرف العربي بالنسبة للمربع
+    val MAX_ALLOWED_SCALE = 1.3f // سقف التوسع 30%
 
     val expandedBlocks = initialBlocks.map { block ->
-        // تحرير النص من فواصل الأسطر لضمان انسيابية النص المترجم
-        val cleanedText = block.text.replace("\n", " ").replace("\\s+".toRegex(), " ").trim()
-        val cleanedTranslation = block.translation?.replace("\n", " ")?.replace("\\s+".toRegex(), " ")?.trim() ?: ""
+        val cleanedText = block.text.replace("\n", " ").trim()
+        val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
+        
+        // 1. حساب المساحة المطلوبة فعلياً للنص الجديد
+        val translatedLen = cleanedTranslation.length.coerceAtLeast(1)
+        val requiredArea = translatedLen * (targetFontSize * targetFontSize) * charAreaFactor
+        
+        // 2. مساحة البلوك الحالية
+        val currentArea = (block.width * block.height).coerceAtLeast(1f)
+        
+        // 3. نسبة العجز في المساحة
+        var scaleNeeded = kotlin.math.sqrt(requiredArea / currentArea).coerceAtLeast(1.0f)
+        
+        // 4. القيد الصارم: لا نتجاوز 1.3 من المساحة (أي جذر 1.3 للأبعاد)
+        val maxDimScale = kotlin.math.sqrt(MAX_ALLOWED_SCALE) 
+        if (scaleNeeded > maxDimScale) scaleNeeded = maxDimScale
 
-        // حساب نسبة التوسع المطلوبة بناءً على ارتفاع الخط
-        val currentSymHeight = block.symHeight.coerceAtLeast(10f)
-        val scaleRatio = (minSafeHeight / currentSymHeight).coerceAtLeast(1.0f)
-        
-        // حساب المساحة الجديدة مع إضافة هامش الأمان (Padding)
-        val totalArea = (block.width * block.height) * (scaleRatio * scaleRatio) * paddingFactor
-        
-        /* تعديل التوازن (Balanced Scaling):
-           استخدمنا معامل 1.15f بدلاً من 1.3f لتقليل التوسع الأفقي المفرط 
-           وإعطاء مجال أكبر للتوسع العمودي، مما يجعل شكل الفقاعة أكثر تناسقاً.
-        */
-        val newWidth = kotlin.math.sqrt(totalArea * 1.15f).toFloat()
-        val newHeight = (totalArea / newWidth).toFloat()
-        
-        var newX = block.x - (newWidth - block.width) / 2
-        var newY = block.y - (newHeight - block.height) / 2
-        
-        // حماية حدود الصورة الأصلية
-        if (newX < 0) newX = 0f
-        if (newX + newWidth > imgWidth) {
-            newX = (imgWidth - newWidth).coerceAtLeast(0f)
-        }
-        if (newY < 0) newY = 0f
-        if (newY + newHeight > imgHeight) {
-            newY = (imgHeight - newHeight).coerceAtLeast(0f)
-        }
+        // 5. التوسيع عند الحاجة فقط
+        if (scaleNeeded > 1.05f) { // لا نوسع إذا كانت الزيادة أقل من 5%
+            val newWidth = block.width * scaleNeeded
+            val newHeight = block.height * scaleNeeded
+            
+            var newX = block.x - (newWidth - block.width) / 2
+            var newY = block.y - (newHeight - block.height) / 2
+            
+            // حماية الحدود
+            if (newX < 0) newX = 0f
+            if (newX + newWidth > imgWidth) newX = (imgWidth - newWidth).coerceAtLeast(0f)
+            if (newY < 0) newY = 0f
+            if (newY + newHeight > imgHeight) newY = (imgHeight - newHeight).coerceAtLeast(0f)
 
-        block.copy(
-            text = cleanedText,
-            translation = cleanedTranslation,
-            width = newWidth,
-            height = newHeight,
-            x = newX,
-            y = newY,
-            symHeight = minSafeHeight,
-            symWidth = block.symWidth * scaleRatio
-        )
+            block.copy(
+                text = cleanedText,
+                translation = cleanedTranslation,
+                width = newWidth,
+                height = newHeight,
+                x = newX,
+                y = newY,
+                // تحديث symHeight و symWidth بشكل متوازن 
+                // لكي لا تنفجر خلفية التكست في PagerTranslationsView
+                symHeight = (block.symHeight * scaleNeeded).coerceAtMost(targetFontSize),
+                symWidth = block.symWidth * scaleNeeded
+            )
+        } else {
+            block.copy(text = cleanedText, translation = cleanedTranslation)
+        }
     }.toMutableList()
 
-    // --- المرحلة الثالثة: حل التصادم (Collision Resolution) ---
+    // --- المرحلة الثالثة: حل التصادم ---
+    // (نفس كود التصادم السابق دون تغيير لضمان عدم التداخل)
     for (idx in 0 until expandedBlocks.size) {
         for (jdx in idx + 1 until expandedBlocks.size) {
             val a = expandedBlocks[idx]
             val b = expandedBlocks[jdx]
-            
             if (isOverlapping(a, b)) {
                 val overlapX = minOf(a.x + a.width, b.x + b.width) - maxOf(a.x, b.x)
                 val overlapY = minOf(a.y + a.height, b.y + b.height) - maxOf(a.y, b.y)
-                
                 if (overlapX < overlapY) {
-                    val shift = (overlapX / 2) + 2f
+                    val shift = (overlapX / 2) + 1f
                     if (a.x < b.x) {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtLeast(10f))
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtLeast(10f), x = b.x + shift)
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtMost(a.width))
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtMost(b.width), x = b.x + shift)
                     } else {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtLeast(10f), x = a.x + shift)
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtLeast(10f))
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtMost(a.width), x = a.x + shift)
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtMost(b.width))
                     }
                 } else {
-                    val shift = (overlapY / 2) + 2f
+                    val shift = (overlapY / 2) + 1f
                     if (a.y < b.y) {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtLeast(10f))
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtLeast(10f), y = b.y + shift)
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtMost(a.height))
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtMost(b.height), y = b.y + shift)
                     } else {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtLeast(10f), y = a.y + shift)
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtLeast(10f))
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtMost(a.height), y = a.y + shift)
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtMost(b.height))
                     }
                 }
             }
@@ -394,14 +400,7 @@ class ChapterTranslator(
 
     return expandedBlocks
 }
-
-private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
-    return a.x < b.x + b.width &&
-           a.x + a.width > b.x &&
-           a.y < b.y + b.height &&
-           a.y + a.height > b.y
-}
-
+           
 
 
 
