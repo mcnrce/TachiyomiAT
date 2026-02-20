@@ -278,8 +278,6 @@ class ChapterTranslator(
 
 
     
-           import kotlin.math.sqrt
-
 private fun smartMergeBlocks(
     blocks: List<TranslationBlock>,
     imgWidth: Float,
@@ -287,15 +285,13 @@ private fun smartMergeBlocks(
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
-    // 1. تنظيف الكتل الفارغة
     val initialBlocks = blocks.filter { it.text.isNotBlank() }.toMutableList()
     
-    // حساب عتبات الدمج بناءً على أبعاد الصورة
     val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
     val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
     val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
-    // --- المرحلة الأولى: دمج الكتل المتقاربة ---
+    // المرحلة 1: الدمج
     var i = 0
     while (i < initialBlocks.size) {
         var j = i + 1
@@ -313,37 +309,32 @@ private fun smartMergeBlocks(
         if (!merged) i++
     }
 
-    // --- المرحلة الثانية: التوسيع الذكي والمقيد (بناءً على مساحة النص) ---
-    val targetFontSize = 28f 
-    val charAreaFactor = 0.7f 
-    val MAX_ALLOWED_SCALE = 1.3f // سقف التوسع 130% من الحجم الأصلي
+    // المرحلة 2: التوسيع الموزون (بدون لمس symWidth/Height)
+    val minSafeHeight = 30f 
+    val MAX_SCALE_LIMIT = 1.3f 
 
     val expandedBlocks = initialBlocks.map { block ->
         val cleanedText = block.text.replace("\n", " ").trim()
         val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
 
-        // حساب المساحة المطلوبة للنص المترجم ليظهر بوضوح
-        val translatedLen = cleanedTranslation.length.coerceAtLeast(1)
-        val requiredArea = translatedLen * (targetFontSize * targetFontSize) * charAreaFactor
-        val currentArea = (block.width * block.height).coerceAtLeast(1f)
-        
-        // حساب نسبة التوسع المطلوبة للأبعاد (Scale Ratio)
-        // نأخذ الجذر التربيعي لأن المساحة تزيد بالتربيع
-        var scaleNeeded = sqrt((requiredArea / currentArea).toDouble()).toFloat().coerceAtLeast(1.0f)
-        
-        // تطبيق الحد الأقصى للتوسع (جذر 1.3 لضمان عدم تخطي المساحة الكلية 1.3)
-        val maxDimScale = sqrt(MAX_ALLOWED_SCALE.toDouble()).toFloat()
-        if (scaleNeeded > maxDimScale) scaleNeeded = maxDimScale
+        // 1. حساب نسبة احتياج النص للتوسع (الحساب فقط)
+        val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
+            .coerceIn(1.0f, 1.25f)
 
-        // التنفيذ إذا كان هناك حاجة فعلية للتكبير
-        if (scaleNeeded > 1.05f) {
-            val newWidth = block.width * scaleNeeded
-            val newHeight = block.height * scaleNeeded
+        val fontRatio = (minSafeHeight / block.symHeight.coerceAtLeast(10f))
+            .coerceAtLeast(1.0f)
+
+        // النسبة النهائية لتكبير الإطار (Width/Height)
+        var finalScale = kotlin.math.sqrt((textRatio * fontRatio).toDouble()).toFloat()
+        finalScale = finalScale.coerceAtMost(MAX_SCALE_LIMIT)
+
+        if (finalScale > 1.02f) {
+            val newWidth = block.width * finalScale
+            val newHeight = block.height * finalScale
             
             var newX = block.x - (newWidth - block.width) / 2f
             var newY = block.y - (newHeight - block.height) / 2f
             
-            // حماية حدود الصورة
             if (newX < 0) newX = 0f
             if (newX + newWidth > imgWidth) newX = (imgWidth - newWidth).coerceAtLeast(0f)
             if (newY < 0) newY = 0f
@@ -355,29 +346,27 @@ private fun smartMergeBlocks(
                 width = newWidth,
                 height = newHeight,
                 x = newX,
-                y = newY,
-                // symHeight يؤثر على الـ Padding في العرض، لذا نقيده بـ targetFontSize
-                symHeight = (block.symHeight * scaleNeeded).coerceAtMost(targetFontSize),
-                symWidth = block.symWidth * scaleNeeded
+                y = newY
+                // هنا السر: لم نقم بتعديل symHeight أو symWidth
+                // نترك القيم الأصلية كما هي ليعرف محرك العرض أن النص يحتاج مساحة أكبر
             )
         } else {
             block.copy(text = cleanedText, translation = cleanedTranslation)
         }
     }.toMutableList()
 
-    // --- المرحلة الثالثة: حل التصادم (Collision Resolution) ---
+    // المرحلة 3: حل التصادم
     for (idx in expandedBlocks.indices) {
         for (jdx in idx + 1 until expandedBlocks.size) {
             val a = expandedBlocks[idx]
             val b = expandedBlocks[jdx]
             
             if (isOverlapping(a, b)) {
-                // حساب مسافة التداخل باستخدام دوال كوتلن القياسية
                 val overlapX = minOf(a.x + a.width, b.x + b.width) - maxOf(a.x, b.x)
                 val overlapY = minOf(a.y + a.height, b.y + b.height) - maxOf(a.y, b.y)
                 
                 if (overlapX < overlapY) {
-                    val shift = (overlapX / 2f) + 1f // هامش أمان بسيط
+                    val shift = (overlapX / 2f) + 1f
                     if (a.x < b.x) {
                         expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtLeast(10f))
                         expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtLeast(10f), x = b.x + shift)
@@ -398,7 +387,6 @@ private fun smartMergeBlocks(
             }
         }
     }
-
     return expandedBlocks
 }
 
@@ -408,7 +396,6 @@ private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
            a.y < b.y + b.height &&
            a.y + a.height > b.y
 }
-
 
 
 
