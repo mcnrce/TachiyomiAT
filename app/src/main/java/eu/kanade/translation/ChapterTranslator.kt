@@ -399,6 +399,9 @@ private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
            a.y + a.height > b.y
 }
 
+
+
+
 private fun shouldMergeTextBlock(
     a: TranslationBlock,
     b: TranslationBlock,
@@ -408,25 +411,31 @@ private fun shouldMergeTextBlock(
     val angleDiff = abs(a.angle - b.angle)
     if (!(angleDiff < 10 || abs(angleDiff - 180) < 10)) return false
 
-    val isVertical = abs(a.angle) in 70.0..110.0 // النطاق الأصلي للمانجا
+    val isVertical = abs(a.angle) in 70.0..110.0
     
-    val aRight = a.x + a.width
-    val bRight = b.x + b.width
-    val aBottom = a.y + a.height
-    val bBottom = b.y + b.height
-
     val sW = maxOf(a.symWidth, b.symWidth, 12f)
     val sH = maxOf(a.symHeight, b.symHeight, 12f)
 
-    val hOverlap = minOf(aRight, bRight) - maxOf(a.x, b.x)
-    val vOverlap = minOf(aBottom, bBottom) - maxOf(a.y, b.y)
-    val hGap = maxOf(0f, if (a.x < b.x) b.x - aRight else a.x - bRight)
-    val vGap = maxOf(0f, if (a.y < b.y) b.y - aBottom else a.y - bBottom)
+    // حسابات التقاطع (Intersection) لحساب المساحة المشتركة
+    val interLeft = maxOf(a.x, b.x)
+    val interTop = maxOf(a.y, b.y)
+    val interRight = minOf(a.x + a.width, b.x + b.width)
+    val interBottom = minOf(a.y + a.height, b.y + b.height)
+
+    val interWidth = maxOf(0f, interRight - interLeft)
+    val interHeight = maxOf(0f, interBottom - interTop)
+    val overlapArea = interWidth * interHeight
+
+    val areaA = a.width * a.height
+    val areaB = b.width * b.height
+    val minArea = minOf(areaA, areaB)
 
     return if (isVertical) {
-        /* --- خوارزمية المانجا العمودية الأصلية --- */
+        /* --- منطق المانجا العمودية (يبقى كما هو لقدرته على جمع الأعمدة) --- */
         val dx = abs(a.x - b.x)
         val dy = abs(a.y - b.y)
+        val vOverlap = minOf(a.y + a.height, b.y + b.height) - maxOf(a.y, b.y)
+        val hGap = maxOf(0f, if (a.x < b.x) b.x - (a.x + a.width) else a.x - (b.x + b.width))
         
         val originsClose = dy < (sH * 2.2f) && dx < (sW * 4.5f)
         val sideBySide = hGap < (sW * 2.5f) && dy < (sH * 2.2f)
@@ -434,29 +443,27 @@ private fun shouldMergeTextBlock(
         
         originsClose || sideBySide || aligned
     } else {
-        /* --- منطق الأسطر الأفقية الصارم والمحسن --- */
+        /* --- منطق الأسطر الأفقية (تراكم المراكز + تداخل المساحة) --- */
         
-        // 1. حساب المراكز بدقة لكلتا الكتلتين
+        // 1. فحص التراكم العمودي (Center Stack)
         val centerA = a.x + a.width / 2f
         val centerB = b.x + b.width / 2f
         val centerDiff = abs(centerA - centerB)
+        val vGap = maxOf(0f, if (a.y < b.y) b.y - (a.y + a.height) else a.y - (b.y + b.height))
         
-        // 2. استخدام أصغر عرض (minWidth) لضبط حساسية الدمج
-        val minWidth = minOf(a.width, b.width)
-
-        // 3. شرط تراكم الأسطر (Stacked):
-        // تم تقليل نسبة السماح في centerDiff من 45% إلى 20%
-        // وتم تقليل الفجوة الرأسية المسموحة لمنع دمج الكلام الحر مع الفقاعات
-        val isStacked = centerDiff < (minWidth * 0.20f) && 
+        // لا ندمج إلا إذا كان المركز مطابقاً جداً (15% من عرض الأصغر) والفجوة صغيرة
+        val isStacked = centerDiff < (minOf(a.width, b.width) * 0.15f) && 
                         vGap < (sH * 0.4f * yThresholdFactor)
 
-        // 4. شرط التداخل الأفقي الجوهري (للكلمات المتجاورة):
-        // لا يدمج إلا إذا كان هناك تداخل 20% على الأقل وفجوة رأسية ضيقة جداً
-        val hasOverlapMerge = hOverlap > (minWidth * 0.2f) && vGap < (sH * 0.3f)
+        // 2. فحص تداخل المساحة (Area Overlap) بنسبة 20%
+        // هذا الشرط يفحص إذا كان أحد البلوكات "داخل" الآخر بنسبة مساحة معتبرة
+        val hasAreaOverlap = overlapArea > (minArea * 0.20f)
 
-        isStacked || hasOverlapMerge
+        isStacked || hasAreaOverlap
     }
 }
+
+
 
 
 
