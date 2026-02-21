@@ -1,3 +1,4 @@
+
 package eu.kanade.translation.model
 
 import kotlin.math.abs
@@ -5,36 +6,46 @@ import kotlin.math.abs
 class PageTranslationHelper {
 
     companion object {
+        private val NOISE_REGEX = Regex("(?i).*\\.(com|net|org|co|me|io|link|info).*|.*(discord\\.gg|http|www).*")
+
         fun smartMergeBlocks(
             blocks: List<TranslationBlock>,
             imgWidth: Float,
             imgHeight: Float
         ): MutableList<TranslationBlock> {
+
             if (blocks.isEmpty()) return mutableListOf()
 
-            val result = blocks.filter { it.text.isNotBlank() }.toMutableList()
+            // 1. تنظيف أولي سريع
+            val initialBlocks = blocks.filter { it.text.isNotBlank() }.toMutableList()
 
-            // عتبات أكثر صرامة لمنع دمج الفقاعات المستقلة
-            val xThreshold = (1.5f * (imgWidth / 1200f).coerceAtMost(2.5f)).coerceAtLeast(1.0f)
-            val yThresholdFactor = (1.0f * (imgHeight / 2000f).coerceAtMost(1.8f)).coerceAtLeast(1.0f)
+            // 2. ضبط عتبات المسافات بناءً على حجم الصورة
+            val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
+            val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
             val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
 
-            var i = 0
-            while (i < result.size) {
-                var j = i + 1
-                var mergedInThisRound = false
-                while (j < result.size) {
-                    if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
-                        result[i] = performMerge(result[i], result[j], isWebtoon)
-                        result.removeAt(j)
-                        i = 0 
-                        mergedInThisRound = true
-                        break 
+            var result = initialBlocks
+            var changed = true
+
+            // 3. حلقة الدمج الشاملة
+            while (changed) {
+                changed = false
+                var i = 0
+                while (i < result.size) {
+                    var j = i + 1
+                    while (j < result.size) {
+                        if (shouldMerge(result[i], result[j], xThreshold, yThresholdFactor)) {
+                            result[i] = performMerge(result[i], result[j], isWebtoon)
+                            result.removeAt(j)
+                            changed = true
+                            continue 
+                        }
+                        j++
                     }
-                    j++
+                    i++
                 }
-                if (!mergedInThisRound) i++
             }
+
             return result
         }
 
@@ -45,10 +56,11 @@ class PageTranslationHelper {
             yThresholdFactor: Float
         ): Boolean {
             val angleDiff = abs(r1.angle - r2.angle)
-            if (!(angleDiff < 10 || abs(angleDiff - 180) < 10)) return false
+            val angleSimilar = angleDiff < 15 || abs(angleDiff - 180) < 15
+            if (!angleSimilar) return false
 
-            val isVertical = abs(r1.angle) in 75.0..105.0
-            
+            val isVertical = abs(r1.angle) in 70.0..110.0
+
             val r1Right = r1.x + r1.width
             val r2Right = r2.x + r2.width
             val r1Bottom = r1.y + r1.height
@@ -57,37 +69,35 @@ class PageTranslationHelper {
             val sW = maxOf(r1.symWidth, r2.symWidth, 12f)
             val sH = maxOf(r1.symHeight, r2.symHeight, 12f)
 
-            // حساب التداخل الفعلي
-            val hOverlap = minOf(r1Right, r2Right) - maxOf(r1.x, r2.x)
-            val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
-            val vGap = maxOf(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
-            val hGap = maxOf(0f, if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right)
-
             return if (isVertical) {
-                // دمج عمودي محافظ
+                /* --- خوارزمية المانجا العمودية الأصلية --- */
                 val dx = abs(r1.x - r2.x)
                 val dy = abs(r1.y - r2.y)
                 
-                val isOriginsClose = dy < (sH * 1.0f) && dx < (sW * 2.0f)
-                // يجب أن يكون التداخل الرأسي كبيراً جداً لاعتبارهما عموداً واحداً
-                val alignedVertically = vOverlap > (minOf(r1.height, r2.height) * 0.6f) && hGap < (sW * 0.8f)
+                val isOriginsClose = dy < (sH * 2.2f) && dx < (sW * 4.5f)
+                val sideGap = if (r1.x < r2.x) abs(r2.x - r1Right) else abs(r1.x - r2Right)
+                val isSideBySide = sideGap < (sW * 2.5f) && dy < (sH * 2.2f)
 
-                isOriginsClose || alignedVertically
+                val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
+                val alignedVertically = vOverlap > (sH * 0.15f)
+                val hGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
+                val closeHorizontally = hGap < (sW * 2.2f)
+
+                isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
+
             } else {
-                /* --- الإصلاح هنا: منطق الدمج الأفقي الصارم --- */
-                
-                // 1. التداخل الأفقي الجوهري: لا ندمج لمجرد تلامس بسيط
-                // يجب أن يشترك الصندوقان في 50% على الأقل من عرض الصندوق الأصغر أفقياً
+                /* --- منطق الأسطر الأفقية الصارم --- */
+                val hOverlap = minOf(r1Right, r2Right) - maxOf(r1.x, r2.x)
+                val vGap = maxOf(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
+                val centerDiff = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
+
+                val isStacked = centerDiff < (maxOf(r1.width, r2.width) * 0.45f) && 
+                                vGap < (sH * 1.2f * yThresholdFactor)
+
                 val minWidth = minOf(r1.width, r2.width)
-                val hasSignificantHorizontalOverlap = hOverlap > (minWidth * 0.5f)
+                val hasOverlapMerge = hOverlap > (minWidth * 0.2f) && vGap < (sH * 0.5f)
 
-                // 2. القرب الرأسي: يجب أن تكون المسافة الرأسية أقل من نصف حجم الحرف
-                val isVeryCloseVertically = vGap < (sH * 0.4f)
-
-                // 3. دمج الكلمات المقطوعة في سطر واحد (تلامس أفقي مباشر)
-                val sameLine = hGap < (sW * 0.6f) && vOverlap > (minOf(r1.height, r2.height) * 0.7f)
-
-                (hasSignificantHorizontalOverlap && isVeryCloseVertically) || sameLine
+                isStacked || hasOverlapMerge
             }
         }
 
@@ -97,31 +107,23 @@ class PageTranslationHelper {
             val maxX = maxOf(a.x + a.width, b.x + b.width)
             val maxY = maxOf(a.y + a.height, b.y + b.height)
 
-            val isVertical = abs(a.angle) in 75.0..105.0
+            // دمج الكتل دون إعادة ترتيب أو تكبير (كما جاءت من المحرك)
+            val blocks = listOf(a, b)
             
-            // ترتيب النصوص بناءً على المحور المسيطر
-            val blocksOrdered = if (isVertical) {
-                if (a.x > b.x) listOf(a, b) else listOf(b, a)
-            } else {
-                // إذا كان الفارق الرأسي واضحاً، فالترتيب من الأعلى للأسفل
-                if (abs(a.y - b.y) > 5f) {
-                    if (a.y < b.y) listOf(a, b) else listOf(b, a)
-                } else {
-                    if (isWebtoon) (if (a.x < b.x) listOf(a, b) else listOf(b, a))
-                    else (if (a.x > b.x) listOf(a, b) else listOf(b, a))
-                }
-            }
+            val lenA = a.text.length.coerceAtLeast(1)
+            val lenB = b.text.length.coerceAtLeast(1)
+            val totalLen = lenA + lenB
 
             return TranslationBlock(
-                text = blocksOrdered.joinToString(" ") { it.text.trim() },
-                translation = blocksOrdered.joinToString(" ") { it.translation?.trim() ?: "" }.trim(),
+                text = blocks.joinToString(" ") { it.text.trim() },
+                translation = blocks.joinToString(" ") { it.translation.trim() }.trim(),
                 width = maxX - minX,
                 height = maxY - minY,
                 x = minX,
                 y = minY,
-                angle = a.angle,
-                symWidth = (a.symWidth + b.symWidth) / 2f,
-                symHeight = (a.symHeight + b.symHeight) / 2f
+                angle = if (lenA >= lenB) a.angle else b.angle,
+                symWidth = (a.symWidth * lenA + b.symWidth * lenB) / totalLen,
+                symHeight = (a.symHeight * lenA + b.symHeight * lenB) / totalLen
             )
         }
     }
