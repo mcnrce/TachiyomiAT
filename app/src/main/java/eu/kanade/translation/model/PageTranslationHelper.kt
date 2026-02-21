@@ -26,7 +26,7 @@ class PageTranslationHelper {
             var result = initialBlocks
             var changed = true
 
-            // 3. حلقة الدمج الشاملة (تكرار الفحص لضمان دمج كل المجموعات الممكنة)
+            // 3. حلقة الدمج الشاملة
             while (changed) {
                 changed = false
                 var i = 0
@@ -61,22 +61,34 @@ class PageTranslationHelper {
             val isVertical = abs(r1.angle) in 70.0..110.0
 
             val r1Right = r1.x + r1.width
-            val r2Right = r2.x + r2.width
             val r1Bottom = r1.y + r1.height
+            val r2Right = r2.x + r2.width
             val r2Bottom = r2.y + r2.height
 
             val sW = maxOf(r1.symWidth, r2.symWidth, 12f)
             val sH = maxOf(r1.symHeight, r2.symHeight, 12f)
 
+            // حساب مساحة التقاطع (Intersection Area)
+            val interLeft = maxOf(r1.x, r2.x)
+            val interTop = maxOf(r1.y, r2.y)
+            val interRight = minOf(r1Right, r2Right)
+            val interBottom = minOf(r1Bottom, r2Bottom)
+
+            val interWidth = maxOf(0f, interRight - interLeft)
+            val interHeight = maxOf(0f, interBottom - interTop)
+            val overlapArea = interWidth * interHeight
+
+            val areaR1 = r1.width * r1.height
+            val areaR2 = r2.width * r2.height
+            val minArea = minOf(areaR1, areaR2)
+
             return if (isVertical) {
-                /* --- خوارزمية المانجا العمودية الأصلية (بدون تعديل) --- */
+                /* --- خوارزمية المانجا العمودية الأصلية --- */
                 val dx = abs(r1.x - r2.x)
                 val dy = abs(r1.y - r2.y)
-                
                 val isOriginsClose = dy < (sH * 2.2f) && dx < (sW * 4.5f)
                 val sideGap = if (r1.x < r2.x) abs(r2.x - r1Right) else abs(r1.x - r2Right)
                 val isSideBySide = sideGap < (sW * 2.5f) && dy < (sH * 2.2f)
-
                 val vOverlap = minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y)
                 val alignedVertically = vOverlap > (sH * 0.15f)
                 val hGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
@@ -85,27 +97,23 @@ class PageTranslationHelper {
                 isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
 
             } else {
-                /* --- منطق الأسطر الأفقية المحسن (النسخة الصارمة جداً) --- */
+                /* --- منطق الأسطر الأفقية (تراكم المراكز + تداخل المساحة) --- */
                 
-                // 1. حساب المراكز بدقة لمقارنة التراكم العمودي
+                // 1. فحص التراكم العمودي (Center Stack)
                 val centerR1 = r1.x + r1.width / 2f
                 val centerR2 = r2.x + r2.width / 2f
                 val centerDiff = abs(centerR1 - centerR2)
-                
-                // 2. حساب الفجوات والتداخلات
-                val hOverlap = minOf(r1Right, r2Right) - maxOf(r1.x, r2.x)
                 val vGap = maxOf(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
-                val minWidth = minOf(r1.width, r2.width)
-
-                // 3. شرط دمج الأسطر فوق بعضها (تراكم عمودي)
-                // جعلنا الـ centerDiff يعتمد على 20% فقط من عرض النص الصغير لمنع "الجذب" من الفقاعات المجاورة
-                val isStacked = centerDiff < (minWidth * 0.20f) && 
+                
+                // دمج الأسطر التي تحت بعضها فقط إذا كانت مراكزها متطابقة بدقة (15% من عرض النص)
+                val isStacked = centerDiff < (minOf(r1.width, r2.width) * 0.15f) && 
                                 vGap < (sH * 0.4f * yThresholdFactor)
 
-                // 4. شرط دمج الأجزاء الجانبية (فقط عند وجود تداخل حقيقي 20% وفجوة رأسية ضيقة جداً)
-                val hasOverlapMerge = hOverlap > (minWidth * 0.2f) && vGap < (sH * 0.3f)
+                // 2. فحص تداخل المساحة (Area Overlap) بنسبة 20%
+                // لا يدمج الفقاعات الجانبية إلا إذا كان أحدهما داخل الآخر فعلياً بنسبة مساحة
+                val hasAreaOverlap = overlapArea > (minArea * 0.20f)
 
-                isStacked || hasOverlapMerge
+                isStacked || hasAreaOverlap
             }
         }
 
