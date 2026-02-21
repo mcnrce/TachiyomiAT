@@ -402,7 +402,6 @@ private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
 
 
 
-
 private fun shouldMergeTextBlock(
     r1: TranslationBlock,
     r2: TranslationBlock,
@@ -415,7 +414,7 @@ private fun shouldMergeTextBlock(
 
     val isVertical = abs(r1.angle) in 70.0..110.0
 
-    // حسابات المساحة والتقاطع
+    // حسابات المساحة والتقاطع والحدود
     val r1Right = r1.x + r1.width
     val r1Bottom = r1.y + r1.height
     val r2Right = r2.x + r2.width
@@ -433,7 +432,6 @@ private fun shouldMergeTextBlock(
     val areaR1 = r1.width * r1.height
     val areaR2 = r2.width * r2.height
     val minArea = minOf(areaR1, areaR2)
-    val minWidth = minOf(r1.width, r2.width)
 
     val sH = maxOf(r1.symHeight, r2.symHeight, 12f)
     val sW = maxOf(r1.symWidth, r2.symWidth, 12f)
@@ -455,25 +453,25 @@ private fun shouldMergeTextBlock(
         isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
 
     } else {
-        /* --- منطق الأسطر الأفقية (تحفظ شديد أفقياً) --- */
+        /* --- منطق الأسطر الأفقية الجديد (قناة دمج + 40% تداخل) --- */
         
-        // 1. فحص التراكم (Stacked): دمج الأسطر التي تحت بعضها فقط
-        val centerR1 = r1.x + r1.width / 2f
-        val centerR2 = r2.x + r2.width / 2f
-        val centerDiff = abs(centerR1 - centerR2)
+        // 1. فحص تداخل المساحة العميق (40%)
+        val hasHighOverlap = overlapArea > (minArea * 0.40f)
+
+        // 2. منطق قناة الدمج الرأسية (Vertical Channel)
+        // التحقق من وقوع مركز البلوك الثاني ضمن نطاق العرض الأفقي للبلوك الأول
+        val centerR2X = r2.x + r2.width / 2f
+        val isInXChannel = centerR2X >= r1.x && centerR2X <= r1Right
+
+        // حساب الفجوة الرأسية ومقارنتها بارتفاع الحرف الواحد (sH)
         val vGap = maxOf(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
-        
-        // شرط الصرامة: المركز يجب أن يتطابق بنسبة 10% فقط من عرض النص الصغير
-        val isStacked = centerDiff < (minWidth * 0.10f) && 
-                        vGap < (sH * 0.35f * yThresholdFactor)
+        val isCloseVertically = vGap <= sH
 
-        // 2. فحص تداخل المساحة العميق (Deep Area Overlap):
-        // لمنع دمج الفقاعات الجانبية، اشترطنا تداخل 35% من المساحة الكاملة
-        val hasDeepAreaOverlap = overlapArea > (minArea * 0.35f)
-
-        isStacked || hasDeepAreaOverlap
+        // الدمج يتم إذا كان في القناة وقريباً رأسياً، أو إذا كان التداخل كبيراً جداً
+        (isInXChannel && isCloseVertically) || hasHighOverlap
     }
 }
+
 
 
 
