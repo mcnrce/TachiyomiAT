@@ -49,7 +49,7 @@ class GoogleTranslator(
         for (block in allValidBlocks) {
             // نحسب طول النص + الفاصل + سطر جديد
             val textToAdd = block.text.replace("\n", " ").trim() + SAFE_SEPARATOR
-            if (currentLength + textToAdd.length > 2000 && currentBatch.isNotEmpty()) {
+            if (currentLength + textToAdd.length > 2500 && currentBatch.isNotEmpty()) {
                 batches.add(currentBatch)
                 currentBatch = mutableListOf()
                 currentLength = 0
