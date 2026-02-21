@@ -403,7 +403,7 @@ private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
 
 
 
-private fun shouldMerge(
+private fun shouldMergeTextBlock(
     r1: TranslationBlock,
     r2: TranslationBlock,
     xThreshold: Float,
