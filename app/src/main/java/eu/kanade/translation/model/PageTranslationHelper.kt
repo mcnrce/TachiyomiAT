@@ -81,9 +81,10 @@ class PageTranslationHelper {
             val areaR1 = r1.width * r1.height
             val areaR2 = r2.width * r2.height
             val minArea = minOf(areaR1, areaR2)
+            val minWidth = minOf(r1.width, r2.width)
 
             return if (isVertical) {
-                /* --- خوارزمية المانجا العمودية الأصلية --- */
+                /* --- خوارزمية المانجا العمودية الأصلية (بدون تعديل) --- */
                 val dx = abs(r1.x - r2.x)
                 val dy = abs(r1.y - r2.y)
                 val isOriginsClose = dy < (sH * 2.2f) && dx < (sW * 4.5f)
@@ -97,7 +98,7 @@ class PageTranslationHelper {
                 isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
 
             } else {
-                /* --- منطق الأسطر الأفقية (تراكم المراكز + تداخل المساحة) --- */
+                /* --- منطق الأسطر الأفقية (تحفظ شديد أفقياً) --- */
                 
                 // 1. فحص التراكم العمودي (Center Stack)
                 val centerR1 = r1.x + r1.width / 2f
@@ -105,15 +106,15 @@ class PageTranslationHelper {
                 val centerDiff = abs(centerR1 - centerR2)
                 val vGap = maxOf(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
                 
-                // دمج الأسطر التي تحت بعضها فقط إذا كانت مراكزها متطابقة بدقة (15% من عرض النص)
-                val isStacked = centerDiff < (minOf(r1.width, r2.width) * 0.15f) && 
-                                vGap < (sH * 0.4f * yThresholdFactor)
+                // صرامة عالية: تطابق المركز بنسبة 10% فقط وفجوة رأسية ضيقة جداً
+                val isStacked = centerDiff < (minWidth * 0.10f) && 
+                                vGap < (sH * 0.35f * yThresholdFactor)
 
-                // 2. فحص تداخل المساحة (Area Overlap) بنسبة 20%
-                // لا يدمج الفقاعات الجانبية إلا إذا كان أحدهما داخل الآخر فعلياً بنسبة مساحة
-                val hasAreaOverlap = overlapArea > (minArea * 0.20f)
+                // 2. فحص تداخل المساحة العميق (Deep Area Overlap):
+                // رفعنا النسبة إلى 35% لضمان أن النصوص ليست متجاورة فحسب، بل متداخلة فعلياً
+                val hasDeepAreaOverlap = overlapArea > (minArea * 0.35f)
 
-                isStacked || hasAreaOverlap
+                isStacked || hasDeepAreaOverlap
             }
         }
 
