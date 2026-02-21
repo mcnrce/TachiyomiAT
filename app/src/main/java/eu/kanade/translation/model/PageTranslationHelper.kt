@@ -26,7 +26,7 @@ class PageTranslationHelper {
             var result = initialBlocks
             var changed = true
 
-            // 3. حلقة الدمج الشاملة
+            // 3. حلقة الدمج الشاملة (تكرار الفحص لضمان دمج كل المجموعات الممكنة)
             while (changed) {
                 changed = false
                 var i = 0
@@ -69,7 +69,7 @@ class PageTranslationHelper {
             val sH = maxOf(r1.symHeight, r2.symHeight, 12f)
 
             return if (isVertical) {
-                /* --- خوارزمية المانجا العمودية الأصلية --- */
+                /* --- خوارزمية المانجا العمودية الأصلية (بدون تعديل) --- */
                 val dx = abs(r1.x - r2.x)
                 val dy = abs(r1.y - r2.y)
                 
@@ -85,16 +85,25 @@ class PageTranslationHelper {
                 isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
 
             } else {
-                /* --- منطق الأسطر الأفقية الصارم --- */
+                /* --- منطق الأسطر الأفقية المحسن (النسخة الصارمة جداً) --- */
+                
+                // 1. حساب المراكز بدقة لمقارنة التراكم العمودي
+                val centerR1 = r1.x + r1.width / 2f
+                val centerR2 = r2.x + r2.width / 2f
+                val centerDiff = abs(centerR1 - centerR2)
+                
+                // 2. حساب الفجوات والتداخلات
                 val hOverlap = minOf(r1Right, r2Right) - maxOf(r1.x, r2.x)
                 val vGap = maxOf(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
-                val centerDiff = abs((r1.x + r1.width / 2f) - (r2.x + r2.width / 2f))
-
-                val isStacked = centerDiff < (maxOf(r1.width, r2.width) * 0.45f) && 
-                                vGap < (sH * 1.2f * yThresholdFactor)
-
                 val minWidth = minOf(r1.width, r2.width)
-                val hasOverlapMerge = hOverlap > (minWidth * 0.2f) && vGap < (sH * 0.5f)
+
+                // 3. شرط دمج الأسطر فوق بعضها (تراكم عمودي)
+                // جعلنا الـ centerDiff يعتمد على 20% فقط من عرض النص الصغير لمنع "الجذب" من الفقاعات المجاورة
+                val isStacked = centerDiff < (minWidth * 0.20f) && 
+                                vGap < (sH * 0.4f * yThresholdFactor)
+
+                // 4. شرط دمج الأجزاء الجانبية (فقط عند وجود تداخل حقيقي 20% وفجوة رأسية ضيقة جداً)
+                val hasOverlapMerge = hOverlap > (minWidth * 0.2f) && vGap < (sH * 0.3f)
 
                 isStacked || hasOverlapMerge
             }
@@ -106,7 +115,6 @@ class PageTranslationHelper {
             val maxX = maxOf(a.x + a.width, b.x + b.width)
             val maxY = maxOf(a.y + a.height, b.y + b.height)
 
-            // دمج الكتل دون إعادة ترتيب أو تكبير (كما جاءت من المحرك)
             val blocks = listOf(a, b)
             
             val lenA = a.text.length.coerceAtLeast(1)
