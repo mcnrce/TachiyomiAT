@@ -278,126 +278,37 @@ class ChapterTranslator(
 
 
     
-            
-
-private fun smartMergeBlocks(
+            private fun smartMergeBlocks(
     blocks: List<TranslationBlock>,
     imgWidth: Float,
     imgHeight: Float
 ): MutableList<TranslationBlock> {
+    
+    // إذا كانت القائمة فارغة، نعود بقائمة فارغة
     if (blocks.isEmpty()) return mutableListOf()
 
-    // 1. تنظيف أولي
-    val filteredBlocks = blocks.filter { it.text.isNotBlank() }
-    
-    val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
-    var initialBlocks = filteredBlocks.toMutableList()
-    
-    // إعدادات العتبات
-    val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
-    val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
-
-    // المرحلة 1: الدمج
-    var i = 0
-    while (i < initialBlocks.size) {
-        var j = i + 1
-        var merged = false
-        while (j < initialBlocks.size) {
-            if (shouldMergeTextBlock(initialBlocks[i], initialBlocks[j], xThreshold, yThresholdFactor)) {
-                initialBlocks[i] = mergeTextBlock(initialBlocks[i], initialBlocks[j], isWebtoon)
-                initialBlocks.removeAt(j)
-                i = 0 
-                merged = true
-                break 
-            }
-            j++
-        }
-        if (!merged) i++
-    }
-
-    // المرحلة 2: التوسيع الموزون
-    val minSafeHeight = 25f 
-    val MAX_SCALE_LIMIT = 1.25f 
-
-    val expandedBlocks = initialBlocks.map { block ->
-        val cleanedText = block.text.replace("\n", " ").trim()
-        val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
-
-        val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
-            .coerceIn(1.0f, 1.25f)
-
-        val fontRatio = (minSafeHeight / block.symHeight.coerceAtLeast(10f))
-            .coerceAtLeast(1.0f)
-
-        var finalScale = kotlin.math.sqrt((textRatio * fontRatio).toDouble()).toFloat()
-        finalScale = finalScale.coerceAtMost(MAX_SCALE_LIMIT)
-
-        if (finalScale > 1.02f) {
-            val newWidth = block.width * finalScale
-            val newHeight = block.height * finalScale
-            
-            var newX = block.x - (newWidth - block.width) / 2f
-            var newY = block.y - (newHeight - block.height) / 2f
-            
-            if (newX < 0) newX = 0f
-            if (newX + newWidth > imgWidth) newX = (imgWidth - newWidth).coerceAtLeast(0f)
-            if (newY < 0) newY = 0f
-            if (newY + newHeight > imgHeight) newY = (imgHeight - newHeight).coerceAtLeast(0f)
-
-            block.copy(
-                text = cleanedText,
-                translation = cleanedTranslation,
-                width = newWidth,
-                height = newHeight,
-                x = newX,
-                y = newY
-            )
-        } else {
-            block.copy(text = cleanedText, translation = cleanedTranslation)
-        }
+    // المرحلة الوحيدة: التنظيف الشكلي للنصوص بدون أي دمج أو تغيير في الأبعاد
+    // سنقوم فقط بتحويل النصوص إلى سطر واحد لسهولة العرض، مع الحفاظ على كل "بلوك" منفصل
+    val rawOcrBlocks = blocks.map { block ->
+        block.copy(
+            text = block.text.replace("\n", " ").trim(),
+            translation = block.translation?.replace("\n", " ")?.trim() ?: ""
+            // لاحظ أننا لم نغير x, y, width, height 
+            // سيبقى كل بوكس في مكانه الأصلي الذي حدده الـ OCR
+        )
     }.toMutableList()
 
-    // المرحلة 3: حل التصادم
-    for (idx in expandedBlocks.indices) {
-        for (jdx in idx + 1 until expandedBlocks.size) {
-            val a = expandedBlocks[idx]
-            val b = expandedBlocks[jdx]
-            
-            if (isOverlapping(a, b)) {
-                val overlapX = minOf(a.x + a.width, b.x + b.width) - maxOf(a.x, b.x)
-                val overlapY = minOf(a.y + a.height, b.y + b.height) - maxOf(a.y, b.y)
-                
-                if (overlapX < overlapY) {
-                    val shift = (overlapX / 2f) + 1f
-                    if (a.x < b.x) {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtLeast(10f))
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtLeast(10f), x = b.x + shift)
-                    } else {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtLeast(10f), x = a.x + shift)
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtLeast(10f))
-                    }
-                } else {
-                    val shift = (overlapY / 2f) + 1f
-                    if (a.y < b.y) {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtLeast(10f))
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtLeast(10f), y = b.y + shift)
-                    } else {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtLeast(10f), y = a.y + shift)
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtLeast(10f))
-                    }
-                }
-            }
-        }
-    }
-    return expandedBlocks
+    // نعيد البلوكات كما هي بدون دمج (Phase 1 removed)
+    // بدون توسيع (Phase 2 removed)
+    // بدون حل تصادم (Phase 3 removed)
+    return rawOcrBlocks
 }
 
-private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
-    return a.x < b.x + b.width &&
-           a.x + a.width > b.x &&
-           a.y < b.y + b.height &&
-           a.y + a.height > b.y
-}
+/* ملاحظة: بما أننا عطلنا الدمج، لن نحتاج لدوال 
+   shouldMergeTextBlock أو mergeTextBlock 
+   في هذه النسخة من الكود.
+*/
+
 
 
 
