@@ -278,6 +278,8 @@ class ChapterTranslator(
 
 
     
+            
+
 private fun smartMergeBlocks(
     blocks: List<TranslationBlock>,
     imgWidth: Float,
@@ -289,24 +291,13 @@ private fun smartMergeBlocks(
     val filteredBlocks = blocks.filter { it.text.isNotBlank() }
     
     val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
-
-    // 2. الترتيب قبل الدمج (هذا هو الجزء الناقص الذي ذكرته)
-    // لضمان أن الدمج يبدأ من الأعلى للأسفل، ومن اليمين لليسار (مانجا) أو العكس (ويب تون)
-    val sortedBlocks = if (isWebtoon) {
-        // ويب تون: من الأعلى للأسفل، ثم من اليسار لليمين
-        filteredBlocks.sortedWith(compareBy<TranslationBlock> { it.y }.thenBy { it.x })
-    } else {
-        // مانجا: من الأعلى للأسفل، ثم من اليمين لليسار
-        filteredBlocks.sortedWith(compareBy<TranslationBlock> { it.y }.thenByDescending { it.x })
-    }
-
-    var initialBlocks = sortedBlocks.toMutableList()
+    var initialBlocks = filteredBlocks.toMutableList()
     
     // إعدادات العتبات
     val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
     val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
 
-    // المرحلة 1: الدمج (الآن ستعمل بترتيب صحيح)
+    // المرحلة 1: الدمج
     var i = 0
     while (i < initialBlocks.size) {
         var j = i + 1
@@ -324,8 +315,7 @@ private fun smartMergeBlocks(
         if (!merged) i++
     }
 
-
-    // المرحلة 2: التوسيع الموزون (بدون لمس symWidth/Height)
+    // المرحلة 2: التوسيع الموزون
     val minSafeHeight = 25f 
     val MAX_SCALE_LIMIT = 1.25f 
 
@@ -333,14 +323,12 @@ private fun smartMergeBlocks(
         val cleanedText = block.text.replace("\n", " ").trim()
         val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
 
-        // 1. حساب نسبة احتياج النص للتوسع (الحساب فقط)
         val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
             .coerceIn(1.0f, 1.25f)
 
         val fontRatio = (minSafeHeight / block.symHeight.coerceAtLeast(10f))
             .coerceAtLeast(1.0f)
 
-        // النسبة النهائية لتكبير الإطار (Width/Height)
         var finalScale = kotlin.math.sqrt((textRatio * fontRatio).toDouble()).toFloat()
         finalScale = finalScale.coerceAtMost(MAX_SCALE_LIMIT)
 
@@ -363,8 +351,6 @@ private fun smartMergeBlocks(
                 height = newHeight,
                 x = newX,
                 y = newY
-                // هنا السر: لم نقم بتعديل symHeight أو symWidth
-                // نترك القيم الأصلية كما هي ليعرف محرك العرض أن النص يحتاج مساحة أكبر
             )
         } else {
             block.copy(text = cleanedText, translation = cleanedTranslation)
@@ -413,20 +399,16 @@ private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
            a.y + a.height > b.y
 }
 
-
-
-
-     private fun shouldMergeTextBlock(
+private fun shouldMergeTextBlock(
     a: TranslationBlock,
     b: TranslationBlock,
     xThreshold: Float,
     yThresholdFactor: Float
 ): Boolean {
-    // 1. فحص تقارب الزوايا (جعلناه أكثر صرامة: 10 درجات بدل 15)
     val angleDiff = abs(a.angle - b.angle)
     if (!(angleDiff < 10 || abs(angleDiff - 180) < 10)) return false
 
-    val isVertical = abs(a.angle) in 75.0..105.0 // تضييق نطاق العمودي للدقة
+    val isVertical = abs(a.angle) in 70.0..110.0 // النطاق الأصلي للمانجا
     
     val aRight = a.x + a.width
     val bRight = b.x + b.width
@@ -436,44 +418,37 @@ private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
     val sW = maxOf(a.symWidth, b.symWidth, 12f)
     val sH = maxOf(a.symHeight, b.symHeight, 12f)
 
+    val hOverlap = minOf(aRight, bRight) - maxOf(a.x, b.x)
+    val vOverlap = minOf(aBottom, bBottom) - maxOf(a.y, b.y)
     val hGap = maxOf(0f, if (a.x < b.x) b.x - aRight else a.x - bRight)
     val vGap = maxOf(0f, if (a.y < b.y) b.y - aBottom else a.y - bBottom)
-    val vOverlap = minOf(aBottom, bBottom) - maxOf(a.y, b.y)
 
     return if (isVertical) {
-        /* --- دمج عمودي (مانجا) محافظ --- */
+        /* --- خوارزمية المانجا العمودية الأصلية --- */
         val dx = abs(a.x - b.x)
         val dy = abs(a.y - b.y)
         
-        // تقليص dy من 2.5 إلى 1.2 (يجب أن يبدأ السطران من نفس المستوى تقريباً)
-        val originsClose = dy < (sH * 1.2f) && dx < (sW * 2.5f)
-        
-        // تقليص hGap من 2.5 إلى 1.0 (الأعمدة يجب أن تكون متلاصقة أفقياً)
-        val sideBySide = hGap < (sW * 1.0f) && dy < (sH * 1.2f)
-        
-        // اشتراط تداخل رأسي أكبر (من 0.15 إلى 0.4) لضمان أنهما نفس العمود
-        val aligned = vOverlap > (sH * 0.4f) && hGap < (sW * 1.0f)
+        val originsClose = dy < (sH * 2.2f) && dx < (sW * 4.5f)
+        val sideBySide = hGap < (sW * 2.5f) && dy < (sH * 2.2f)
+        val aligned = vOverlap > (sH * 0.15f) && hGap < (sW * 2.2f)
         
         originsClose || sideBySide || aligned
     } else {
-        /* --- دمج أفقي (مانهوا) محافظ --- */
-        
-        // تقليل المسافة الرأسية بين الأسطر (من 0.9 إلى 0.5)
-        val closeVertically = vGap <= sH * (yThresholdFactor * 0.5f)
-        
-        val hOverlap = minOf(aRight, bRight) - maxOf(a.x, b.x)
-        val dxCenter = abs((a.x + a.width / 2f) - (b.x + b.width / 2f))
-        
-        // تقليل dxCenter و hGap لضمان عدم دمج جمل بعيدة أفقياً
-        val closeHorizontally = if (hOverlap > sW * 0.5f) {
-            dxCenter < sW * (xThreshold * 0.6f) 
-        } else {
-            hGap < sW * 0.8f // فجوة ضيقة جداً (أقل من حجم حرف واحد)
-        }
-        
-        closeVertically && closeHorizontally
+        /* --- منطق الأسطر الأفقية الصارم --- */
+        val centerDiff = abs((a.x + a.width / 2f) - (b.x + b.width / 2f))
+        val isStacked = centerDiff < (maxOf(a.width, b.width) * 0.45f) && 
+                        vGap < (sH * 0.5f * yThresholdFactor)
+
+        val minWidth = minOf(a.width, b.width)
+        val hasOverlapMerge = hOverlap > (minWidth * 0.2f) && vGap < (sH * 0.4f)
+
+        isStacked || hasOverlapMerge
     }
 }
+
+
+
+     
 
 
 
