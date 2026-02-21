@@ -436,25 +436,28 @@ private fun shouldMergeTextBlock(
     } else {
         /* --- منطق الأسطر الأفقية الصارم والمحسن --- */
         
-        // 1. حساب المراكز بدقة
+        // 1. حساب المراكز بدقة لكلتا الكتلتين
         val centerA = a.x + a.width / 2f
         val centerB = b.x + b.width / 2f
         val centerDiff = abs(centerA - centerB)
-
-        // 2. استخدام أصغر عرض لتحديد حساسية "نطاق الجذب"
-        val minWidth = minOf(a.width, b.width)
         
-        // تقليل النسبة من 0.45f إلى 0.20f (لضمان أن النصوص فوق بعضها فعلياً)
-        // وتقليل vGap المسموح لمنع القفز خارج حدود الفقاعات
+        // 2. استخدام أصغر عرض (minWidth) لضبط حساسية الدمج
+        val minWidth = minOf(a.width, b.width)
+
+        // 3. شرط تراكم الأسطر (Stacked):
+        // تم تقليل نسبة السماح في centerDiff من 45% إلى 20%
+        // وتم تقليل الفجوة الرأسية المسموحة لمنع دمج الكلام الحر مع الفقاعات
         val isStacked = centerDiff < (minWidth * 0.20f) && 
                         vGap < (sH * 0.4f * yThresholdFactor)
 
-        // 3. شرط التداخل الجوهري (لا يدمج الجوانب إلا إذا تداخلت 20%)
+        // 4. شرط التداخل الأفقي الجوهري (للكلمات المتجاورة):
+        // لا يدمج إلا إذا كان هناك تداخل 20% على الأقل وفجوة رأسية ضيقة جداً
         val hasOverlapMerge = hOverlap > (minWidth * 0.2f) && vGap < (sH * 0.3f)
 
         isStacked || hasOverlapMerge
     }
 }
+
 
 
 
