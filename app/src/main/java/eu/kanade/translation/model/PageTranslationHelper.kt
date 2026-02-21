@@ -1,4 +1,3 @@
-
 package eu.kanade.translation.model
 
 import kotlin.math.abs
