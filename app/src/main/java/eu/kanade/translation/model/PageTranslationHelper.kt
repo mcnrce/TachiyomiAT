@@ -81,7 +81,6 @@ class PageTranslationHelper {
             val areaR1 = r1.width * r1.height
             val areaR2 = r2.width * r2.height
             val minArea = minOf(areaR1, areaR2)
-            val minWidth = minOf(r1.width, r2.width)
 
             return if (isVertical) {
                 /* --- خوارزمية المانجا العمودية الأصلية (بدون تعديل) --- */
@@ -98,23 +97,21 @@ class PageTranslationHelper {
                 isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
 
             } else {
-                /* --- منطق الأسطر الأفقية (تحفظ شديد أفقياً) --- */
+                /* --- منطق الأسطر الأفقية الجديد (قناة دمج + 40% تداخل) --- */
                 
-                // 1. فحص التراكم العمودي (Center Stack)
-                val centerR1 = r1.x + r1.width / 2f
-                val centerR2 = r2.x + r2.width / 2f
-                val centerDiff = abs(centerR1 - centerR2)
+                // 1. فحص تداخل المساحة بنسبة 40%
+                val hasHighOverlap = overlapArea > (minArea * 0.40f)
+
+                // 2. منطق قناة الدمج الرأسية (Vertical Channel)
+                // هل يقع مركز البلوك الثاني داخل حدود العرض الأفقي للبلوك الأول؟
+                val centerR2X = r2.x + r2.width / 2f
+                val isInXChannel = centerR2X >= r1.x && centerR2X <= r1Right
+
+                // حساب الفجوة الرأسية ومقارنتها بارتفاع الحرف الواحد (sH)
                 val vGap = maxOf(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
-                
-                // صرامة عالية: تطابق المركز بنسبة 10% فقط وفجوة رأسية ضيقة جداً
-                val isStacked = centerDiff < (minWidth * 0.10f) && 
-                                vGap < (sH * 0.35f * yThresholdFactor)
+                val isCloseVertically = vGap <= sH
 
-                // 2. فحص تداخل المساحة العميق (Deep Area Overlap):
-                // رفعنا النسبة إلى 35% لضمان أن النصوص ليست متجاورة فحسب، بل متداخلة فعلياً
-                val hasDeepAreaOverlap = overlapArea > (minArea * 0.35f)
-
-                isStacked || hasDeepAreaOverlap
+                (isInXChannel && isCloseVertically) || hasHighOverlap
             }
         }
 
