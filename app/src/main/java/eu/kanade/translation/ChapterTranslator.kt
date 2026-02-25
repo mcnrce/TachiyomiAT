@@ -51,6 +51,8 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.InputStream
 import kotlin.math.abs
+import kotlin.math.sqrt
+
 
 class ChapterTranslator(
     private val context: Context,
