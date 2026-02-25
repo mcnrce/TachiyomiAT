@@ -282,15 +282,6 @@ class ChapterTranslator(
     
             
 
-private fun wrapNumbersInBrackets(input: String): String {
-    if (input.isBlank()) return input
-    // يلتقط الرقم مع ما يسبقه أو يلحقه من رموز وإشارات ومسافات
-    val regex = Regex("""([+×÷=/_%\-]\s*)?\d+(\s*[+×÷=/_%\-])*""")
-    return regex.replace(input) { matchResult ->
-        val value = matchResult.value.trim()
-        if (value.any { it.isDigit() }) "[$value]" else value
-    }
-}
 
 private fun smartMergeBlocks(
     blocks: List<TranslationBlock>,
@@ -299,17 +290,24 @@ private fun smartMergeBlocks(
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
-    // 1. تنظيف أولي
+    // دالة داخلية لمعالجة الأرقام والرموز لضمان عدم حدوث تعارض في النطاق (Scope)
+    fun wrapInBrackets(input: String): String {
+        if (input.isBlank()) return input
+        val regex = Regex("""([+×÷=/_%\-]\s*)?\d+(\s*[+×÷=/_%\-])*""")
+        return regex.replace(input) { matchResult ->
+            val value = matchResult.value
+            if (value.any { it.isDigit() }) "[${value.trim()}]" else value
+        }
+    }
+
     val filteredBlocks = blocks.filter { it.text.isNotBlank() }
-    
     val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
     var initialBlocks = filteredBlocks.toMutableList()
     
-    // إعدادات العتبات
     val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
     val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
 
-    // المرحلة 1: الدمج (إبقاء المنطق كما هو)
+    // المرحلة 1: الدمج
     var i = 0
     while (i < initialBlocks.size) {
         var j = i + 1
@@ -332,11 +330,10 @@ private fun smartMergeBlocks(
     val MAX_SCALE_LIMIT = 1.25f 
 
     val expandedBlocks = initialBlocks.map { block ->
-        val cleanedText = block.text.replace("\n", " ").trim()
-        
-        // تطبيق تغليف الأرقام بالأقواس على النص المترجم هنا
+        // معالجة النص الأصلي والمترجم بالأقواس
+        val cleanedText = wrapInBrackets(block.text.replace("\n", " ").trim())
         val rawTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
-        val cleanedTranslation = wrapNumbersInBrackets(rawTranslation)
+        val cleanedTranslation = wrapInBrackets(rawTranslation)
 
         val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
             .coerceIn(1.0f, 1.25f)
@@ -344,19 +341,17 @@ private fun smartMergeBlocks(
         val fontRatio = (minSafeHeight / block.symHeight.coerceAtLeast(10f))
             .coerceAtLeast(1.0f)
 
-        var finalScale = kotlin.math.sqrt((textRatio * fontRatio).toDouble()).toFloat()
+        var finalScale = sqrt((textRatio * fontRatio).toDouble()).toFloat()
         finalScale = finalScale.coerceAtMost(MAX_SCALE_LIMIT)
 
         if (finalScale > 1.02f) {
             val newWidth = block.width * finalScale
             val newHeight = block.height * finalScale
             
-            var newX = block.x - (newWidth - block.width) / 2f
-            var newY = block.y - (newHeight - block.height) / 2f
+            var newX = (block.x - (newWidth - block.width) / 2f).coerceAtLeast(0f)
+            var newY = (block.y - (newHeight - block.height) / 2f).coerceAtLeast(0f)
             
-            if (newX < 0) newX = 0f
             if (newX + newWidth > imgWidth) newX = (imgWidth - newWidth).coerceAtLeast(0f)
-            if (newY < 0) newY = 0f
             if (newY + newHeight > imgHeight) newY = (imgHeight - newHeight).coerceAtLeast(0f)
 
             block.copy(
@@ -372,7 +367,7 @@ private fun smartMergeBlocks(
         }
     }.toMutableList()
 
-    // المرحلة 3: حل التصادم (إبقاء المنطق كما هو)
+    // المرحلة 3: حل التصادم
     for (idx in expandedBlocks.indices) {
         for (jdx in idx + 1 until expandedBlocks.size) {
             val a = expandedBlocks[idx]
@@ -407,6 +402,7 @@ private fun smartMergeBlocks(
     return expandedBlocks
 }
 
+ 
 
 
             
