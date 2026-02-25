@@ -287,6 +287,16 @@ private fun smartMergeBlocks(
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
+    // الإضافة الجديدة: دالة معالجة الأرقام والرموز بالأقواس
+    fun wrapInBrackets(input: String): String {
+        if (input.isBlank()) return input
+        val regex = Regex("""([+×÷=/_%\-]\s*)?\d+(\s*[+×÷=/_%\-])*""")
+        return regex.replace(input) { matchResult ->
+            val value = matchResult.value
+            if (value.any { it.isDigit() }) "[${value.trim()}]" else value
+        }
+    }
+
     // 1. تنظيف أولي
     val filteredBlocks = blocks.filter { it.text.isNotBlank() }
     
@@ -315,13 +325,15 @@ private fun smartMergeBlocks(
         if (!merged) i++
     }
 
-    // المرحلة 2: التوسيع الموزون
+    // المرحلة 2: التوسيع الموزون (تعديل معالجة النص هنا)
     val minSafeHeight = 25f 
     val MAX_SCALE_LIMIT = 1.25f 
 
     val expandedBlocks = initialBlocks.map { block ->
-        val cleanedText = block.text.replace("\n", " ").trim()
-        val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
+        // استخدام wrapInBrackets لمعالجة النص الأصلي والمترجم
+        val cleanedText = wrapInBrackets(block.text.replace("\n", " ").trim())
+        val rawTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
+        val cleanedTranslation = wrapInBrackets(rawTranslation)
 
         val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
             .coerceIn(1.0f, 1.25f)
@@ -392,13 +404,15 @@ private fun smartMergeBlocks(
     return expandedBlocks
 }
 
+ 
+ 
 private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
     return a.x < b.x + b.width &&
            a.x + a.width > b.x &&
            a.y < b.y + b.height &&
            a.y + a.height > b.y
 }
-
+ 
 
 
 
