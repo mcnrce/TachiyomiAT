@@ -278,8 +278,6 @@ class ChapterTranslator(
 
 
     
-            
-
 private fun smartMergeBlocks(
     blocks: List<TranslationBlock>,
     imgWidth: Float,
@@ -403,6 +401,7 @@ private fun smartMergeBlocks(
     }
     return expandedBlocks
 }
+
 
  
  
