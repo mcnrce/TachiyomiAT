@@ -22,6 +22,21 @@ class GoogleTranslator(
     private val SAFE_SEPARATOR = " . " 
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
+        // --- إعداد منطق إصلاح الاتجاه (RTL) ---
+        val rtlLanguages = setOf(
+            TextTranslatorLanguage.ARABIC,
+            TextTranslatorLanguage.PERSIAN,
+            TextTranslatorLanguage.HEBREW,
+            TextTranslatorLanguage.URDU,
+            TextTranslatorLanguage.PUSHTO_PASHTO,
+            TextTranslatorLanguage.SINDHI,
+            TextTranslatorLanguage.UIGHUR_UYGHUR,
+            TextTranslatorLanguage.YIDDISH,
+            TextTranslatorLanguage.KURDISH
+        )
+        val isRTL = rtlLanguages.contains(toLang)
+        val rtlMarker = if (isRTL) "\u200F" else ""
+
         // 1. تجميع كل البلوكات الصالحة من كل الصفحات
         val allValidBlocks = mutableListOf<TranslationBlock>()
         pages.forEach { (_, page) ->
@@ -41,13 +56,12 @@ class GoogleTranslator(
 
         if (allValidBlocks.isEmpty()) return
 
-        // 2. تحزيم البلوكات (Batching) بناءً على طول النص (الحد الآمن 2500 حرف)
+        // 2. تحزيم البلوكات (Batching) بناءً على طول النص
         val batches = mutableListOf<MutableList<TranslationBlock>>()
         var currentBatch = mutableListOf<TranslationBlock>()
         var currentLength = 0
 
         for (block in allValidBlocks) {
-            // نحسب طول النص + الفاصل + سطر جديد
             val textToAdd = block.text.replace("\n", " ").trim() + SAFE_SEPARATOR
             if (currentLength + textToAdd.length > 2500 && currentBatch.isNotEmpty()) {
                 batches.add(currentBatch)
@@ -70,19 +84,19 @@ class GoogleTranslator(
             } catch (e: Exception) { "" }
 
             if (translatedMergedText.isNotBlank()) {
-                // تقسيم الرد بناءً على السطر الجديد
                 val translatedLines = translatedMergedText.split("\n")
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
 
-                // توزيع الترجمة مع تنظيف الفاصل الآمن
                 batch.forEachIndexed { index, block ->
                     if (index < translatedLines.size) {
-                        // إزالة النقطة الفاصلة التي قد تعود في نهاية الترجمة
-                        block.translation = translatedLines[index]
+                        val cleanText = translatedLines[index]
                             .removeSuffix(".")
                             .removeSuffix(" .")
                             .trim()
+                        
+                        // تطبيق رمز RTL في بداية النص المترجم للغات المختارة
+                        block.translation = rtlMarker + cleanText
                     }
                 }
             }
@@ -119,7 +133,7 @@ class GoogleTranslator(
         return "https://translate.google.com/translate_a/single?client=$client1&sl=auto&tl=$lang&dt=t&tk=$tk&q=$encode"
     }
 
-    // --- حساب الـ Token (نفس منطقك الأصلي للحفاظ على الصلاحية) ---
+    // منطق الـ Token والحسابات الرياضية يبقى كما هو (لم يتم تغييره لضمان الصلاحية)
     private fun calculateToken(str: String): String {
         var j: Long = 406644
         val list = mutableListOf<Int>()
