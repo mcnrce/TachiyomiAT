@@ -52,7 +52,6 @@ import uy.kohesive.injekt.api.get
 import java.io.InputStream
 import kotlin.math.abs
 
-
 class ChapterTranslator(
     private val context: Context,
     private val provider: TranslationProvider,
@@ -281,7 +280,6 @@ class ChapterTranslator(
     
             
 
-
 private fun smartMergeBlocks(
     blocks: List<TranslationBlock>,
     imgWidth: Float,
@@ -289,20 +287,13 @@ private fun smartMergeBlocks(
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
-    // دالة داخلية لمعالجة الأرقام والرموز لضمان عدم حدوث تعارض في النطاق (Scope)
-    fun wrapInBrackets(input: String): String {
-        if (input.isBlank()) return input
-        val regex = Regex("""([+×÷=/_%\-]\s*)?\d+(\s*[+×÷=/_%\-])*""")
-        return regex.replace(input) { matchResult ->
-            val value = matchResult.value
-            if (value.any { it.isDigit() }) "[${value.trim()}]" else value
-        }
-    }
-
+    // 1. تنظيف أولي
     val filteredBlocks = blocks.filter { it.text.isNotBlank() }
+    
     val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
     var initialBlocks = filteredBlocks.toMutableList()
     
+    // إعدادات العتبات
     val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
     val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
 
@@ -324,15 +315,13 @@ private fun smartMergeBlocks(
         if (!merged) i++
     }
 
-    // المرحلة 2: التوسيع الموزون وتغليف الأرقام
+    // المرحلة 2: التوسيع الموزون
     val minSafeHeight = 25f 
     val MAX_SCALE_LIMIT = 1.25f 
 
     val expandedBlocks = initialBlocks.map { block ->
-        // معالجة النص الأصلي والمترجم بالأقواس
-        val cleanedText = wrapInBrackets(block.text.replace("\n", " ").trim())
-        val rawTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
-        val cleanedTranslation = wrapInBrackets(rawTranslation)
+        val cleanedText = block.text.replace("\n", " ").trim()
+        val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
 
         val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
             .coerceIn(1.0f, 1.25f)
@@ -347,10 +336,12 @@ private fun smartMergeBlocks(
             val newWidth = block.width * finalScale
             val newHeight = block.height * finalScale
             
-            var newX = (block.x - (newWidth - block.width) / 2f).coerceAtLeast(0f)
-            var newY = (block.y - (newHeight - block.height) / 2f).coerceAtLeast(0f)
+            var newX = block.x - (newWidth - block.width) / 2f
+            var newY = block.y - (newHeight - block.height) / 2f
             
+            if (newX < 0) newX = 0f
             if (newX + newWidth > imgWidth) newX = (imgWidth - newWidth).coerceAtLeast(0f)
+            if (newY < 0) newY = 0f
             if (newY + newHeight > imgHeight) newY = (imgHeight - newHeight).coerceAtLeast(0f)
 
             block.copy(
@@ -401,10 +392,13 @@ private fun smartMergeBlocks(
     return expandedBlocks
 }
 
- 
+private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
+    return a.x < b.x + b.width &&
+           a.x + a.width > b.x &&
+           a.y < b.y + b.height &&
+           a.y + a.height > b.y
+}
 
-
-            
 
 
 
