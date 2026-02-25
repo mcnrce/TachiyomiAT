@@ -56,7 +56,6 @@ class GeminiTranslator(
             val pageEntries = pages.entries.toList()
             var currentIndex = 0
             
-            // نستخدم 500 كلمة كحد أقصى للدفعة الواحدة لضمان رد JSON كامل
             val MAX_WORDS_PER_BATCH = 450
             val MAX_PAGES_PER_BATCH = 25
 
@@ -64,7 +63,6 @@ class GeminiTranslator(
                 val batch = mutableListOf<Map.Entry<String, PageTranslation>>()
                 var batchWordCount = 0
 
-                // تجميع الصفحات حتى نصل للحد الأقصى للكلمات أو عدد الصفحات
                 while (currentIndex < pageEntries.size && 
                        batch.size < MAX_PAGES_PER_BATCH && 
                        batchWordCount < MAX_WORDS_PER_BATCH) {
@@ -73,7 +71,6 @@ class GeminiTranslator(
                     val pageText = entry.value.blocks.joinToString(" ") { it.text }
                     val wordCount = pageText.split(Regex("\\s+")).size
 
-                    // حماية: إذا كانت الصفحة الأولى نفسها ضخمة، نرسلها وحدها
                     if (batch.isNotEmpty() && batchWordCount + wordCount > MAX_WORDS_PER_BATCH) break
 
                     batch.add(entry)
@@ -81,13 +78,11 @@ class GeminiTranslator(
                     currentIndex++
                 }
 
-                // 1) بناء JSON للدفعة
                 val batchData = batch.associate { (key, page) ->
                     key to page.blocks.map { it.text }
                 }
                 val inputJson = JSONObject(batchData)
 
-                // 2) إرسال الطلب (مع محاولة إعادة بسيطة في حال الرد الفارغ)
                 var responseText = ""
                 var attempt = 0
                 while (attempt < 2 && responseText.isBlank()) {
@@ -99,19 +94,33 @@ class GeminiTranslator(
                     }
                 }
 
-                // 3) استخراج JSON دفاعيًا
                 val start = responseText.indexOf('{')
                 val end = responseText.lastIndexOf('}')
 
                 if (start == -1 || end == -1 || end <= start) {
                     logcat { "Invalid or Empty JSON response at index $currentIndex" }
-                    // إذا فشلت الدفعة تماماً، نرمي خطأ لنعرف أن الترجمة لم تكتمل
                     throw Exception("فشل الحصول على رد من الذكاء الاصطناعي للدفعة الحالية")
                 }
 
                 val resJson = JSONObject(responseText.substring(start, end + 1))
 
-                // 4) تطبيق الترجمة (نفس منطقك الأصلي تماماً)
+                // --- منطق إصلاح اتجاه النص للغات RTL ---
+                // قائمة اللغات التي تكتب من اليمين لليسار بناءً على الـ Enum الخاص بك
+                val rtlLanguages = setOf(
+                    TextTranslatorLanguage.ARABIC,
+                    TextTranslatorLanguage.PERSIAN,
+                    TextTranslatorLanguage.HEBREW,
+                    TextTranslatorLanguage.URDU,
+                    TextTranslatorLanguage.PUSHTO_PASHTO,
+                    TextTranslatorLanguage.SINDHI,
+                    TextTranslatorLanguage.UIGHUR_UYGHUR,
+                    TextTranslatorLanguage.YIDDISH,
+                    TextTranslatorLanguage.KURDISH // تمت إضافة الكردية بناءً على طلبك
+                )
+
+                val isRTL = rtlLanguages.contains(toLang)
+                val rtlMarker = if (isRTL) "\u200F" else ""
+
                 for ((key, page) in batch) {
                     val arr = resJson.optJSONArray(key)
 
@@ -122,12 +131,12 @@ class GeminiTranslator(
                             block.angle < -15.0f || block.angle > 15.0f -> ""
                             translated == null || translated == "__NULL__" -> block.text
                             translated == "RTMTH" -> ""
-                            else -> translated
+                            // إضافة الرمز RTL Marker (U+200F) في بداية النص المترجم
+                            else -> rtlMarker + translated
                         }
                     }
                 }
 
-                // 5) انتظار 1 ثانية (ضمان الثبات)
                 if (currentIndex < pageEntries.size) {
                     Thread.sleep(1000)
                 }
