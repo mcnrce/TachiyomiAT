@@ -287,13 +287,10 @@ private fun smartMergeBlocks(
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
-    // 1. تنظيف أولي
     val filteredBlocks = blocks.filter { it.text.isNotBlank() }
-    
     val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
     var initialBlocks = filteredBlocks.toMutableList()
     
-    // إعدادات العتبات
     val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
     val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
 
@@ -315,13 +312,14 @@ private fun smartMergeBlocks(
         if (!merged) i++
     }
 
-    // المرحلة 2: التوسيع الموزون
+    // المرحلة 2: التوسيع ومعالجة الأرقام والرموز
     val minSafeHeight = 25f 
     val MAX_SCALE_LIMIT = 1.25f 
 
     val expandedBlocks = initialBlocks.map { block ->
-        val cleanedText = block.text.replace("\n", " ").trim()
-        val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
+        // استخدام الدالة المساعدة لإضافة الأقواس [] حول الأرقام والرموز
+        val cleanedText = wrapNumbersInBrackets(block.text.replace("\n", " ").trim())
+        val cleanedTranslation = wrapNumbersInBrackets(block.translation?.replace("\n", " ")?.trim() ?: "")
 
         val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
             .coerceIn(1.0f, 1.25f)
@@ -329,44 +327,35 @@ private fun smartMergeBlocks(
         val fontRatio = (minSafeHeight / block.symHeight.coerceAtLeast(10f))
             .coerceAtLeast(1.0f)
 
-        var finalScale = kotlin.math.sqrt((textRatio * fontRatio).toDouble()).toFloat()
+        var finalScale = sqrt((textRatio * fontRatio).toDouble()).toFloat()
         finalScale = finalScale.coerceAtMost(MAX_SCALE_LIMIT)
 
         if (finalScale > 1.02f) {
             val newWidth = block.width * finalScale
             val newHeight = block.height * finalScale
+            var newX = (block.x - (newWidth - block.width) / 2f).coerceAtLeast(0f)
+            var newY = (block.y - (newHeight - block.height) / 2f).coerceAtLeast(0f)
             
-            var newX = block.x - (newWidth - block.width) / 2f
-            var newY = block.y - (newHeight - block.height) / 2f
-            
-            if (newX < 0) newX = 0f
             if (newX + newWidth > imgWidth) newX = (imgWidth - newWidth).coerceAtLeast(0f)
-            if (newY < 0) newY = 0f
             if (newY + newHeight > imgHeight) newY = (imgHeight - newHeight).coerceAtLeast(0f)
 
             block.copy(
-                text = cleanedText,
-                translation = cleanedTranslation,
-                width = newWidth,
-                height = newHeight,
-                x = newX,
-                y = newY
+                text = cleanedText, translation = cleanedTranslation,
+                width = newWidth, height = newHeight, x = newX, y = newY
             )
         } else {
             block.copy(text = cleanedText, translation = cleanedTranslation)
         }
     }.toMutableList()
 
-    // المرحلة 3: حل التصادم
+    // المرحلة 3: حل التصادم (نفس منطقك الأصلي)
     for (idx in expandedBlocks.indices) {
         for (jdx in idx + 1 until expandedBlocks.size) {
             val a = expandedBlocks[idx]
             val b = expandedBlocks[jdx]
-            
             if (isOverlapping(a, b)) {
                 val overlapX = minOf(a.x + a.width, b.x + b.width) - maxOf(a.x, b.x)
                 val overlapY = minOf(a.y + a.height, b.y + b.height) - maxOf(a.y, b.y)
-                
                 if (overlapX < overlapY) {
                     val shift = (overlapX / 2f) + 1f
                     if (a.x < b.x) {
@@ -392,13 +381,21 @@ private fun smartMergeBlocks(
     return expandedBlocks
 }
 
-private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
-    return a.x < b.x + b.width &&
-           a.x + a.width > b.x &&
-           a.y < b.y + b.height &&
-           a.y + a.height > b.y
+/**
+ * دالة مساعدة لمعالجة الأرقام والرموز مع مراعاة المسافات
+ */
+private fun wrapNumbersInBrackets(input: String): String {
+    if (input.isBlank()) return input
+    // يلتقط الرقم مع ما يسبقه أو يلحقه من رموز وإشارات ومسافات
+    val regex = Regex("""([+×÷=/_%\-]\s*)?\d+(\s*[+×÷=/_%\-])*""")
+    return regex.replace(input) { matchResult ->
+        val value = matchResult.value
+        if (value.any { it.isDigit() }) "[${value.trim()}]" else value
+    }
 }
 
+
+            
 
 
 
