@@ -340,7 +340,7 @@ private fun smartMergeBlocks(
         val fontRatio = (minSafeHeight / block.symHeight.coerceAtLeast(10f))
             .coerceAtLeast(1.0f)
 
-        var finalScale = sqrt((textRatio * fontRatio).toDouble()).toFloat()
+        var finalScale = kotlin.math.sqrt((textRatio * fontRatio).toDouble()).toFloat()
         finalScale = finalScale.coerceAtMost(MAX_SCALE_LIMIT)
 
         if (finalScale > 1.02f) {
