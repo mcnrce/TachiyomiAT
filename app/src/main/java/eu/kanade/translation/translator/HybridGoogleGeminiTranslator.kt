@@ -14,7 +14,6 @@ class HybridGoogleGeminiTranslator(
     private val temperature: Float
 ) : TextTranslator {
 
-    // إنشاء المترجمين داخلياً باستخدام المعطيات الممرة
     private val googleTranslator = GoogleTranslator(fromLang, toLang)
     private val geminiTranslator = GeminiTranslator(fromLang, toLang, apiKey, modelName, maxOutputTokens, temperature)
 
@@ -30,25 +29,24 @@ class HybridGoogleGeminiTranslator(
             val failedBlocks = mutableListOf<TranslationBlock>()
 
             for (block in page.blocks) {
-                // نتحقق إذا كانت الترجمة لا تزال تحتوي على كلمات أصلية لم تترجم
+                // نتحقق إذا كانت الترجمة لا تزال تحتوي على كلمات أصلية
                 if (!block.translation.isNullOrBlank() && hasUntranslatedWords(block.text, block.translation!!)) {
                     failedBlocks.add(block)
                 }
             }
 
             if (failedBlocks.isNotEmpty()) {
+                // تعديل هنا: إنشاء الكائن بالبلوكات فقط لتجنب خطأ Compilation
                 failedBlocksMap[pageKey] = PageTranslation(
-                    blocks = failedBlocks,
-                    imageWidth = page.imageWidth,
-                    imageHeight = page.imageHeight
+                    blocks = failedBlocks
                 )
             }
         }
 
-        // 2. إرسال البلوكات الفاشلة فقط إلى Gemini
+        // 2. إرسال البلوكات الفاشلة إلى Gemini
         if (failedBlocksMap.isNotEmpty()) {
             try {
-                logcat { "Hybrid: Sending ${failedBlocksMap.size} pages with issues to Gemini" }
+                logcat { "Hybrid: Fixing errors in ${failedBlocksMap.size} pages via Gemini" }
                 geminiTranslator.translate(failedBlocksMap)
             } catch (e: Exception) {
                 logcat { "Gemini fallback failed: ${e.message}" }
@@ -60,14 +58,11 @@ class HybridGoogleGeminiTranslator(
         val cleanOriginal = original.replace(cleanRegex, " ").trim()
         val cleanTranslated = translated.replace(cleanRegex, " ").trim()
 
-        val originalWords = cleanOriginal.split(Regex("\\s+")).filter { it.isNotBlank() }
-        val translatedWords = cleanTranslated.split(Regex("\\s+"))
-            .filter { it.isNotBlank() }
-            .map { it.lowercase() }
-            .toSet()
+        val originalWords = cleanOriginal.split(Regex("\\s+")).filter { it.length > 2 }
+        val translatedWordsLower = cleanTranslated.lowercase()
 
-        return originalWords.any { word ->
-            word.length > 2 && word.lowercase() in translatedWords
+        return originalWords.any { word -> 
+            translatedWordsLower.contains(word.lowercase()) 
         }
     }
 
