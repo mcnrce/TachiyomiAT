@@ -3,23 +3,27 @@ package eu.kanade.translation.translator
 import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.model.TranslationBlock
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
-// تصحيح مسار logcat ليطابق المستخدم في الملفات الأخرى
 import tachiyomi.core.common.util.system.logcat 
 
 class HybridGoogleGeminiTranslator(
     override val fromLang: TextRecognizerLanguage,
     override val toLang: TextTranslatorLanguage,
-    private val googleTranslator: GoogleTranslator,
-    private val geminiTranslator: GeminiTranslator
+    private val apiKey: String,
+    private val modelName: String,
+    private val maxOutputTokens: Int,
+    private val temperature: Float
 ) : TextTranslator {
+
+    // إنشاء المترجمين داخلياً باستخدام المعطيات الممرة
+    private val googleTranslator = GoogleTranslator(fromLang, toLang)
+    private val geminiTranslator = GeminiTranslator(fromLang, toLang, apiKey, modelName, maxOutputTokens, temperature)
 
     private val cleanRegex = Regex("[0-9\\p{Punct}]+")
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
-        // الخطوة 1: تشغيل مترجم جوجل أولاً
+        // 1. تشغيل جوجل أولاً
         googleTranslator.translate(pages)
 
-        // الخطوة 2: تحديد البلوكات التي فشل جوجل في ترجمتها (بقيت كما هي)
         val failedBlocksMap = mutableMapOf<String, PageTranslation>()
 
         for ((pageKey, page) in pages) {
@@ -41,7 +45,7 @@ class HybridGoogleGeminiTranslator(
             }
         }
 
-        // الخطوة 3: إرسال البلوكات الفاشلة فقط إلى Gemini
+        // 2. إرسال البلوكات الفاشلة فقط إلى Gemini
         if (failedBlocksMap.isNotEmpty()) {
             try {
                 logcat { "Hybrid: Sending ${failedBlocksMap.size} pages with issues to Gemini" }
