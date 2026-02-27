@@ -37,13 +37,8 @@ enum class TextTranslators(val label: String) {
             GOOGLE -> GoogleTranslator(fromLang, toLang)
             GEMINI -> GeminiTranslator(fromLang, toLang, apiKey, modelName, maxOutputTokens, temperature)
             OPENROUTER -> OpenRouterTranslator(fromLang, toLang, apiKey, modelName, maxOutputTokens, temperature)
-            
-            // الربط الجديد للكلاس الهجين
-            GOOGLE_GEMINI_HYBRID -> {
-                val google = GoogleTranslator(fromLang, toLang)
-                val gemini = GeminiTranslator(fromLang, toLang, apiKey, modelName, maxOutputTokens, temperature)
-                HybridGoogleGeminiTranslator(fromLang, toLang, google, gemini)
-            }
+            GOOGLE_GEMINI_HYBRID -> HybridGoogleGeminiTranslator(fromLang, toLang, apiKey, modelName, maxOutputTokens, temperature)
+
         }
     }
 
