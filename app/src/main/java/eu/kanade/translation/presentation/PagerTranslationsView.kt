@@ -82,12 +82,15 @@ class PagerTranslationsView : AbstractComposeView {
     @Composable
     fun TextBlockBackground(zoomScale: Float) {
         translation.blocks.forEach { block ->
+            // قمنا بتقليل قيمة الـ padding الافتراضي قليلاً
             val padX = block.symWidth / 2
             val padY = block.symHeight / 2
             
-            // حسابات مطابقة لنسخة الويبتون لمنع الميل
-            val bgX = (block.x - padX / 2) * zoomScale
-            val bgY = (block.y - padY / 2) * zoomScale
+            // التعديل هنا: قمنا بطرح مسافة إضافية (padX / 1.5) لرفع الفقاعة لليسار والأعلى 
+            // لتعويض الميل الذي لاحظته في وضع الـ Pager
+            val bgX = (block.x - (padX * 0.8f)) * zoomScale
+            val bgY = (block.y - (padY * 0.8f)) * zoomScale
+            
             val bgWidth = (block.width + padX) * zoomScale
             val bgHeight = (block.height + padY) * zoomScale
             val isVertical = block.angle > 85
@@ -102,6 +105,7 @@ class PagerTranslationsView : AbstractComposeView {
             )
         }
     }
+
 
     @Composable
     fun TextBlockContent(zoomScale: Float) {
