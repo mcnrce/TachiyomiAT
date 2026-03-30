@@ -5,20 +5,16 @@ import android.graphics.PointF
 import android.util.AttributeSet
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.requiredSize
-import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.AbstractComposeView
 import androidx.compose.ui.text.font.Font
@@ -30,6 +26,7 @@ import androidx.core.view.isVisible
 import eu.kanade.translation.data.TranslationFont
 import eu.kanade.translation.model.PageTranslation
 import kotlinx.coroutines.flow.MutableStateFlow
+
 class PagerTranslationsView : AbstractComposeView {
 
     private val translation: PageTranslation
@@ -72,7 +69,7 @@ class PagerTranslationsView : AbstractComposeView {
         val viewTL by viewTLState.collectAsState()
         val scale by scaleState.collectAsState()
         
-        // استخدام offset العادي لضمان تحرك الحاوية مع الصفحة بدقة
+        // استخدام offset العادي لضمان تحرك الفقاعات مع الصفحة بسلاسة
         Box(
             modifier = Modifier
                 .offset(viewTL.x.pxToDp(), viewTL.y.pxToDp()),
@@ -88,7 +85,7 @@ class PagerTranslationsView : AbstractComposeView {
             val padX = block.symWidth / 2
             val padY = block.symHeight / 2
             
-            // الحسابات هنا أصبحت مطابقة لنسخة الويبتون الناجحة
+            // حسابات مطابقة لنسخة الويبتون لمنع الميل
             val bgX = (block.x - padX / 2) * zoomScale
             val bgY = (block.y - padY / 2) * zoomScale
             val bgWidth = (block.width + padX) * zoomScale
@@ -98,7 +95,8 @@ class PagerTranslationsView : AbstractComposeView {
             Box(
                 modifier = Modifier
                     .offset(bgX.pxToDp(), bgY.pxToDp())
-                    .size(bgWidth.pxToDp(), bgHeight.pxToDp()) // تم استبدال requiredSize بـ size
+                    .width(bgWidth.pxToDp())
+                    .height(bgHeight.pxToDp())
                     .rotate(if (isVertical) 0f else block.angle)
                     .background(Color.White, shape = RoundedCornerShape(4.dp)),
             )
@@ -124,4 +122,3 @@ class PagerTranslationsView : AbstractComposeView {
         isVisible = false
     }
 }
-
