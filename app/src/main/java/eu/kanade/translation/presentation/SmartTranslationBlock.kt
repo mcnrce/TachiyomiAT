@@ -29,11 +29,12 @@ fun SmartTranslationBlock(
     block: TranslationBlock,
     scaleFactor: Float,
     fontFamily: FontFamily,
-
+    customPadX: Float = block.symWidth * 2,   // افتراضي للحفاظ على التوافق
+    customPadY: Float = block.symHeight
 ) {
     if (block.translation.isNullOrBlank()) return
-    val padX = block.symWidth * 2
-    val padY = block.symHeight
+    val padX = customPadX
+    val padY = customPadY
     val xPx = max((block.x - padX / 2) * scaleFactor, 0.0f)
     val yPx = max((block.y - padY / 2) * scaleFactor, 0.0f)
     val width = ((block.width + padX) * scaleFactor).pxToDp()
