@@ -30,9 +30,7 @@ import androidx.core.view.isVisible
 import eu.kanade.translation.data.TranslationFont
 import eu.kanade.translation.model.PageTranslation
 import kotlinx.coroutines.flow.MutableStateFlow
-
-class PagerTranslationsView :
-    AbstractComposeView {
+class PagerTranslationsView : AbstractComposeView {
 
     private val translation: PageTranslation
     private val font: TranslationFont
@@ -73,9 +71,11 @@ class PagerTranslationsView :
     override fun Content() {
         val viewTL by viewTLState.collectAsState()
         val scale by scaleState.collectAsState()
+        
+        // استخدام offset العادي لضمان تحرك الحاوية مع الصفحة بدقة
         Box(
             modifier = Modifier
-                .absoluteOffset(viewTL.x.pxToDp(), viewTL.y.pxToDp()),
+                .offset(viewTL.x.pxToDp(), viewTL.y.pxToDp()),
         ) {
             TextBlockBackground(scale)
             TextBlockContent(scale)
@@ -85,19 +85,20 @@ class PagerTranslationsView :
     @Composable
     fun TextBlockBackground(zoomScale: Float) {
         translation.blocks.forEach { block ->
-            if (block.translation.isNullOrBlank()) return@forEach
             val padX = block.symWidth / 2
             val padY = block.symHeight / 2
-            val bgX = ((block.x - padX / 2) * 1) * zoomScale
-            val bgY = ((block.y - padY / 2) * 1) * zoomScale
+            
+            // الحسابات هنا أصبحت مطابقة لنسخة الويبتون الناجحة
+            val bgX = (block.x - padX / 2) * zoomScale
+            val bgY = (block.y - padY / 2) * zoomScale
             val bgWidth = (block.width + padX) * zoomScale
             val bgHeight = (block.height + padY) * zoomScale
             val isVertical = block.angle > 85
+            
             Box(
                 modifier = Modifier
-                    .wrapContentSize(Alignment.CenterStart, true)
                     .offset(bgX.pxToDp(), bgY.pxToDp())
-                    .requiredSize(bgWidth.pxToDp(), bgHeight.pxToDp())
+                    .size(bgWidth.pxToDp(), bgHeight.pxToDp()) // تم استبدال requiredSize بـ size
                     .rotate(if (isVertical) 0f else block.angle)
                     .background(Color.White, shape = RoundedCornerShape(4.dp)),
             )
@@ -123,3 +124,4 @@ class PagerTranslationsView :
         isVisible = false
     }
 }
+
