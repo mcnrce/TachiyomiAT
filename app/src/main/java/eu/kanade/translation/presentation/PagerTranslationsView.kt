@@ -73,17 +73,15 @@ class PagerTranslationsView : AbstractComposeView {
         Box(modifier = Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
-                    // نستخدم offset العادي بدل absoluteOffset لتجنب مشاكل الـ RTL
                     .offset(viewTL.x.pxToDp(), viewTL.y.pxToDp())
-                    // نطبق المقياس هنا لضمان تحرك كل الفقاعات كوحدة واحدة
                     .graphicsLayer {
                         scaleX = scale
                         scaleY = scale
-                        // تثبيت الارتكاز في الزاوية لضمان تطابق الإحداثيات مع الصورة
+                        // تثبيت نقطة الارتكاز لضمان عدم انزياح الفقاعات عند الزوم
                         transformOrigin = TransformOrigin(0f, 0f)
                     }
             ) {
-                // نرسل 1f لأن التكبير يتم الآن عبر graphicsLayer للحاوية بالكامل
+                // نستخدم 1f لأن الـ graphicsLayer تتولى التكبير الفعلي
                 TextBlockBackground(1f)
                 TextBlockContent(1f)
             }
@@ -95,19 +93,19 @@ class PagerTranslationsView : AbstractComposeView {
         translation.blocks.forEach { block ->
             if (block.translation.isNullOrBlank()) return@forEach
             
-            // تعديل الحشوة (Padding) لتكون متناسقة
             val padX = block.symWidth / 2
             val padY = block.symHeight / 2
             
-            val bgX = (block.x - padX / 2) * zoomScale
-            val bgY = (block.y - padY / 2) * zoomScale
+            // التعديل: طرح نسبة أكبر قليلاً (0.6f) من padX لسحب الفقاعة لليسار وإصلاح إزاحة اليمين
+            val bgX = (block.x - (padX * 0.6f)) * zoomScale
+            val bgY = (block.y - (padY * 0.5f)) * zoomScale
+            
             val bgWidth = (block.width + padX) * zoomScale
             val bgHeight = (block.height + padY) * zoomScale
             val isVertical = block.angle > 85
             
             Box(
                 modifier = Modifier
-                    // أزلنا wrapContentSize لأنه يسبب "قفز" الفقاعة عند اختلاف حجم النص
                     .offset(bgX.pxToDp(), bgY.pxToDp())
                     .requiredSize(bgWidth.pxToDp(), bgHeight.pxToDp())
                     .rotate(if (isVertical) 0f else block.angle)
@@ -119,10 +117,13 @@ class PagerTranslationsView : AbstractComposeView {
     @Composable
     fun TextBlockContent(zoomScale: Float) {
         translation.blocks.forEach { block ->
+            // نمرر نفس تعديلات الـ Padding لضمان تطابق النص مع الخلفية تماماً
             SmartTranslationBlock(
                 block = block,
                 scaleFactor = zoomScale,
                 fontFamily = fontFamily,
+                customPadX = block.symWidth / 2,
+                customPadY = block.symHeight / 2
             )
         }
     }
