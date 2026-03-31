@@ -278,26 +278,22 @@ class ChapterTranslator(
 
 
     
-            
-
-private fun smartMergeBlocks(
+         private fun smartMergeBlocks(
     blocks: List<TranslationBlock>,
     imgWidth: Float,
     imgHeight: Float
 ): MutableList<TranslationBlock> {
     if (blocks.isEmpty()) return mutableListOf()
 
-    // 1. تنظيف أولي
+    // 1. تنظيف وتصفية أولية
     val filteredBlocks = blocks.filter { it.text.isNotBlank() }
-    
     val isWebtoon = imgHeight > 2300f || imgHeight > (imgWidth * 2f)
     var initialBlocks = filteredBlocks.toMutableList()
     
-    // إعدادات العتبات
     val xThreshold = (2.5f * (imgWidth / 1200f).coerceAtMost(3.5f)).coerceAtLeast(1.0f)
     val yThresholdFactor = (1.6f * (imgHeight / 2000f).coerceAtMost(2.6f)).coerceAtLeast(1.0f)
 
-    // المرحلة 1: الدمج
+    // المرحلة 1: الدمج (بقي كما هو لضمان تجميع الأسطر)
     var i = 0
     while (i < initialBlocks.size) {
         var j = i + 1
@@ -315,49 +311,39 @@ private fun smartMergeBlocks(
         if (!merged) i++
     }
 
-    // المرحلة 2: التوسيع الموزون
-    val minSafeHeight = 25f 
-    val MAX_SCALE_LIMIT = 1.25f 
-
+    // المرحلة 2: التوسيع الموزون (الحفاظ على المركز)
     val expandedBlocks = initialBlocks.map { block ->
         val cleanedText = block.text.replace("\n", " ").trim()
         val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
 
         val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
-            .coerceIn(1.0f, 1.25f)
+            .coerceIn(1.0f, 1.2f)
 
-        val fontRatio = (minSafeHeight / block.symHeight.coerceAtLeast(10f))
-            .coerceAtLeast(1.0f)
+        val finalScale = kotlin.math.sqrt(textRatio.toDouble()).toFloat()
 
-        var finalScale = kotlin.math.sqrt((textRatio * fontRatio).toDouble()).toFloat()
-        finalScale = finalScale.coerceAtMost(MAX_SCALE_LIMIT)
-
-        if (finalScale > 1.02f) {
+        if (finalScale > 1.01f) {
             val newWidth = block.width * finalScale
             val newHeight = block.height * finalScale
             
+            // توزيع التوسع بالتساوي حول المركز الأصلي
             var newX = block.x - (newWidth - block.width) / 2f
             var newY = block.y - (newHeight - block.height) / 2f
             
-            if (newX < 0) newX = 0f
-            if (newX + newWidth > imgWidth) newX = (imgWidth - newWidth).coerceAtLeast(0f)
-            if (newY < 0) newY = 0f
-            if (newY + newHeight > imgHeight) newY = (imgHeight - newHeight).coerceAtLeast(0f)
-
             block.copy(
                 text = cleanedText,
                 translation = cleanedTranslation,
-                width = newWidth,
-                height = newHeight,
-                x = newX,
-                y = newY
+                width = newWidth.coerceAtMost(imgWidth),
+                height = newHeight.coerceAtMost(imgHeight),
+                x = newX.coerceIn(0f, imgWidth),
+                y = newY.coerceIn(0f, imgHeight)
             )
         } else {
             block.copy(text = cleanedText, translation = cleanedTranslation)
         }
     }.toMutableList()
 
-    // المرحلة 3: حل التصادم
+    // المرحلة 3: حل التصادم (بدون SHIFT) - السر هنا!
+    // بدلاً من دفع الفقاعة لليمين أو الأسفل، نقوم بتقليص التداخل فقط ليبقى (X, Y) ثابتين.
     for (idx in expandedBlocks.indices) {
         for (jdx in idx + 1 until expandedBlocks.size) {
             val a = expandedBlocks[idx]
@@ -368,22 +354,18 @@ private fun smartMergeBlocks(
                 val overlapY = minOf(a.y + a.height, b.y + b.height) - maxOf(a.y, b.y)
                 
                 if (overlapX < overlapY) {
-                    val shift = (overlapX / 2f) + 1f
+                    // تصادم أفقي: قلص عرض الفقاعة التي تبرز أكثر
                     if (a.x < b.x) {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtLeast(10f))
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtLeast(10f), x = b.x + shift)
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - overlapX).coerceAtLeast(10f))
                     } else {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(width = (a.width - shift).coerceAtLeast(10f), x = a.x + shift)
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - shift).coerceAtLeast(10f))
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(width = (b.width - overlapX).coerceAtLeast(10f))
                     }
                 } else {
-                    val shift = (overlapY / 2f) + 1f
+                    // تصادم رأسي: قلص الارتفاع
                     if (a.y < b.y) {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtLeast(10f))
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtLeast(10f), y = b.y + shift)
+                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - overlapY).coerceAtLeast(10f))
                     } else {
-                        expandedBlocks[idx] = expandedBlocks[idx].copy(height = (a.height - shift).coerceAtLeast(10f), y = a.y + shift)
-                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - shift).coerceAtLeast(10f))
+                        expandedBlocks[jdx] = expandedBlocks[jdx].copy(height = (b.height - overlapY).coerceAtLeast(10f))
                     }
                 }
             }
@@ -391,6 +373,7 @@ private fun smartMergeBlocks(
     }
     return expandedBlocks
 }
+
 
 private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
     return a.x < b.x + b.width &&
