@@ -77,9 +77,11 @@ class PagerTranslationsView : AbstractComposeView {
                     .graphicsLayer {
                         scaleX = scale
                         scaleY = scale
+                        // تثبيت الارتكاز في الزاوية لضمان تطابق الإحداثيات مع الصورة الأصلية
                         transformOrigin = TransformOrigin(0f, 0f)
                     }
             ) {
+                // نستخدم 1f لأن التكبير يتم عبر الحاوية الأب (graphicsLayer)
                 TextBlockBackground(1f)
                 TextBlockContent(1f)
             }
@@ -91,40 +93,39 @@ class PagerTranslationsView : AbstractComposeView {
         translation.blocks.forEach { block ->
             if (block.translation.isNullOrBlank()) return@forEach
             
-            // padX هو عرض حرف واحد تقريباً.
             val padX = block.symWidth / 2
             val padY = block.symHeight / 2
             
-            // التصحيح الرياضي:
-            // في Pager، نحتاج لسحب الفقاعة لليسار بمقدار إضافي يعوض هوامش المكتبة
-            // نستخدم 1.2f كمعامل موازنة افتراضي وجدناه الأنسب لتطابق الطبقات
-            val bgX = (block.x - (padX * 1.2f)) * zoomScale
+            // التصحيح: قمنا بزيادة معامل الطرح من 1.2f إلى 2.0f لسحب الفقاعة بقوة أكبر لليسار
+            // لأنك ذكرت أن التصحيح السابق كان صغيراً جداً.
+            val bgX = (block.x - (padX * 2.0f)) * zoomScale
             val bgY = (block.y - (padY * 0.5f)) * zoomScale
             
-            // زيادة العرض قليلاً لضمان عدم خروج النص عند التحريك
-            val bgWidth = (block.width + (padX * 1.8f)) * zoomScale
+            // زيادة العرض (padX * 3.0f) لتعويض السحب ومنع خروج النص من اليمين
+            val bgWidth = (block.width + (padX * 3.0f)) * zoomScale
             val bgHeight = (block.height + padY) * zoomScale
+            
+            val isVertical = block.angle > 85
             
             Box(
                 modifier = Modifier
                     .offset(bgX.pxToDp(), bgY.pxToDp())
                     .requiredSize(bgWidth.pxToDp(), bgHeight.pxToDp())
-                    .rotate(if (block.angle > 85) 0f else block.angle)
+                    .rotate(if (isVertical) 0f else block.angle)
                     .background(Color.White, shape = RoundedCornerShape(4.dp)),
             )
         }
     }
 
-
     @Composable
     fun TextBlockContent(zoomScale: Float) {
         translation.blocks.forEach { block ->
+            // قمنا بمزامنة الحشوة مع الخلفية لضمان بقاء النص في المنتصف
             SmartTranslationBlock(
                 block = block,
                 scaleFactor = zoomScale,
                 fontFamily = fontFamily,
-                // موازنة مكان النص الأفقي ليتبع الخلفية الجديدة
-                customPadX = block.symWidth * 2.0f, 
+                customPadX = block.symWidth * 2.5f, 
                 customPadY = block.symHeight / 2
             )
         }
