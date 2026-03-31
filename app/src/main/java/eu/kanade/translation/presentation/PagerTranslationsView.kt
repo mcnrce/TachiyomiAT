@@ -94,11 +94,13 @@ class PagerTranslationsView : AbstractComposeView {
             val padX = block.symWidth / 2
             val padY = block.symHeight / 2
             
-            // زيادة السحب لليسار: طرحنا (padX * 1.2f) لسحب الفقاعة بقوة لليسار
-            val bgX = (block.x - (padX * 1.2f)) * zoomScale
+            // تم تعديل bgX لسحب أقوى لليسار (طرح 1.5 من padX بالإضافة لـ 4 بكسل ثابتة)
+            // هذا سيعالج الإزاحة اليمينية العنيدة
+            val bgX = (block.x - (padX * 1.5f) - 4f) * zoomScale
             val bgY = (block.y - (padY * 0.5f)) * zoomScale
             
-            val bgWidth = (block.width + (padX * 1.5f)) * zoomScale
+            // زيادة العرض لتعويض السحب وضمان عدم قص النص من اليمين
+            val bgWidth = (block.width + (padX * 2.2f)) * zoomScale
             val bgHeight = (block.height + padY) * zoomScale
             val isVertical = block.angle > 85
             
@@ -119,8 +121,8 @@ class PagerTranslationsView : AbstractComposeView {
                 block = block,
                 scaleFactor = zoomScale,
                 fontFamily = fontFamily,
-                // موازنة مكان النص مع السحب الجديد للخلفية
-                customPadX = block.symWidth * 1.4f, 
+                // موازنة مكان النص الأفقي ليتبع الخلفية الجديدة
+                customPadX = block.symWidth * 2.0f, 
                 customPadY = block.symHeight / 2
             )
         }
