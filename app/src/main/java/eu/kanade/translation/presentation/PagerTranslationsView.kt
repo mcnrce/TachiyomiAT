@@ -91,28 +91,30 @@ class PagerTranslationsView : AbstractComposeView {
         translation.blocks.forEach { block ->
             if (block.translation.isNullOrBlank()) return@forEach
             
+            // padX هو عرض حرف واحد تقريباً.
             val padX = block.symWidth / 2
             val padY = block.symHeight / 2
             
-            // تم تعديل bgX لسحب أقوى لليسار (طرح 1.5 من padX بالإضافة لـ 4 بكسل ثابتة)
-            // هذا سيعالج الإزاحة اليمينية العنيدة
-            val bgX = (block.x - (padX * 1.5f) - 4f) * zoomScale
+            // التصحيح الرياضي:
+            // في Pager، نحتاج لسحب الفقاعة لليسار بمقدار إضافي يعوض هوامش المكتبة
+            // نستخدم 1.2f كمعامل موازنة افتراضي وجدناه الأنسب لتطابق الطبقات
+            val bgX = (block.x - (padX * 1.2f)) * zoomScale
             val bgY = (block.y - (padY * 0.5f)) * zoomScale
             
-            // زيادة العرض لتعويض السحب وضمان عدم قص النص من اليمين
-            val bgWidth = (block.width + (padX * 2.2f)) * zoomScale
+            // زيادة العرض قليلاً لضمان عدم خروج النص عند التحريك
+            val bgWidth = (block.width + (padX * 1.8f)) * zoomScale
             val bgHeight = (block.height + padY) * zoomScale
-            val isVertical = block.angle > 85
             
             Box(
                 modifier = Modifier
                     .offset(bgX.pxToDp(), bgY.pxToDp())
                     .requiredSize(bgWidth.pxToDp(), bgHeight.pxToDp())
-                    .rotate(if (isVertical) 0f else block.angle)
+                    .rotate(if (block.angle > 85) 0f else block.angle)
                     .background(Color.White, shape = RoundedCornerShape(4.dp)),
             )
         }
     }
+
 
     @Composable
     fun TextBlockContent(zoomScale: Float) {
