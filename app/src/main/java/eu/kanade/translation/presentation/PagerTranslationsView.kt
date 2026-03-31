@@ -77,11 +77,9 @@ class PagerTranslationsView : AbstractComposeView {
                     .graphicsLayer {
                         scaleX = scale
                         scaleY = scale
-                        // تثبيت نقطة الارتكاز لضمان عدم انزياح الفقاعات عند الزوم
                         transformOrigin = TransformOrigin(0f, 0f)
                     }
             ) {
-                // نستخدم 1f لأن الـ graphicsLayer تتولى التكبير الفعلي
                 TextBlockBackground(1f)
                 TextBlockContent(1f)
             }
@@ -96,8 +94,8 @@ class PagerTranslationsView : AbstractComposeView {
             val padX = block.symWidth / 2
             val padY = block.symHeight / 2
             
-            // التعديل: طرح نسبة أكبر قليلاً (0.6f) من padX لسحب الفقاعة لليسار وإصلاح إزاحة اليمين
-            val bgX = (block.x - (padX * 0.6f)) * zoomScale
+            // تم تغيير 0.5f إلى 0.8f لسحب الخلفية لليسار أكثر
+            val bgX = (block.x - (padX * 0.8f)) * zoomScale
             val bgY = (block.y - (padY * 0.5f)) * zoomScale
             
             val bgWidth = (block.width + padX) * zoomScale
@@ -117,12 +115,12 @@ class PagerTranslationsView : AbstractComposeView {
     @Composable
     fun TextBlockContent(zoomScale: Float) {
         translation.blocks.forEach { block ->
-            // نمرر نفس تعديلات الـ Padding لضمان تطابق النص مع الخلفية تماماً
             SmartTranslationBlock(
                 block = block,
                 scaleFactor = zoomScale,
                 fontFamily = fontFamily,
-                customPadX = block.symWidth / 2,
+                // نمرر حشوة أكبر للنص أيضاً ليبقى متناسقاً مع الخلفية المسحوبة
+                customPadX = block.symWidth * 0.9f, 
                 customPadY = block.symHeight / 2
             )
         }
