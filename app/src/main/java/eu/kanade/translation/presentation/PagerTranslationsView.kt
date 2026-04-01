@@ -98,7 +98,7 @@ class PagerTranslationsView : AbstractComposeView {
             
             // التصحيح: قمنا بزيادة معامل الطرح من 1.2f إلى 2.0f لسحب الفقاعة بقوة أكبر لليسار
             // لأنك ذكرت أن التصحيح السابق كان صغيراً جداً.
-            val bgX = (block.x - (padX * 5.0f)) * zoomScale
+            val bgX = (block.x - (padX * 2.0f)) * zoomScale
             val bgY = (block.y - (padY * 0.5f)) * zoomScale
             
             // زيادة العرض (padX * 3.0f) لتعويض السحب ومنع خروج النص من اليمين
