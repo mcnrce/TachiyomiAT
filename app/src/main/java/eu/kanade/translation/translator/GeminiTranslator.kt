@@ -56,7 +56,7 @@ class GeminiTranslator(
             val pageEntries = pages.entries.toList()
             var currentIndex = 0
             
-            val MAX_WORDS_PER_BATCH = 450
+            val MAX_WORDS_PER_BATCH = 451
             val MAX_PAGES_PER_BATCH = 25
 
             while (currentIndex < pageEntries.size) {
