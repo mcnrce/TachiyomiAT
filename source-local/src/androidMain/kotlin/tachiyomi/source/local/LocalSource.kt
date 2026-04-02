@@ -83,8 +83,9 @@ actual class LocalSource(
             0L
         }
 
+        // جلب المجلدات باستخدام النظام الجديد الذي يغوص داخل مجلدات المصادر
         var mangaDirs = fileSystem.getFilesInBaseDirectory()
-            // Filter out files that are hidden and is not a folder
+            // تصفية المجلدات المخفية والتي ليست مجلدات حقيقية
             .filter { it.isDirectory && !it.name.orEmpty().startsWith('.') }
             .distinctBy { it.name }
             .filter {
@@ -113,9 +114,7 @@ actual class LocalSource(
                         mangaDirs.sortedByDescending(UniFile::lastModified)
                     }
                 }
-                else -> {
-                    /* Do nothing */
-                }
+                else -> { /* لا شيء */ }
             }
         }
 
@@ -123,11 +122,12 @@ actual class LocalSource(
             .map { mangaDir ->
                 async {
                     SManga.create().apply {
+                        // اسم المجلد هو العنوان وهو الرابط المرجعي للبحث لاحقاً
                         title = mangaDir.name.orEmpty()
                         url = mangaDir.name.orEmpty()
 
-                        // Try to find the cover
-                        coverManager.find(mangaDir.name.orEmpty())?.let {
+                        // محاولة إيجاد الغلاف باستخدام النظام الجديد (أول صورة من أول فصل)
+                        coverManager.find(this.url)?.let {
                             thumbnail_url = it.uri.toString()
                         }
                     }
@@ -137,6 +137,7 @@ actual class LocalSource(
 
         MangasPage(mangas, false)
     }
+
 
     // Manga details related
     override suspend fun getMangaDetails(manga: SManga): SManga = withIOContext {
@@ -235,12 +236,14 @@ actual class LocalSource(
 
     // Chapters
     override suspend fun getChapterList(manga: SManga): List<SChapter> = withIOContext {
+        // نستخدم النظام الجديد لإيجاد مجلد المانجا في أي مكان داخل التحميلات
         val chapters = fileSystem.getFilesInMangaDirectory(manga.url)
-            // Only keep supported formats
+            // إبقاء الصيغ المدعومة فقط
             .filter { it.isDirectory || Archive.isSupported(it) || it.extension.equals("epub", true) }
             .map { chapterFile ->
                 SChapter.create().apply {
-                    url = "${manga.url}/${chapterFile.name}"
+                    // الرابط هو اسم الملف/المجلد الخاص بالفصل فقط
+                    url = chapterFile.name.orEmpty()
                     name = if (chapterFile.isDirectory) {
                         chapterFile.name
                     } else {
@@ -264,7 +267,7 @@ actual class LocalSource(
                 if (c == 0) c2.name.compareToCaseInsensitiveNaturalOrder(c1.name) else c
             }
 
-        // Copy the cover from the first chapter found if not available
+        // تحديث الغلاف إذا لم يكن متاحاً
         if (manga.thumbnail_url.isNullOrBlank()) {
             chapters.lastOrNull()?.let { chapter ->
                 updateCover(chapter, manga)
@@ -274,18 +277,21 @@ actual class LocalSource(
         chapters
     }
 
+
     // Filters
     override fun getFilterList() = FilterList(OrderBy.Popular(context))
 
     // Unused stuff
     override suspend fun getPageList(chapter: SChapter): List<Page> = throw UnsupportedOperationException("Unused")
 
-    fun getFormat(chapter: SChapter): Format {
+        fun getFormat(chapter: SChapter, manga: SManga): Format {
         try {
-            val (mangaDirName, chapterName) = chapter.url.split('/', limit = 2)
-            return fileSystem.getBaseDirectory()
-                ?.findFile(mangaDirName)
-                ?.findFile(chapterName)
+            // البحث عن مجلد المانجا الحقيقي (الذي يضم اسم المصدر في مساره)
+            val mangaDir = fileSystem.getMangaDirectory(manga.url)
+                ?: throw Exception(context.stringResource(MR.strings.chapter_not_found))
+            
+            // البحث عن ملف الفصل داخل ذلك المجلد
+            return mangaDir.findFile(chapter.url)
                 ?.let(Format.Companion::valueOf)
                 ?: throw Exception(context.stringResource(MR.strings.chapter_not_found))
         } catch (e: Format.UnknownFormatException) {
@@ -294,6 +300,7 @@ actual class LocalSource(
             throw e
         }
     }
+
 
     private fun updateCover(chapter: SChapter, manga: SManga): UniFile? {
         return try {
