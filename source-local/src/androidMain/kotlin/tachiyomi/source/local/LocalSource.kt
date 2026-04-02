@@ -71,7 +71,6 @@ actual class LocalSource(
 
     override val supportsLatest: Boolean = true
 
-    // Browse related
     override suspend fun getPopularManga(page: Int) = getSearchManga(page, "", PopularFilters)
 
     override suspend fun getLatestUpdates(page: Int) = getSearchManga(page, "", LatestFilters)
@@ -83,9 +82,7 @@ actual class LocalSource(
             0L
         }
 
-        // جلب المجلدات باستخدام النظام الجديد الذي يغوص داخل مجلدات المصادر
         var mangaDirs = fileSystem.getFilesInBaseDirectory()
-            // تصفية المجلدات المخفية والتي ليست مجلدات حقيقية
             .filter { it.isDirectory && !it.name.orEmpty().startsWith('.') }
             .distinctBy { it.name }
             .filter {
@@ -114,7 +111,7 @@ actual class LocalSource(
                         mangaDirs.sortedByDescending(UniFile::lastModified)
                     }
                 }
-                else -> { /* لا شيء */ }
+                else -> { /* Do nothing */ }
             }
         }
 
@@ -122,11 +119,9 @@ actual class LocalSource(
             .map { mangaDir ->
                 async {
                     SManga.create().apply {
-                        // اسم المجلد هو العنوان وهو الرابط المرجعي للبحث لاحقاً
                         title = mangaDir.name.orEmpty()
                         url = mangaDir.name.orEmpty()
 
-                        // محاولة إيجاد الغلاف باستخدام النظام الجديد (أول صورة من أول فصل)
                         coverManager.find(this.url)?.let {
                             thumbnail_url = it.uri.toString()
                         }
@@ -138,34 +133,24 @@ actual class LocalSource(
         MangasPage(mangas, false)
     }
 
-
-    // Manga details related
     override suspend fun getMangaDetails(manga: SManga): SManga = withIOContext {
         coverManager.find(manga.url)?.let {
             manga.thumbnail_url = it.uri.toString()
         }
 
-        // Augment manga details based on metadata files
         try {
             val mangaDir = fileSystem.getMangaDirectory(manga.url) ?: error("${manga.url} is not a valid directory")
             val mangaDirFiles = mangaDir.listFiles().orEmpty()
 
-            val comicInfoFile = mangaDirFiles
-                .firstOrNull { it.name == COMIC_INFO_FILE }
-            val noXmlFile = mangaDirFiles
-                .firstOrNull { it.name == ".noxml" }
-            val legacyJsonDetailsFile = mangaDirFiles
-                .firstOrNull { it.extension == "json" }
+            val comicInfoFile = mangaDirFiles.firstOrNull { it.name == COMIC_INFO_FILE }
+            val noXmlFile = mangaDirFiles.firstOrNull { it.name == ".noxml" }
+            val legacyJsonDetailsFile = mangaDirFiles.firstOrNull { it.extension == "json" }
 
             when {
-                // Top level ComicInfo.xml
                 comicInfoFile != null -> {
                     noXmlFile?.delete()
                     setMangaDetailsFromComicInfoFile(comicInfoFile.openInputStream(), manga)
                 }
-
-                // Old custom JSON format
-                // TODO: remove support for this entirely after a while
                 legacyJsonDetailsFile != null -> {
                     json.decodeFromStream<MangaDetails>(legacyJsonDetailsFile.openInputStream()).run {
                         title?.let { manga.title = it }
@@ -175,10 +160,8 @@ actual class LocalSource(
                         genre?.let { manga.genre = it.joinToString() }
                         status?.let { manga.status = it }
                     }
-                    // Replace with ComicInfo.xml file
                     val comicInfo = manga.getComicInfo()
-                    mangaDir
-                        .createFile(COMIC_INFO_FILE)
+                    mangaDir.createFile(COMIC_INFO_FILE)
                         ?.openOutputStream()
                         ?.use {
                             val comicInfoString = xml.encodeToString(ComicInfo.serializer(), comicInfo)
@@ -186,16 +169,12 @@ actual class LocalSource(
                             legacyJsonDetailsFile.delete()
                         }
                 }
-
-                // Copy ComicInfo.xml from chapter archive to top level if found
                 noXmlFile == null -> {
                     val chapterArchives = mangaDirFiles.filter(Archive::isSupported)
-
                     val copiedFile = copyComicInfoFileFromArchive(chapterArchives, mangaDir)
                     if (copiedFile != null) {
                         setMangaDetailsFromComicInfoFile(copiedFile.openInputStream(), manga)
                     } else {
-                        // Avoid re-scanning
                         mangaDir.createFile(".noxml")
                     }
                 }
@@ -230,19 +209,14 @@ actual class LocalSource(
         val comicInfo = AndroidXmlReader(stream, StandardCharsets.UTF_8.name()).use {
             xml.decodeFromReader<ComicInfo>(it)
         }
-
         manga.copyFromComicInfo(comicInfo)
     }
 
-    // Chapters
     override suspend fun getChapterList(manga: SManga): List<SChapter> = withIOContext {
-        // نستخدم النظام الجديد لإيجاد مجلد المانجا في أي مكان داخل التحميلات
         val chapters = fileSystem.getFilesInMangaDirectory(manga.url)
-            // إبقاء الصيغ المدعومة فقط
             .filter { it.isDirectory || Archive.isSupported(it) || it.extension.equals("epub", true) }
             .map { chapterFile ->
                 SChapter.create().apply {
-                    // الرابط هو اسم الملف/المجلد الخاص بالفصل فقط
                     url = chapterFile.name.orEmpty()
                     name = if (chapterFile.isDirectory) {
                         chapterFile.name
@@ -267,7 +241,6 @@ actual class LocalSource(
                 if (c == 0) c2.name.compareToCaseInsensitiveNaturalOrder(c1.name) else c
             }
 
-        // تحديث الغلاف إذا لم يكن متاحاً
         if (manga.thumbnail_url.isNullOrBlank()) {
             chapters.lastOrNull()?.let { chapter ->
                 updateCover(chapter, manga)
@@ -277,13 +250,9 @@ actual class LocalSource(
         chapters
     }
 
-
-    // Filters
     override fun getFilterList() = FilterList(OrderBy.Popular(context))
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
-        // نستخدم رابط الفصل للوصول للمانجا. بما أننا جعلنا الرابط هو اسم الملف،
-        // سنحتاج لإيجاد المانجا أولاً. في نظامنا الجديد، رابط المانجا هو اسمها.
         val mangaUrl = chapter.url.substringBeforeLast('/', chapter.url)
         val manga = SManga.create().apply { url = mangaUrl }
 
@@ -294,6 +263,7 @@ actual class LocalSource(
                     .filter { !it.isDirectory && ImageUtil.isImage(it.name) { it.openInputStream() } }
                     .sortedWith { f1, f2 -> f1.name.orEmpty().compareToCaseInsensitiveNaturalOrder(f2.name.orEmpty()) }
                     .mapIndexed { i, file -> Page(i, uri = file.uri) }
+                    .toList()
             }
             is Format.Archive -> {
                 format.file.archiveReader(context).use { reader ->
@@ -302,6 +272,7 @@ actual class LocalSource(
                             .filter { it.isFile && ImageUtil.isImage(it.name) { reader.getInputStream(it.name)!! } }
                             .sortedWith { f1, f2 -> f1.name.compareToCaseInsensitiveNaturalOrder(f2.name) }
                             .mapIndexed { i, entry -> Page(i, imageUrl = "${chapter.url}#${entry.name}") }
+                            .toList()
                     }
                 }
             }
@@ -309,19 +280,17 @@ actual class LocalSource(
                 format.file.epubReader(context).use { epub ->
                     epub.getImagesFromPages()
                         .mapIndexed { i, path -> Page(i, imageUrl = "${chapter.url}#$path") }
+                        .toList()
                 }
             }
         }
     }
 
-
-        fun getFormat(chapter: SChapter, manga: SManga): Format {
+    fun getFormat(chapter: SChapter, manga: SManga): Format {
         try {
-            // البحث عن مجلد المانجا الذي قد يكون داخل (Downloads/SourceName/MangaName)
             val mangaDir = fileSystem.getMangaDirectory(manga.url)
                 ?: throw Exception(context.stringResource(MR.strings.chapter_not_found))
             
-            // العثور على ملف الفصل (أو المجلد) داخل مجلد المانجا
             return mangaDir.findFile(chapter.url.substringAfterLast('/'))
                 ?.let(Format.Companion::valueOf)
                 ?: throw Exception(context.stringResource(MR.strings.chapter_not_found))
@@ -332,10 +301,10 @@ actual class LocalSource(
         }
     }
 
-
     private fun updateCover(chapter: SChapter, manga: SManga): UniFile? {
         return try {
-            when (val format = getFormat(chapter)) {
+            // تم إصلاح الاستدعاء هنا بتمرير manga
+            when (val format = getFormat(chapter, manga)) {
                 is Format.Directory -> {
                     val entry = format.file.listFiles()
                         ?.sortedWith { f1, f2 ->
