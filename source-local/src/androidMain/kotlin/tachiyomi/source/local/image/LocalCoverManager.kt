@@ -17,11 +17,26 @@ actual class LocalCoverManager(
 ) {
 
     actual fun find(mangaUrl: String): UniFile? {
-        return fileSystem.getFilesInMangaDirectory(mangaUrl)
-            // Get all file whose names start with "cover"
+        // 1. جلب قائمة الملفات/المجلدات داخل مجلد المانجا (التي تمثل الفصول)
+        val mangaFiles = fileSystem.getFilesInMangaDirectory(mangaUrl)
+
+        // 2. المحاولة الأولى: البحث عن ملف يبدأ اسمه بـ "cover" في المجلد الرئيسي للمانجا
+        val explicitCover = mangaFiles
             .filter { it.isFile && it.nameWithoutExtension.equals("cover", ignoreCase = true) }
-            // Get the first actual image
             .firstOrNull { ImageUtil.isImage(it.name) { it.openInputStream() } }
+
+        if (explicitCover != null) return explicitCover
+
+        // 3. المحاولة الثانية: إذا لم يوجد ملف غلاف، ندخل لأول فصل متاح ونجلب أول صورة منه
+        return mangaFiles
+            .filter { it.isDirectory } // نركز على المجلدات التي تحتوي على الصور
+            .sortedBy { it.name }      // ترتيب الفصول تصاعدياً (Chapter 1, 2...)
+            .firstNotNullOfOrNull { firstChapter ->
+                firstChapter.listFiles().orEmpty()
+                    .filter { it.isFile }
+                    .sortedBy { it.name } // ترتيب الصور (001.jpg, 002.jpg...)
+                    .firstOrNull { ImageUtil.isImage(it.name) { it.openInputStream() } }
+            }
     }
 
     actual fun update(
