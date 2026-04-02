@@ -281,18 +281,12 @@ actual class LocalSource(
     // Filters
     override fun getFilterList() = FilterList(OrderBy.Popular(context))
 
-    // Unused stuff
-    override suspend fun getPageList(chapter: SChapter): List<Page> = throw UnsupportedOperationException("Unused")
-   // ١. تعديل دالة getPageList لتصبح متوافقة مع التعديلات الجديدة
-    // ملاحظة: إذا كان الكود الأصلي يحتوي على override، يجب التأكد من مطابقة التوقيع
     override suspend fun getPageList(chapter: SChapter): List<Page> {
-        // بما أن الواجهة (Interface) لا تمرر المانجا هنا، نحتاج لحيلة بسيطة:
-        // سنقوم باستخراج اسم المانجا من الرابط (الذي وضعناه في getChapterList)
-        val mangaUrl = chapter.url.substringBeforeLast('/')
-        
-        // محاولة إيجاد كائن مانجا وهمي لاستخدامه في البحث عن المجلد
+        // نستخدم رابط الفصل للوصول للمانجا. بما أننا جعلنا الرابط هو اسم الملف،
+        // سنحتاج لإيجاد المانجا أولاً. في نظامنا الجديد، رابط المانجا هو اسمها.
+        val mangaUrl = chapter.url.substringBeforeLast('/', chapter.url)
         val manga = SManga.create().apply { url = mangaUrl }
-        
+
         val format = getFormat(chapter, manga)
         return when (format) {
             is Format.Directory -> {
@@ -317,6 +311,24 @@ actual class LocalSource(
                         .mapIndexed { i, path -> Page(i, imageUrl = "${chapter.url}#$path") }
                 }
             }
+        }
+    }
+
+
+        fun getFormat(chapter: SChapter, manga: SManga): Format {
+        try {
+            // البحث عن مجلد المانجا الذي قد يكون داخل (Downloads/SourceName/MangaName)
+            val mangaDir = fileSystem.getMangaDirectory(manga.url)
+                ?: throw Exception(context.stringResource(MR.strings.chapter_not_found))
+            
+            // العثور على ملف الفصل (أو المجلد) داخل مجلد المانجا
+            return mangaDir.findFile(chapter.url.substringAfterLast('/'))
+                ?.let(Format.Companion::valueOf)
+                ?: throw Exception(context.stringResource(MR.strings.chapter_not_found))
+        } catch (e: Format.UnknownFormatException) {
+            throw Exception(context.stringResource(MR.strings.local_invalid_format))
+        } catch (e: Exception) {
+            throw e
         }
     }
 
