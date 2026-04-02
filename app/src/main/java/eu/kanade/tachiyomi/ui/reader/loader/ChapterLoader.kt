@@ -92,11 +92,20 @@ class ChapterLoader(
                 downloadManager,
                 downloadProvider,
             )
-            source is LocalSource -> source.getFormat(chapter.chapter).let { format ->
-                when (format) {
-                    is Format.Directory -> DirectoryPageLoader(format.file)
-                    is Format.Archive -> ArchivePageLoader(format.file.archiveReader(context), emptyMap())
-                    is Format.Epub -> EpubPageLoader(format.file.epubReader(context))
+            source is LocalSource -> {
+                // تحويل كائن Manga من Domain إلى SManga ليناسب متطلبات LocalSource
+                val sManga = eu.kanade.tachiyomi.source.model.SManga.create().apply {
+                    url = manga.url
+                    title = manga.title
+                }
+                
+                // تم تمرير sManga هنا لحل مشكلة التجميع (Compilation)
+                source.getFormat(chapter.chapter, sManga).let { format ->
+                    when (format) {
+                        is Format.Directory -> DirectoryPageLoader(format.file)
+                        is Format.Archive -> ArchivePageLoader(format.file.archiveReader(context), emptyMap())
+                        is Format.Epub -> EpubPageLoader(format.file.epubReader(context))
+                    }
                 }
             }
             source is HttpSource -> HttpPageLoader(chapter, source)
