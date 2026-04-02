@@ -283,21 +283,40 @@ actual class LocalSource(
 
     // Unused stuff
     override suspend fun getPageList(chapter: SChapter): List<Page> = throw UnsupportedOperationException("Unused")
-
-        fun getFormat(chapter: SChapter, manga: SManga): Format {
-        try {
-            // البحث عن مجلد المانجا الحقيقي (الذي يضم اسم المصدر في مساره)
-            val mangaDir = fileSystem.getMangaDirectory(manga.url)
-                ?: throw Exception(context.stringResource(MR.strings.chapter_not_found))
-            
-            // البحث عن ملف الفصل داخل ذلك المجلد
-            return mangaDir.findFile(chapter.url)
-                ?.let(Format.Companion::valueOf)
-                ?: throw Exception(context.stringResource(MR.strings.chapter_not_found))
-        } catch (e: Format.UnknownFormatException) {
-            throw Exception(context.stringResource(MR.strings.local_invalid_format))
-        } catch (e: Exception) {
-            throw e
+   // ١. تعديل دالة getPageList لتصبح متوافقة مع التعديلات الجديدة
+    // ملاحظة: إذا كان الكود الأصلي يحتوي على override، يجب التأكد من مطابقة التوقيع
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        // بما أن الواجهة (Interface) لا تمرر المانجا هنا، نحتاج لحيلة بسيطة:
+        // سنقوم باستخراج اسم المانجا من الرابط (الذي وضعناه في getChapterList)
+        val mangaUrl = chapter.url.substringBeforeLast('/')
+        
+        // محاولة إيجاد كائن مانجا وهمي لاستخدامه في البحث عن المجلد
+        val manga = SManga.create().apply { url = mangaUrl }
+        
+        val format = getFormat(chapter, manga)
+        return when (format) {
+            is Format.Directory -> {
+                format.file.listFiles().orEmpty()
+                    .filter { !it.isDirectory && ImageUtil.isImage(it.name) { it.openInputStream() } }
+                    .sortedWith { f1, f2 -> f1.name.orEmpty().compareToCaseInsensitiveNaturalOrder(f2.name.orEmpty()) }
+                    .mapIndexed { i, file -> Page(i, uri = file.uri) }
+            }
+            is Format.Archive -> {
+                format.file.archiveReader(context).use { reader ->
+                    reader.useEntries { entries ->
+                        entries
+                            .filter { it.isFile && ImageUtil.isImage(it.name) { reader.getInputStream(it.name)!! } }
+                            .sortedWith { f1, f2 -> f1.name.compareToCaseInsensitiveNaturalOrder(f2.name) }
+                            .mapIndexed { i, entry -> Page(i, imageUrl = "${chapter.url}#${entry.name}") }
+                    }
+                }
+            }
+            is Format.Epub -> {
+                format.file.epubReader(context).use { epub ->
+                    epub.getImagesFromPages()
+                        .mapIndexed { i, path -> Page(i, imageUrl = "${chapter.url}#$path") }
+                }
+            }
         }
     }
 
