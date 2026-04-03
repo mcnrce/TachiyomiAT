@@ -82,9 +82,8 @@ actual class LocalSource(
             0L
         }
 
-        // جلب المجلدات باستخدام النظام الجديد الذي يغوص داخل مجلدات المصادر
+        // 1. جلب المجلدات (تأكد من استخدام fileSystem المعدل للغوص في مجلدات المصادر)
         var mangaDirs = fileSystem.getFilesInBaseDirectory()
-            // تصفية المجلدات المخفية والتي ليست مجلدات حقيقية
             .filter { it.isDirectory && !it.name.orEmpty().startsWith('.') }
             .distinctBy { it.name }
             .filter {
@@ -97,7 +96,7 @@ actual class LocalSource(
                 }
             }
 
-        // منطق الترتيب (حسب الشعبي أو الأحدث)
+        // 2. تطبيق الفلاتر (الترتيب حسب الشعبي أو الأحدث)
         filters.forEach { filter ->
             when (filter) {
                 is OrderBy.Popular -> {
@@ -118,19 +117,18 @@ actual class LocalSource(
             }
         }
 
-        // تحويل المجلدات إلى كائنات SManga مع جلب الأغلفة للـ Grid
+        // 3. تحويل المجلدات إلى كائنات مانجا مع جلب الغلاف فوراً للـ Grid
         val mangas = mangaDirs
             .map { mangaDir ->
                 async {
                     SManga.create().apply {
-                        // اسم المجلد هو العنوان وهو الرابط المرجعي للبحث لاحقاً
                         title = mangaDir.name.orEmpty()
                         url = mangaDir.name.orEmpty()
 
-                        // --- التعديل الجوهري لظهور الصور في الـ Grid ---
-                        // استدعاء مدير الأغلفة للبحث عن أول صورة في أول فصل فوراً
+                        // --- هذا هو التعديل المطلوب لحل مشكلة اختفاء الصور في الشبكة ---
+                        // نقوم باستدعاء find للبحث عن أول صورة في أول فصل (أو ملف cover.jpg)
                         coverManager.find(this.url)?.let { coverFile ->
-                            // تحويل مسار الصورة المكتشفة إلى URI نصي لتفهمه واجهة العرض
+                            // تحويل مسار الملف إلى URI نصي لكي تظهر الصورة في واجهة التصفح (Grid)
                             thumbnail_url = coverFile.uri.toString()
                         }
                     }
@@ -140,6 +138,7 @@ actual class LocalSource(
 
         MangasPage(mangas, false)
     }
+
 
 
     override suspend fun getMangaDetails(manga: SManga): SManga = withIOContext {
