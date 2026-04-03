@@ -82,7 +82,9 @@ actual class LocalSource(
             0L
         }
 
+        // جلب المجلدات باستخدام النظام الجديد الذي يغوص داخل مجلدات المصادر
         var mangaDirs = fileSystem.getFilesInBaseDirectory()
+            // تصفية المجلدات المخفية والتي ليست مجلدات حقيقية
             .filter { it.isDirectory && !it.name.orEmpty().startsWith('.') }
             .distinctBy { it.name }
             .filter {
@@ -95,6 +97,7 @@ actual class LocalSource(
                 }
             }
 
+        // منطق الترتيب (حسب الشعبي أو الأحدث)
         filters.forEach { filter ->
             when (filter) {
                 is OrderBy.Popular -> {
@@ -111,19 +114,24 @@ actual class LocalSource(
                         mangaDirs.sortedByDescending(UniFile::lastModified)
                     }
                 }
-                else -> { /* Do nothing */ }
+                else -> { /* لا شيء */ }
             }
         }
 
+        // تحويل المجلدات إلى كائنات SManga مع جلب الأغلفة للـ Grid
         val mangas = mangaDirs
             .map { mangaDir ->
                 async {
                     SManga.create().apply {
+                        // اسم المجلد هو العنوان وهو الرابط المرجعي للبحث لاحقاً
                         title = mangaDir.name.orEmpty()
                         url = mangaDir.name.orEmpty()
 
-                        coverManager.find(this.url)?.let {
-                            thumbnail_url = it.uri.toString()
+                        // --- التعديل الجوهري لظهور الصور في الـ Grid ---
+                        // استدعاء مدير الأغلفة للبحث عن أول صورة في أول فصل فوراً
+                        coverManager.find(this.url)?.let { coverFile ->
+                            // تحويل مسار الصورة المكتشفة إلى URI نصي لتفهمه واجهة العرض
+                            thumbnail_url = coverFile.uri.toString()
                         }
                     }
                 }
@@ -132,6 +140,7 @@ actual class LocalSource(
 
         MangasPage(mangas, false)
     }
+
 
     override suspend fun getMangaDetails(manga: SManga): SManga = withIOContext {
         coverManager.find(manga.url)?.let {
