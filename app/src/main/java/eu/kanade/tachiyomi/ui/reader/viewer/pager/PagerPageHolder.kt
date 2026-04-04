@@ -55,27 +55,15 @@ class PagerPageHolder(
     private var showTranslations = true
     private var translationsView: PagerTranslationsView? = null
 
-    /**
-     * Item that identifies this view. Needed by the adapter to not recreate views.
-     */
     override val item
         get() = page
 
-    /**
-     * Loading progress bar to indicate the current progress.
-     */
-    private var progressIndicator: ReaderProgressIndicator? = null // = ReaderProgressIndicator(readerThemedContext)
+    private var progressIndicator: ReaderProgressIndicator? = null
 
-    /**
-     * Error layout to show when the image fails to load.
-     */
     private var errorLayout: ReaderErrorBinding? = null
 
     private val scope = MainScope()
 
-    /**
-     * Job for loading the page and processing changes to the page's status.
-     */
     private var loadJob: Job? = null
 
     init {
@@ -92,9 +80,6 @@ class PagerPageHolder(
         }.launchIn(scope)
     }
 
-    /**
-     * Called when this view is detached from the window. Unsubscribes any active subscription.
-     */
     @SuppressLint("ClickableViewAccessibility")
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
@@ -109,13 +94,6 @@ class PagerPageHolder(
         }
     }
 
-    /**
-     * Loads the page and processes changes to the page's status.
-     *
-     * Returns immediately if the page has no PageLoader.
-     * Otherwise, this function does not return. It will continue to process status changes until
-     * the Job is cancelled.
-     */
     private suspend fun loadPageAndProcessStatus() {
         val loader = page.chapter.pageLoader ?: return
 
@@ -144,36 +122,24 @@ class PagerPageHolder(
         }
     }
 
-    /**
-     * Called when the page is queued.
-     */
     private fun setQueued() {
         initProgressIndicator()
         progressIndicator?.show()
         removeErrorLayout()
     }
 
-    /**
-     * Called when the page is loading.
-     */
     private fun setLoading() {
         initProgressIndicator()
         progressIndicator?.show()
         removeErrorLayout()
     }
 
-    /**
-     * Called when the page is downloading.
-     */
     private fun setDownloading() {
         initProgressIndicator()
         progressIndicator?.show()
         removeErrorLayout()
     }
 
-    /**
-     * Called when the page is ready.
-     */
     private suspend fun setImage() {
         progressIndicator?.setProgress(0)
 
@@ -272,9 +238,6 @@ class PagerPageHolder(
         viewer.onPageSplit(page, newPage)
     }
 
-    /**
-     * Called when the page has an error.
-     */
     private fun setError() {
         progressIndicator?.hide()
         showErrorLayout()
@@ -287,13 +250,9 @@ class PagerPageHolder(
         progressIndicator?.hide()
         // TachiyomiAT
         updateTranslationCoords(pageView as SubsamplingScaleImageView)
-        // TachiyomiAT
         translationsView?.show()
     }
 
-    /**
-     * Called when an image fails to decode.
-     */
     override fun onImageLoadError() {
         super.onImageLoadError()
         setError()
@@ -301,9 +260,6 @@ class PagerPageHolder(
         translationsView?.hide()
     }
 
-    /**
-     * Called when an image is zoomed in/out.
-     */
     override fun onScaleChanged(newScale: Float) {
         super.onScaleChanged(newScale)
         viewer.activity.hideMenu()
@@ -329,11 +285,24 @@ class PagerPageHolder(
     // TachiyomiAT
     private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
         if (page.translation == null) return
-        val coords = vi.sourceToViewCoord(0f, 0f)
-        if (coords != null) {
-            translationsView?.viewTLState?.value = coords
+        val imgWidth = page.translation!!.imgWidth.toFloat()
+
+        // الزاوية العلوية اليسرى للصورة بالبكسل (إحداثيات الـ view)
+        val tl = vi.sourceToViewCoord(0f, 0f) ?: return
+
+        // نحسب عرض الصورة المُصيَّر من نقطتين بدلاً من استخدام vi.scale مباشرة
+        // هذا يضمن توافق الـ offset مع الـ scale (كلاهما من نفس المصدر)
+        val tr = vi.sourceToViewCoord(imgWidth, 0f)
+        val renderedWidth = if (tr != null && tr.x > tl.x) {
+            tr.x - tl.x
+        } else {
+            // fallback: vi.scale كضمان
+            vi.scale * imgWidth
         }
-        translationsView?.scaleState?.value = vi.scale
+
+        translationsView?.viewTLState?.value = tl
+        // scaleState يحمل الآن عرض الصورة المُصيَّر بالبكسل (وليس vi.scale مباشرة)
+        translationsView?.scaleState?.value = renderedWidth
     }
 
     private fun showErrorLayout(): ReaderErrorBinding {
@@ -361,9 +330,6 @@ class PagerPageHolder(
         return errorLayout!!
     }
 
-    /**
-     * Removes the decode error layout from the holder, if found.
-     */
     private fun removeErrorLayout() {
         errorLayout?.root?.isVisible = false
         errorLayout = null
