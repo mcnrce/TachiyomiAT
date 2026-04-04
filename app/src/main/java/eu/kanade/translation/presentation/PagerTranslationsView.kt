@@ -12,16 +12,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.AbstractComposeView
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.toFontFamily
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.isVisible
 import eu.kanade.translation.data.TranslationFont
@@ -34,10 +39,9 @@ class PagerTranslationsView : AbstractComposeView {
     private val font: TranslationFont
     private val fontFamily: FontFamily
 
-    // ثوابت مشتركة بين الخلفية والنص — غيّرها في مكان واحد فقط
     companion object {
-        private const val PAD_X_FACTOR = 2.5f  // customPadX = symWidth * PAD_X_FACTOR
-        private const val PAD_Y_FACTOR = 0.5f  // customPadY = symHeight * PAD_Y_FACTOR
+        private const val PAD_X_FACTOR = 2.5f
+        private const val PAD_Y_FACTOR = 0.5f
     }
 
     constructor(
@@ -47,10 +51,7 @@ class PagerTranslationsView : AbstractComposeView {
     ) : super(context, attrs, defStyleAttr) {
         this.translation = PageTranslation.EMPTY
         this.font = TranslationFont.ANIME_ACE
-        this.fontFamily = Font(
-            resId = font.res,
-            weight = FontWeight.Bold,
-        ).toFontFamily()
+        this.fontFamily = Font(resId = font.res, weight = FontWeight.Bold).toFontFamily()
     }
 
     constructor(
@@ -62,10 +63,7 @@ class PagerTranslationsView : AbstractComposeView {
     ) : super(context, attrs, defStyleAttr) {
         this.translation = translation
         this.font = font ?: TranslationFont.ANIME_ACE
-        this.fontFamily = Font(
-            resId = this.font.res,
-            weight = FontWeight.Bold,
-        ).toFontFamily()
+        this.fontFamily = Font(resId = this.font.res, weight = FontWeight.Bold).toFontFamily()
     }
 
     val scaleState = MutableStateFlow(1f)
@@ -74,20 +72,34 @@ class PagerTranslationsView : AbstractComposeView {
     @Composable
     override fun Content() {
         val viewTL by viewTLState.collectAsState()
-        val scale by scaleState.collectAsState()
+        val userZoom by scaleState.collectAsState()
 
-        Box(modifier = Modifier.fillMaxSize()) {
+        var viewSize by remember { mutableStateOf(IntSize.Zero) }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { viewSize = it },
+        ) {
+            if (viewSize.width <= 0 || translation.imgWidth <= 0) return@Box
+
+            // الإصلاح: نفس منطق Webtoon تماماً
+            // viewSize.width = عرض الشاشة المتاح
+            // translation.imgWidth = عرض الصورة الأصلية
+            // baseScale يحوّل إحداثيات الصورة إلى إحداثيات الشاشة
+            val baseScale = viewSize.width.toFloat() / translation.imgWidth
+
             Box(
                 modifier = Modifier
                     .offset(viewTL.x.pxToDp(), viewTL.y.pxToDp())
                     .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
+                        scaleX = userZoom
+                        scaleY = userZoom
                         transformOrigin = TransformOrigin(0f, 0f)
-                    }
+                    },
             ) {
-                TextBlockBackground(1f)
-                TextBlockContent(1f)
+                TextBlockBackground(baseScale)
+                TextBlockContent(baseScale)
             }
         }
     }
@@ -97,14 +109,11 @@ class PagerTranslationsView : AbstractComposeView {
         translation.blocks.forEach { block ->
             if (block.translation.isNullOrBlank()) return@forEach
 
-            // نفس المعاملات التي تستخدمها SmartTranslationBlock تمامًا
-            val padX = block.symWidth * PAD_X_FACTOR   // = symWidth * 2.5f
-            val padY = block.symHeight * PAD_Y_FACTOR  // = symHeight * 0.5f
+            val padX = block.symWidth  * PAD_X_FACTOR
+            val padY = block.symHeight * PAD_Y_FACTOR
 
-            // نفس صيغة الحساب: x - padX/2 ، y - padY/2
-            val bgX = (block.x - padX / 2f) * zoomScale
-            val bgY = (block.y - padY / 2f) * zoomScale
-
+            val bgX     = (block.x - padX / 2f) * zoomScale
+            val bgY     = (block.y - padY / 2f) * zoomScale
             val bgWidth  = (block.width  + padX) * zoomScale
             val bgHeight = (block.height + padY) * zoomScale
 
@@ -127,8 +136,8 @@ class PagerTranslationsView : AbstractComposeView {
                 block = block,
                 scaleFactor = zoomScale,
                 fontFamily = fontFamily,
-                customPadX = block.symWidth  * PAD_X_FACTOR,   // = symWidth * 2.5f
-                customPadY = block.symHeight * PAD_Y_FACTOR,   // = symHeight * 0.5f
+                customPadX = block.symWidth  * PAD_X_FACTOR,
+                customPadY = block.symHeight * PAD_Y_FACTOR,
             )
         }
     }
