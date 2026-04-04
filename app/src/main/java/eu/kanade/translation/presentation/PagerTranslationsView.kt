@@ -12,21 +12,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.AbstractComposeView
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.toFontFamily
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.isVisible
 import eu.kanade.translation.data.TranslationFont
@@ -40,6 +35,7 @@ class PagerTranslationsView : AbstractComposeView {
     private val fontFamily: FontFamily
 
     companion object {
+        // ثوابت مشتركة — عدّل هنا فقط ليتأثر الاثنان
         private const val PAD_X_FACTOR = 2.5f
         private const val PAD_Y_FACTOR = 0.5f
     }
@@ -66,40 +62,31 @@ class PagerTranslationsView : AbstractComposeView {
         this.fontFamily = Font(resId = this.font.res, weight = FontWeight.Bold).toFontFamily()
     }
 
+    // يُضبط من updateTranslationCoords في PagerPageHolder:
+    // scaleState  ← vi.scale               (scale كامل: fit-to-screen × zoom المستخدم)
+    // viewTLState ← sourceToViewCoord(0,0) (موقع الزاوية العلوية للصورة بالبكسل)
     val scaleState = MutableStateFlow(1f)
     val viewTLState = MutableStateFlow(PointF())
 
     @Composable
     override fun Content() {
         val viewTL by viewTLState.collectAsState()
-        val userZoom by scaleState.collectAsState()
+        val scale by scaleState.collectAsState()
 
-        var viewSize by remember { mutableStateOf(IntSize.Zero) }
-
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .onSizeChanged { viewSize = it },
-        ) {
-            if (viewSize.width <= 0 || translation.imgWidth <= 0) return@Box
-
-            // الإصلاح: نفس منطق Webtoon تماماً
-            // viewSize.width = عرض الشاشة المتاح
-            // translation.imgWidth = عرض الصورة الأصلية
-            // baseScale يحوّل إحداثيات الصورة إلى إحداثيات الشاشة
-            val baseScale = viewSize.width.toFloat() / translation.imgWidth
-
+        Box(modifier = Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
                     .offset(viewTL.x.pxToDp(), viewTL.y.pxToDp())
                     .graphicsLayer {
-                        scaleX = userZoom
-                        scaleY = userZoom
+                        // vi.scale يحمل Scale الكامل (fit + zoom)
+                        // لذا نمرر 1f للدوال — graphicsLayer يتكفل بالتحويل
+                        scaleX = scale
+                        scaleY = scale
                         transformOrigin = TransformOrigin(0f, 0f)
                     },
             ) {
-                TextBlockBackground(baseScale)
-                TextBlockContent(baseScale)
+                TextBlockBackground(1f)
+                TextBlockContent(1f)
             }
         }
     }
@@ -109,6 +96,7 @@ class PagerTranslationsView : AbstractComposeView {
         translation.blocks.forEach { block ->
             if (block.translation.isNullOrBlank()) return@forEach
 
+            // نفس المعاملات بالضبط التي تستخدمها SmartTranslationBlock
             val padX = block.symWidth  * PAD_X_FACTOR
             val padY = block.symHeight * PAD_Y_FACTOR
 
