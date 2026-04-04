@@ -29,14 +29,22 @@ fun SmartTranslationBlock(
     block: TranslationBlock,
     scaleFactor: Float,
     fontFamily: FontFamily,
-    customPadX: Float = block.symWidth * 2,   // افتراضي للحفاظ على التوافق
-    customPadY: Float = block.symHeight
+    customPadX: Float = block.symWidth * 2,
+    customPadY: Float = block.symHeight,
+    // إضافة offset لدعم وضع الـ Pager
+    // في Webtoon: تبقى 0f (الصورة تبدأ من (0,0))
+    // في Pager: تُمرَّر قيمة viewTL.x و viewTL.y بالبكسل
+    offsetX: Float = 0f,
+    offsetY: Float = 0f,
 ) {
     if (block.translation.isNullOrBlank()) return
     val padX = customPadX
     val padY = customPadY
-    val xPx = max((block.x - padX / 2) * scaleFactor, 0.0f)
-    val yPx = max((block.y - padY / 2) * scaleFactor, 0.0f)
+
+    // حساب الموقع بالبكسل: إحداثيات الصورة × scaleFactor + offset الشاشة
+    val xPx = max((block.x - padX / 2) * scaleFactor, 0.0f) + offsetX
+    val yPx = max((block.y - padY / 2) * scaleFactor, 0.0f) + offsetY
+
     val width = ((block.width + padX) * scaleFactor).pxToDp()
     val height = ((block.height + padY) * scaleFactor).pxToDp()
     val isVertical = block.angle > 85
@@ -52,9 +60,8 @@ fun SmartTranslationBlock(
             val maxWidthPx = with(density) { width.roundToPx() }
             val maxHeightPx = with(density) { height.roundToPx() }
 
-            // Binary search for optimal font size
             var low = 1
-            var high = 100 // Initial upper bound
+            var high = 100
             var bestSize = low
 
             while (low <= high) {
@@ -85,7 +92,6 @@ fun SmartTranslationBlock(
             }
             fontSize.value = bestSize.sp
 
-            // Measure final layout
             val textPlaceable = subcompose(Unit) {
                 Text(
                     text = block.translation,
@@ -100,7 +106,6 @@ fun SmartTranslationBlock(
                         .width(width)
                         .rotate(if (isVertical) 0f else block.angle)
                         .align(Alignment.Center),
-//                        .background(color = Color.Blue),
                 )
             }[0].measure(constraints)
 
