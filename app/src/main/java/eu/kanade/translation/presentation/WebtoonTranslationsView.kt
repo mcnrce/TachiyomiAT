@@ -1,117 +1,136 @@
 package eu.kanade.translation.presentation
 
+import android.content.Context
+import android.util.AttributeSet
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.layout.requiredSize
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.wrapContentSize
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.SubcomposeLayout
-import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.AbstractComposeView
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.sp
-import eu.kanade.translation.model.TranslationBlock
-import kotlin.math.max
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.toFontFamily
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import androidx.core.view.isVisible
+import eu.kanade.translation.data.TranslationFont
+import eu.kanade.translation.model.PageTranslation
 
-@Composable
-fun SmartTranslationBlock(
-    modifier: Modifier = Modifier,
-    block: TranslationBlock,
-    scaleFactor: Float,
-    fontFamily: FontFamily,
-    customPadX: Float = block.symWidth * 2,
-    customPadY: Float = block.symHeight,
-    // إضافة offset لدعم وضع الـ Pager
-    // في Webtoon: تبقى 0f (الصورة تبدأ من (0,0))
-    // في Pager: تُمرَّر قيمة viewTL.x و viewTL.y بالبكسل
-    offsetX: Float = 0f,
-    offsetY: Float = 0f,
-) {
-    if (block.translation.isNullOrBlank()) return
-    val padX = customPadX
-    val padY = customPadY
+class WebtoonTranslationsView :
+    AbstractComposeView {
 
-    // حساب الموقع بالبكسل: إحداثيات الصورة × scaleFactor + offset الشاشة
-    val xPx = max((block.x - padX / 2) * scaleFactor, 0.0f) + offsetX
-    val yPx = max((block.y - padY / 2) * scaleFactor, 0.0f) + offsetY
+    // جعلنا الـ translation متغير قابل للتحديث (var) بدلاً من val 
+    // إذا كان الكود الخارجي يسمح بذلك، وإلا سنكتفي بـ remember
+    private var translation: PageTranslation = PageTranslation.EMPTY
+    private val font: TranslationFont
+    private val fontFamily: FontFamily
 
-    val width = ((block.width + padX) * scaleFactor).pxToDp()
-    val height = ((block.height + padY) * scaleFactor).pxToDp()
-    val isVertical = block.angle > 85
-    Box(
-        modifier = modifier
-            .wrapContentSize(Alignment.CenterStart, true)
-            .offset(xPx.pxToDp(), yPx.pxToDp())
-            .requiredSize(width, height),
-    ) {
-        val density = LocalDensity.current
-        val fontSize = remember { mutableStateOf(16.sp) }
-        SubcomposeLayout { constraints ->
-            val maxWidthPx = with(density) { width.roundToPx() }
-            val maxHeightPx = with(density) { height.roundToPx() }
+    constructor(
+        context: Context,
+        attrs: AttributeSet? = null,
+        defStyleAttr: Int = 0,
+    ) : super(context, attrs, defStyleAttr) {
+        this.font = TranslationFont.ANIME_ACE
+        this.fontFamily = Font(
+            resId = font.res,
+            weight = FontWeight.Bold,
+        ).toFontFamily()
+    }
 
-            var low = 1
-            var high = 100
-            var bestSize = low
+    constructor(
+        context: Context,
+        attrs: AttributeSet? = null,
+        defStyleAttr: Int = 0,
+        translation: PageTranslation,
+        font: TranslationFont? = null,
+    ) : super(context, attrs, defStyleAttr) {
+        this.translation = translation
+        this.font = font ?: TranslationFont.ANIME_ACE
+        this.fontFamily = Font(
+            resId = this.font.res,
+            weight = FontWeight.Bold,
+        ).toFontFamily()
+    }
 
-            while (low <= high) {
-                val mid = ((low + high) / 2)
-                val textLayoutResult = subcompose(mid.sp) {
-                    Text(
-                        text = block.translation,
-                        fontSize = mid.sp,
-                        fontFamily = fontFamily,
-                        color = Color.Black,
-                        overflow = TextOverflow.Visible,
-                        textAlign = TextAlign.Center,
-                        maxLines = Int.MAX_VALUE,
-                        softWrap = true,
-                        modifier = Modifier
-                            .width(width)
-                            .rotate(if (isVertical) 0f else block.angle)
-                            .align(Alignment.Center),
-                    )
-                }[0].measure(Constraints(maxWidth = maxWidthPx))
+    @Composable
+    override fun Content() {
+        // استخدام remember(translation) هو المفتاح، ولكن أضفنا فحصاً داخلياً
+        var size by remember(translation) { mutableStateOf(IntSize.Zero) }
 
-                if (textLayoutResult.height <= maxHeightPx) {
-                    bestSize = mid
-                    low = mid + 1
-                } else {
-                    high = mid - 1
-                }
-            }
-            fontSize.value = bestSize.sp
+        // إذا كانت الترجمة فارغة، لا ترسم أي شيء نهائياً
+        if (translation == PageTranslation.EMPTY) {
+            hide()
+            return
+        }
 
-            val textPlaceable = subcompose(Unit) {
-                Text(
-                    text = block.translation,
-                    fontSize = fontSize.value,
-                    fontFamily = fontFamily,
-                    color = Color.Black,
-                    softWrap = true,
-                    overflow = TextOverflow.Visible,
-                    textAlign = TextAlign.Center,
-                    maxLines = Int.MAX_VALUE,
-                    modifier = Modifier
-                        .width(width)
-                        .rotate(if (isVertical) 0f else block.angle)
-                        .align(Alignment.Center),
-                )
-            }[0].measure(constraints)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged {
+                    size = it
+                    if (size == IntSize.Zero) hide() else show()
+                },
+        ) {
+            // نستخدم return@Box لضمان عدم رسم أي بلوكات إذا لم يتحدد الحجم بعد
+            if (size.width <= 0) return@Box
 
-            layout(textPlaceable.width, textPlaceable.height) {
-                textPlaceable.place(0, 0)
-            }
+            val scaleFactor = size.width.toFloat() / translation.imgWidth
+            
+            // رسم الطبقات
+            TextBlockBackground(scaleFactor)
+            TextBlockContent(scaleFactor)
         }
     }
-}
+
+    @Composable
+    fun TextBlockBackground(scaleFactor: Float) {
+        translation.blocks.forEach { block ->
+            if (block.translation.isNullOrBlank()) return@forEach
+            val padX = block.symWidth / 2
+            val padY = block.symHeight / 2
+            val bgX = (block.x - padX / 2) * scaleFactor
+            val bgY = (block.y - padY / 2) * scaleFactor
+            val bgWidth = (block.width + padX) * scaleFactor
+            val bgHeight = (block.height + padY) * scaleFactor
+            val isVertical = block.angle > 85
+            Box(
+                modifier = Modifier
+                    .offset(bgX.pxToDp(), bgY.pxToDp())
+                    .size(bgWidth.pxToDp(), bgHeight.pxToDp())
+                    .rotate(if (isVertical) 0f else block.angle)
+                    .background(Color.White, shape = RoundedCornerShape(4.dp)),
+            )
+        }
+    }
+
+    @Composable
+    fun TextBlockContent(scaleFactor: Float) {
+        translation.blocks.forEach { block ->
+            SmartTranslationBlock(
+                block = block,
+                scaleFactor = scaleFactor,
+                fontFamily = fontFamily,
+            )
+        }
+    }
+
+    fun show() {
+        isVisible = true
+    }
+
+    fun hide() {
+        isVisible = false
+    }
+    }
