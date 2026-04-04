@@ -33,7 +33,7 @@ class PagerTranslationsView : AbstractComposeView {
     private val fontFamily: FontFamily
 
     companion object {
-        // ثوابت مشتركة — عدّل هنا فقط ليتأثر الخلفية والنص معاً
+        // ثوابت مشتركة للخلفية والنص — عدّل هنا فقط
         private const val PAD_X_FACTOR = 2.5f
         private const val PAD_Y_FACTOR = 0.5f
     }
@@ -61,38 +61,43 @@ class PagerTranslationsView : AbstractComposeView {
     }
 
     // يُضبط من PagerPageHolder.updateTranslationCoords:
-    //   scaleState  ← vi.scale                  (بكسل شاشة ÷ بكسل صورة)
-    //   viewTLState ← vi.sourceToViewCoord(0,0)  (موقع الزاوية العلوية اليسرى للصورة بالبكسل)
-    val scaleState = MutableStateFlow(1f)
+    //   viewTLState ← sourceToViewCoord(0,0)   ← الزاوية العلوية اليسرى للصورة بالبكسل
+    //   scaleState  ← renderedWidth             ← عرض الصورة المُصيَّر على الشاشة بالبكسل
+    //                 (محسوب من sourceToViewCoord أيضاً لضمان التوافق)
+    val scaleState = MutableStateFlow(0f)
     val viewTLState = MutableStateFlow(PointF())
 
     @Composable
     override fun Content() {
         val viewTL by viewTLState.collectAsState()
-        val scale   by scaleState.collectAsState()
+        val renderedWidth by scaleState.collectAsState()
 
-        // لا graphicsLayer — نفس نهج Webtoon بالضبط
-        // الفرق الوحيد: نضيف viewTL كـ offset لأن الصورة قد لا تبدأ من (0,0) في Pager
+        // لا تُرسم شيئاً حتى تصلنا قيم صحيحة من updateTranslationCoords
+        if (renderedWidth <= 0f || translation.imgWidth <= 0) return
+
+        // نفس طريقة Webtoon: scaleFactor = عرض مُصيَّر / عرض الصورة الأصلية
+        // الفرق الوحيد: نضيف viewTL كـ offset لأن الصورة قد لا تبدأ من (0,0)
+        val scaleFactor = renderedWidth / translation.imgWidth
+
         Box(modifier = Modifier.fillMaxSize()) {
-            TextBlockBackground(viewTL, scale)
-            TextBlockContent(viewTL, scale)
+            TextBlockBackground(viewTL, scaleFactor)
+            TextBlockContent(viewTL, scaleFactor)
         }
     }
 
     @Composable
-    fun TextBlockBackground(viewTL: PointF, scale: Float) {
+    fun TextBlockBackground(viewTL: PointF, scaleFactor: Float) {
         translation.blocks.forEach { block ->
             if (block.translation.isNullOrBlank()) return@forEach
 
             val padX = block.symWidth  * PAD_X_FACTOR
             val padY = block.symHeight * PAD_Y_FACTOR
 
-            // حساب مباشر للإحداثيات على الشاشة بالبكسل
-            // = موقع الصورة على الشاشة + موقع الفقاعة داخل الصورة × الـ scale
-            val bgX     = viewTL.x + (block.x - padX / 2f) * scale
-            val bgY     = viewTL.y + (block.y - padY / 2f) * scale
-            val bgWidth  = (block.width  + padX) * scale
-            val bgHeight = (block.height + padY) * scale
+            // نفس صيغة Webtoon تماماً + offset موقع الصورة على الشاشة
+            val bgX     = viewTL.x + (block.x - padX / 2f) * scaleFactor
+            val bgY     = viewTL.y + (block.y - padY / 2f) * scaleFactor
+            val bgWidth  = (block.width  + padX) * scaleFactor
+            val bgHeight = (block.height + padY) * scaleFactor
 
             val isVertical = block.angle > 85
 
@@ -107,15 +112,14 @@ class PagerTranslationsView : AbstractComposeView {
     }
 
     @Composable
-    fun TextBlockContent(viewTL: PointF, scale: Float) {
+    fun TextBlockContent(viewTL: PointF, scaleFactor: Float) {
         translation.blocks.forEach { block ->
             SmartTranslationBlock(
                 block = block,
-                scaleFactor = scale,
+                scaleFactor = scaleFactor,
                 fontFamily = fontFamily,
                 customPadX = block.symWidth  * PAD_X_FACTOR,
                 customPadY = block.symHeight * PAD_Y_FACTOR,
-                // تمرير موقع الصورة على الشاشة كـ offset
                 offsetX = viewTL.x,
                 offsetY = viewTL.y,
             )
