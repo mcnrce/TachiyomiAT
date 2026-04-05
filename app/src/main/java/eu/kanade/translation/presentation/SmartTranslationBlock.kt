@@ -29,6 +29,13 @@ fun SmartTranslationBlock(
     block: TranslationBlock,
     scaleFactor: Float,
     fontFamily: FontFamily,
+    // ── وضع الويبتون: لا يمرر هذه القيم (تبقى على الافتراضي) ──────────────
+    // ── وضع المانجا:  يمرر viewTL.x/y و أبعاد الـ view لتقييد الأحجام ─────
+    offsetX: Float = 0f,
+    offsetY: Float = 0f,
+    maxW: Float = Float.MAX_VALUE,
+    maxH: Float = Float.MAX_VALUE,
+    // ────────────────────────────────────────────────────────────────────────
     customPadX: Float = block.symWidth * 2f,
     customPadY: Float = block.symHeight,
 ) {
@@ -37,13 +44,19 @@ fun SmartTranslationBlock(
     val padX = customPadX
     val padY = customPadY
 
-    // max() يحمي من قيم سالبة عند الحافة (مهم لوضع الويبتون حيث scaleFactor < 1).
-    // في وضع المانجا scaleFactor=1f وgraphicsLayer يتكفل بالتكبير، فالقيم صغيرة دائماً.
-    val xPx = max((block.x - padX / 2f) * scaleFactor, 0f)
-    val yPx = max((block.y - padY / 2f) * scaleFactor, 0f)
+    // الموضع النهائي على الشاشة بالبكسل:
+    //   screenX = offsetX + (block.x - padding/2) * scaleFactor
+    // coerceIn/coerceAtMost تمنع overflow في Compose Constraints عند التكبير الشديد
+    val xPx = (offsetX + (block.x - padX / 2f) * scaleFactor).coerceIn(0f, maxW)
+    val yPx = (offsetY + (block.y - padY / 2f) * scaleFactor).coerceIn(0f, maxH)
 
-    val width  = ((block.width  + padX) * scaleFactor).pxToDp()
-    val height = ((block.height + padY) * scaleFactor).pxToDp()
+    val widthPx  = ((block.width  + padX) * scaleFactor).coerceAtMost(maxW - xPx)
+    val heightPx = ((block.height + padY) * scaleFactor).coerceAtMost(maxH - yPx)
+
+    if (widthPx <= 0f || heightPx <= 0f) return
+
+    val width  = widthPx.pxToDp()
+    val height = heightPx.pxToDp()
 
     val isVertical = block.angle > 85
 
@@ -67,7 +80,7 @@ fun SmartTranslationBlock(
 
             while (low <= high) {
                 val mid = (low + high) / 2
-                val textLayoutResult = subcompose(mid.sp) {
+                val measured = subcompose(mid.sp) {
                     Text(
                         text       = block.translation,
                         fontSize   = mid.sp,
@@ -84,7 +97,7 @@ fun SmartTranslationBlock(
                     )
                 }[0].measure(Constraints(maxWidth = maxWidthPx))
 
-                if (textLayoutResult.height <= maxHeightPx) {
+                if (measured.height <= maxHeightPx) {
                     bestSize = mid
                     low = mid + 1
                 } else {
