@@ -21,7 +21,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.sp
 import eu.kanade.translation.model.TranslationBlock
-import kotlin.math.max
 
 @Composable
 fun SmartTranslationBlock(
@@ -29,54 +28,72 @@ fun SmartTranslationBlock(
     block: TranslationBlock,
     scaleFactor: Float,
     fontFamily: FontFamily,
-    customPadX: Float = block.symWidth * 2,   // افتراضي للحفاظ على التوافق
-    customPadY: Float = block.symHeight
+    // وضع الويبتون: لا يُمرَّر شيء → القيم الافتراضية (صفر / بلا حد)
+    // وضع الباجر:   يُمرَّر viewTL.x/y وأبعاد الـ view
+    offsetX: Float = 0f,
+    offsetY: Float = 0f,
+    maxW: Float = Float.MAX_VALUE,
+    maxH: Float = Float.MAX_VALUE,
+    customPadX: Float = block.symWidth * 2f,
+    customPadY: Float = block.symHeight,
 ) {
     if (block.translation.isNullOrBlank()) return
+
     val padX = customPadX
     val padY = customPadY
-    val xPx = max((block.x - padX / 2) * scaleFactor, 0.0f)
-    val yPx = max((block.y - padY / 2) * scaleFactor, 0.0f)
-    val width = ((block.width + padX) * scaleFactor).pxToDp()
-    val height = ((block.height + padY) * scaleFactor).pxToDp()
+
+    // موقع نهائي = offset + (موقع الفقاعة - نصف الحشو) × scale
+    val xPx = (offsetX + (block.x - padX / 2f) * scaleFactor).coerceIn(0f, maxW)
+    val yPx = (offsetY + (block.y - padY / 2f) * scaleFactor).coerceIn(0f, maxH)
+
+    val widthPx  = ((block.width  + padX) * scaleFactor).coerceAtMost(maxW - xPx)
+    val heightPx = ((block.height + padY) * scaleFactor).coerceAtMost(maxH - yPx)
+
+    if (widthPx <= 0f || heightPx <= 0f) return
+
+    val width  = widthPx.pxToDp()
+    val height = heightPx.pxToDp()
+
     val isVertical = block.angle > 85
+
     Box(
         modifier = modifier
             .wrapContentSize(Alignment.CenterStart, true)
             .offset(xPx.pxToDp(), yPx.pxToDp())
             .requiredSize(width, height),
     ) {
-        val density = LocalDensity.current
+        val density  = LocalDensity.current
         val fontSize = remember { mutableStateOf(16.sp) }
+
         SubcomposeLayout { constraints ->
-            val maxWidthPx = with(density) { width.roundToPx() }
+            val maxWidthPx  = with(density) { width.roundToPx() }
             val maxHeightPx = with(density) { height.roundToPx() }
 
-            // Binary search for optimal font size
-            var low = 1
-            var high = 100 // Initial upper bound
+            // Binary search لأكبر حجم خط يناسب المساحة
+            var low      = 1
+            var high     = 100
             var bestSize = low
 
             while (low <= high) {
-                val mid = ((low + high) / 2)
-                val textLayoutResult = subcompose(mid.sp) {
+                val mid = (low + high) / 2
+                val measured = subcompose(mid.sp) {
                     Text(
-                        text = block.translation,
-                        fontSize = mid.sp,
+                        text       = block.translation,
+                        fontSize   = mid.sp,
                         fontFamily = fontFamily,
-                        color = Color.Black,
-                        overflow = TextOverflow.Visible,
-                        textAlign = TextAlign.Center,
-                        maxLines = Int.MAX_VALUE,
-                        softWrap = true,
-                        modifier = Modifier
+                        color      = Color.Black,
+                        overflow   = TextOverflow.Visible,
+                        textAlign  = TextAlign.Center,
+                        maxLines   = Int.MAX_VALUE,
+                        softWrap   = true,
+                        modifier   = Modifier
                             .width(width)
                             .rotate(if (isVertical) 0f else block.angle)
                             .align(Alignment.Center),
                     )
                 }[0].measure(Constraints(maxWidth = maxWidthPx))
 
-                if (textLayoutResult.height <= maxHeightPx) {
+                if (measured.height <= maxHeightPx) {
                     bestSize = mid
                     low = mid + 1
                 } else {
@@ -85,22 +102,20 @@ fun SmartTranslationBlock(
             }
             fontSize.value = bestSize.sp
 
-            // Measure final layout
             val textPlaceable = subcompose(Unit) {
                 Text(
-                    text = block.translation,
-                    fontSize = fontSize.value,
+                    text       = block.translation,
+                    fontSize   = fontSize.value,
                     fontFamily = fontFamily,
-                    color = Color.Black,
-                    softWrap = true,
-                    overflow = TextOverflow.Visible,
-                    textAlign = TextAlign.Center,
-                    maxLines = Int.MAX_VALUE,
-                    modifier = Modifier
+                    color      = Color.Black,
+                    softWrap   = true,
+                    overflow   = TextOverflow.Visible,
+                    textAlign  = TextAlign.Center,
+                    maxLines   = Int.MAX_VALUE,
+                    modifier   = Modifier
                         .width(width)
                         .rotate(if (isVertical) 0f else block.angle)
                         .align(Alignment.Center),
-//                        .background(color = Color.Blue),
                 )
             }[0].measure(constraints)
 
