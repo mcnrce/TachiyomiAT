@@ -143,11 +143,11 @@ class PagerPageHolder(
                 setImage(
                     source, isAnimated,
                     Config(
-                        zoomDuration    = viewer.config.doubleTapAnimDuration,
-                        minimumScaleType = viewer.config.imageScaleType,
-                        cropBorders     = viewer.config.imageCropBorders,
+                        zoomDuration      = viewer.config.doubleTapAnimDuration,
+                        minimumScaleType  = viewer.config.imageScaleType,
+                        cropBorders       = viewer.config.imageCropBorders,
                         zoomStartPosition = viewer.config.imageZoomType,
-                        landscapeZoom   = viewer.config.landscapeZoom,
+                        landscapeZoom     = viewer.config.landscapeZoom,
                     ),
                 )
                 if (!isAnimated) pageBackground = background
@@ -179,7 +179,7 @@ class PagerPageHolder(
 
     private fun splitInHalf(imageSource: BufferedSource): BufferedSource {
         var side = when {
-            viewer is L2RPagerViewer && page is InsertPage -> ImageUtil.Side.RIGHT
+            viewer is L2RPagerViewer && page is InsertPage  -> ImageUtil.Side.RIGHT
             viewer !is L2RPagerViewer && page is InsertPage -> ImageUtil.Side.LEFT
             viewer is L2RPagerViewer && page !is InsertPage -> ImageUtil.Side.LEFT
             viewer !is L2RPagerViewer && page !is InsertPage -> ImageUtil.Side.RIGHT
@@ -201,28 +201,35 @@ class PagerPageHolder(
     private fun setError() {
         progressIndicator?.hide()
         showErrorLayout()
+        // TachiyomiAT
         translationsView?.hide()
     }
 
     override fun onImageLoaded() {
         super.onImageLoaded()
         progressIndicator?.hide()
-        // TachiyomiAT — يُحدِّث الإحداثيات دائماً (حتى لو translationsView لم يُنشأ بعد،
-        // updateTranslationCoords تتحقق داخلياً)
-        updateTranslationCoords(pageView as SubsamplingScaleImageView)
-        if (showTranslations) translationsView?.show()
+        // TachiyomiAT
+        // نؤخر التحديث لـ frame التالي بـ post{}:
+        // SSIV قد يُطلق onImageLoaded قبل اكتمال Layout Pass خاصته،
+        // فيُعيد sourceToViewCoord قيمة خاطئة (0,0) أو قيمة stale.
+        // post{} يضمن تنفيذ الكود بعد أن يُكمل SSIV رسمه الأول.
+        (pageView as? SubsamplingScaleImageView)?.post {
+            updateTranslationCoords(pageView as SubsamplingScaleImageView)
+            if (showTranslations) translationsView?.show()
+        }
     }
 
     override fun onImageLoadError() {
         super.onImageLoadError()
         setError()
+        // TachiyomiAT
         translationsView?.hide()
     }
 
     override fun onScaleChanged(newScale: Float) {
         super.onScaleChanged(newScale)
         viewer.activity.hideMenu()
-        // TachiyomiAT
+        // TachiyomiAT — هنا لا نحتاج post{} لأن onScaleChanged يأتي بعد layout
         updateTranslationCoords(pageView as SubsamplingScaleImageView)
     }
 
@@ -241,27 +248,47 @@ class PagerPageHolder(
             translation = page.translation!!,
             font = font,
         )
-        // نبدأ مخفياً دائماً لتجنب وميض الإحداثيات الافتراضية (viewTL=0,0 / scale=1)
+        // نبدأ مخفياً — يُعرض فقط بعد ضبط الإحداثيات الصحيحة في updateTranslationCoords
         translationsView?.hide()
         addView(translationsView, MATCH_PARENT, MATCH_PARENT)
 
-        // إذا كانت الصورة محملة مسبقاً (من الكاش)، onImageLoaded أُطلق قبل إنشاء الـ view.
-        // نضبط الإحداثيات الآن ونعرض الـ view.
+        // إذا كانت الصورة محمّلة مسبقاً (كاش): SSIV جاهز بالفعل.
+        // نستخدم post{} هنا أيضاً لضمان اكتمال layout قبل قراءة الإحداثيات.
         (pageView as? SubsamplingScaleImageView)?.let { vi ->
             if (vi.isReady) {
-                updateTranslationCoords(vi)
-                if (showTranslations) translationsView?.show()
+                vi.post {
+                    updateTranslationCoords(vi)
+                    if (showTranslations) translationsView?.show()
+                }
             }
         }
     }
 
     // TachiyomiAT
+    // ─────────────────────────────────────────────────────────────────────────
+    // نحسب scale من نقطتين حقيقيتين بدلاً من vi.scale مباشرةً.
+    // هذا يعطي نفس نتيجة الويبتون: renderedWidth / sourceWidth.
+    //
+    // vi.scale قد يحمل قيمة غير محدّثة في بعض الحالات (مثل أثناء animation).
+    // حساب scale من sourceToViewCoord دائماً صحيح لأنه يعكس الحالة الفعلية.
+    // ─────────────────────────────────────────────────────────────────────────
     private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
         if (page.translation == null) return
-        val tv = translationsView ?: return   // لا شيء نفعله إذا لم يُنشأ الـ view بعد
-        val coords = vi.sourceToViewCoord(0f, 0f) ?: return
-        tv.viewTLState.value = coords
-        tv.scaleState.value  = vi.scale
+        val tv = translationsView ?: return
+        if (!vi.isReady) return
+
+        val imgW = page.translation!!.imgWidth
+
+        // نقطتان على المحور الأفقي لحساب scale بدقة
+        val tl = vi.sourceToViewCoord(0f,   0f) ?: return
+        val tr = vi.sourceToViewCoord(imgW, 0f) ?: return
+
+        // scale = عرض الصورة المرسومة ÷ عرض الصورة الأصلي
+        // = نفس scaleFactor في الويبتون
+        val scale = (tr.x - tl.x) / imgW
+
+        tv.viewTLState.value = tl
+        tv.scaleState.value  = scale
     }
 
     private fun showErrorLayout(): ReaderErrorBinding {
