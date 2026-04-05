@@ -21,7 +21,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.sp
 import eu.kanade.translation.model.TranslationBlock
-import kotlin.math.max
 
 @Composable
 fun SmartTranslationBlock(
@@ -29,25 +28,31 @@ fun SmartTranslationBlock(
     block: TranslationBlock,
     scaleFactor: Float,
     fontFamily: FontFamily,
-    customPadX: Float = block.symWidth * 2,
-    customPadY: Float = block.symHeight,
-    // إضافة offset لدعم وضع الـ Pager
-    // في Webtoon: تبقى 0f (الصورة تبدأ من (0,0))
-    // في Pager: تُمرَّر قيمة viewTL.x و viewTL.y بالبكسل
+    // offsetX/offsetY: موضع الزاوية العلوية للصورة بالبكسل على الشاشة.
+    // القيمة الافتراضية 0f تحافظ على التوافق مع وضع الويبتون.
+    // في وضع المانجا يُمرَّر viewTL.x و viewTL.y من PagerTranslationsView.
     offsetX: Float = 0f,
     offsetY: Float = 0f,
+    customPadX: Float = block.symWidth * 2f,
+    customPadY: Float = block.symHeight,
 ) {
     if (block.translation.isNullOrBlank()) return
+
     val padX = customPadX
     val padY = customPadY
 
-    // حساب الموقع بالبكسل: إحداثيات الصورة × scaleFactor + offset الشاشة
-    val xPx = max((block.x - padX / 2) * scaleFactor, 0.0f) + offsetX
-    val yPx = max((block.y - padY / 2) * scaleFactor, 0.0f) + offsetY
+    // الموضع النهائي على الشاشة بالبكسل:
+    // offset + (موضع البلوك في الصورة - نصف الحشو) × مقياس العرض
+    // لا نستخدم max() لأن offsetX/offsetY كافيان لضمان ظهور البلوك ضمن الشاشة،
+    // والـ clip الطبيعي لـ Compose يتكفل بالباقي.
+    val xPx = offsetX + (block.x - padX / 2f) * scaleFactor
+    val yPx = offsetY + (block.y - padY / 2f) * scaleFactor
 
-    val width = ((block.width + padX) * scaleFactor).pxToDp()
+    val width  = ((block.width  + padX) * scaleFactor).pxToDp()
     val height = ((block.height + padY) * scaleFactor).pxToDp()
+
     val isVertical = block.angle > 85
+
     Box(
         modifier = modifier
             .wrapContentSize(Alignment.CenterStart, true)
@@ -56,27 +61,29 @@ fun SmartTranslationBlock(
     ) {
         val density = LocalDensity.current
         val fontSize = remember { mutableStateOf(16.sp) }
+
         SubcomposeLayout { constraints ->
-            val maxWidthPx = with(density) { width.roundToPx() }
+            val maxWidthPx  = with(density) { width.roundToPx() }
             val maxHeightPx = with(density) { height.roundToPx() }
 
-            var low = 1
-            var high = 100
+            // Binary search لإيجاد أكبر حجم خط يناسب المساحة
+            var low     = 1
+            var high    = 100
             var bestSize = low
 
             while (low <= high) {
-                val mid = ((low + high) / 2)
+                val mid = (low + high) / 2
                 val textLayoutResult = subcompose(mid.sp) {
                     Text(
-                        text = block.translation,
-                        fontSize = mid.sp,
+                        text       = block.translation,
+                        fontSize   = mid.sp,
                         fontFamily = fontFamily,
-                        color = Color.Black,
-                        overflow = TextOverflow.Visible,
-                        textAlign = TextAlign.Center,
-                        maxLines = Int.MAX_VALUE,
-                        softWrap = true,
-                        modifier = Modifier
+                        color      = Color.Black,
+                        overflow   = TextOverflow.Visible,
+                        textAlign  = TextAlign.Center,
+                        maxLines   = Int.MAX_VALUE,
+                        softWrap   = true,
+                        modifier   = Modifier
                             .width(width)
                             .rotate(if (isVertical) 0f else block.angle)
                             .align(Alignment.Center),
@@ -92,17 +99,18 @@ fun SmartTranslationBlock(
             }
             fontSize.value = bestSize.sp
 
+            // القياس النهائي
             val textPlaceable = subcompose(Unit) {
                 Text(
-                    text = block.translation,
-                    fontSize = fontSize.value,
+                    text       = block.translation,
+                    fontSize   = fontSize.value,
                     fontFamily = fontFamily,
-                    color = Color.Black,
-                    softWrap = true,
-                    overflow = TextOverflow.Visible,
-                    textAlign = TextAlign.Center,
-                    maxLines = Int.MAX_VALUE,
-                    modifier = Modifier
+                    color      = Color.Black,
+                    softWrap   = true,
+                    overflow   = TextOverflow.Visible,
+                    textAlign  = TextAlign.Center,
+                    maxLines   = Int.MAX_VALUE,
+                    modifier   = Modifier
                         .width(width)
                         .rotate(if (isVertical) 0f else block.angle)
                         .align(Alignment.Center),
