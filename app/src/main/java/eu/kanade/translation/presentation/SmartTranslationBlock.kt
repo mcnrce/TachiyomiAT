@@ -29,13 +29,10 @@ fun SmartTranslationBlock(
     block: TranslationBlock,
     scaleFactor: Float,
     fontFamily: FontFamily,
-    // ── وضع الويبتون: لا يمرر هذه القيم (تبقى على الافتراضي) ──────────────
-    // ── وضع المانجا:  يمرر viewTL.x/y و أبعاد الـ view لتقييد الأحجام ─────
+    // وضع الويبتون: لا يمرر هذه القيم → تبقى 0f (الصورة تبدأ من (0,0))
+    // وضع الباجر:  يمرر viewTL.x/y من PagerTranslationsView
     offsetX: Float = 0f,
     offsetY: Float = 0f,
-    maxW: Float = Float.MAX_VALUE,
-    maxH: Float = Float.MAX_VALUE,
-    // ────────────────────────────────────────────────────────────────────────
     customPadX: Float = block.symWidth * 2f,
     customPadY: Float = block.symHeight,
 ) {
@@ -44,19 +41,14 @@ fun SmartTranslationBlock(
     val padX = customPadX
     val padY = customPadY
 
-    // الموضع النهائي على الشاشة بالبكسل:
-    //   screenX = offsetX + (block.x - padding/2) * scaleFactor
-    // coerceIn/coerceAtMost تمنع overflow في Compose Constraints عند التكبير الشديد
-    val xPx = (offsetX + (block.x - padX / 2f) * scaleFactor).coerceIn(0f, maxW)
-    val yPx = (offsetY + (block.y - padY / 2f) * scaleFactor).coerceIn(0f, maxH)
+    // الموضع النهائي على الشاشة:
+    //   screenX = offsetX + (block.x - padding/2) × scaleFactor
+    // max(0f) يحمي من قيم سالبة طفيفة عند حافة الصورة
+    val xPx = max(offsetX + (block.x - padX / 2f) * scaleFactor, 0f)
+    val yPx = max(offsetY + (block.y - padY / 2f) * scaleFactor, 0f)
 
-    val widthPx  = ((block.width  + padX) * scaleFactor).coerceAtMost(maxW - xPx)
-    val heightPx = ((block.height + padY) * scaleFactor).coerceAtMost(maxH - yPx)
-
-    if (widthPx <= 0f || heightPx <= 0f) return
-
-    val width  = widthPx.pxToDp()
-    val height = heightPx.pxToDp()
+    val width  = ((block.width  + padX) * scaleFactor).pxToDp()
+    val height = ((block.height + padY) * scaleFactor).pxToDp()
 
     val isVertical = block.angle > 85
 
@@ -66,14 +58,13 @@ fun SmartTranslationBlock(
             .offset(xPx.pxToDp(), yPx.pxToDp())
             .requiredSize(width, height),
     ) {
-        val density = LocalDensity.current
+        val density  = LocalDensity.current
         val fontSize = remember { mutableStateOf(16.sp) }
 
         SubcomposeLayout { constraints ->
             val maxWidthPx  = with(density) { width.roundToPx() }
             val maxHeightPx = with(density) { height.roundToPx() }
 
-            // Binary search لإيجاد أكبر حجم خط يناسب المساحة
             var low      = 1
             var high     = 100
             var bestSize = low
@@ -106,7 +97,6 @@ fun SmartTranslationBlock(
             }
             fontSize.value = bestSize.sp
 
-            // القياس النهائي
             val textPlaceable = subcompose(Unit) {
                 Text(
                     text       = block.translation,
