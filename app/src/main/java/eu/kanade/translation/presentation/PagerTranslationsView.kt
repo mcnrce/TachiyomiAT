@@ -15,6 +15,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.AbstractComposeView
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -60,7 +62,7 @@ class PagerTranslationsView : AbstractComposeView {
     }
 
     // يُضبط من updateTranslationCoords في PagerPageHolder:
-    // scaleState  ← vi.scale               (scale كامل: fit-to-screen × zoom المستخدم)
+    // scaleState  ← vi.scale               (بكسل شاشة ÷ بكسل صورة)
     // viewTLState ← sourceToViewCoord(0,0) (موقع الزاوية العلوية للصورة بالبكسل)
     val scaleState = MutableStateFlow(1f)
     val viewTLState = MutableStateFlow(PointF())
@@ -71,26 +73,37 @@ class PagerTranslationsView : AbstractComposeView {
         val scale  by scaleState.collectAsState()
 
         Box(modifier = Modifier.fillMaxSize()) {
-            TextBlockBackground(scale, viewTL)
-            TextBlockContent(scale, viewTL)
+            // graphicsLayer يتكفل بتطبيق vi.scale بصرياً دون أن تمر القيم المضاعَفة
+            // عبر نظام Compose Layout/Constraints (يتجنب IllegalArgumentException).
+            // الأطفال بإحداثيات الصورة الأصلية (صغيرة)، graphicsLayer يكبّرها عند الرسم.
+            Box(
+                modifier = Modifier
+                    .offset(viewTL.x.pxToDp(), viewTL.y.pxToDp())
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = TransformOrigin(0f, 0f)
+                    },
+            ) {
+                TextBlockBackground()
+                TextBlockContent()
+            }
         }
     }
 
     @Composable
-    fun TextBlockBackground(scale: Float, viewTL: PointF) {
+    fun TextBlockBackground() {
         translation.blocks.forEach { block ->
             if (block.translation.isNullOrBlank()) return@forEach
 
             val padX = block.symWidth  * PAD_X_FACTOR
             val padY = block.symHeight * PAD_Y_FACTOR
 
-            // حساب الموضع النهائي مباشرةً (نفس نهج الويبتون):
-            // viewTL = موضع الزاوية العلوية للصورة بالبكسل على الشاشة
-            // scale  = vi.scale (بكسل صورة → بكسل شاشة)
-            val bgX = viewTL.x + (block.x - padX / 2f) * scale
-            val bgY = viewTL.y + (block.y - padY / 2f) * scale
-            val bgW = (block.width  + padX) * scale
-            val bgH = (block.height + padY) * scale
+            // الإحداثيات بوحدات الصورة — graphicsLayer يضاعفها بصرياً لاحقاً
+            val bgX = block.x - padX / 2f
+            val bgY = block.y - padY / 2f
+            val bgW = block.width  + padX
+            val bgH = block.height + padY
 
             val isVertical = block.angle > 85
 
@@ -105,13 +118,12 @@ class PagerTranslationsView : AbstractComposeView {
     }
 
     @Composable
-    fun TextBlockContent(scale: Float, viewTL: PointF) {
+    fun TextBlockContent() {
         translation.blocks.forEach { block ->
+            // scaleFactor=1f لأن graphicsLayer يتكفل بالتكبير البصري
             SmartTranslationBlock(
                 block       = block,
-                scaleFactor = scale,
-                offsetX     = viewTL.x,
-                offsetY     = viewTL.y,
+                scaleFactor = 1f,
                 fontFamily  = fontFamily,
                 customPadX  = block.symWidth  * PAD_X_FACTOR,
                 customPadY  = block.symHeight * PAD_Y_FACTOR,
