@@ -12,16 +12,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.AbstractComposeView
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.toFontFamily
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.isVisible
 import eu.kanade.translation.data.TranslationFont
@@ -34,6 +37,11 @@ class PagerTranslationsView : AbstractComposeView {
     private val font: TranslationFont
     private val fontFamily: FontFamily
 
+    companion object {
+        private const val PAD_X_FACTOR = 2.5f
+        private const val PAD_Y_FACTOR = 0.5f
+    }
+
     constructor(
         context: Context,
         attrs: AttributeSet? = null,
@@ -41,10 +49,7 @@ class PagerTranslationsView : AbstractComposeView {
     ) : super(context, attrs, defStyleAttr) {
         this.translation = PageTranslation.EMPTY
         this.font = TranslationFont.ANIME_ACE
-        this.fontFamily = Font(
-            resId = font.res,
-            weight = FontWeight.Bold,
-        ).toFontFamily()
+        this.fontFamily = Font(resId = font.res, weight = FontWeight.Bold).toFontFamily()
     }
 
     constructor(
@@ -56,61 +61,60 @@ class PagerTranslationsView : AbstractComposeView {
     ) : super(context, attrs, defStyleAttr) {
         this.translation = translation
         this.font = font ?: TranslationFont.ANIME_ACE
-        this.fontFamily = Font(
-            resId = this.font.res,
-            weight = FontWeight.Bold,
-        ).toFontFamily()
+        this.fontFamily = Font(resId = this.font.res, weight = FontWeight.Bold).toFontFamily()
     }
 
-    val scaleState = MutableStateFlow(1f)
+    // يُضبط من updateTranslationCoords في PagerPageHolder:
+    // scaleState  ← (tr.x - tl.x) / imgWidth   ← نفس scaleFactor في الويبتون
+    // viewTLState ← sourceToViewCoord(0, 0)     ← موقع أعلى يسار الصورة (px)
+    val scaleState  = MutableStateFlow(1f)
     val viewTLState = MutableStateFlow(PointF())
 
     @Composable
     override fun Content() {
         val viewTL by viewTLState.collectAsState()
-        val scale by scaleState.collectAsState()
+        val scale  by scaleState.collectAsState()
 
-        Box(modifier = Modifier.fillMaxSize()) {
-            Box(
-                modifier = Modifier
-                    .offset(viewTL.x.pxToDp(), viewTL.y.pxToDp())
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        // تثبيت الارتكاز في الزاوية لضمان تطابق الإحداثيات مع الصورة الأصلية
-                        transformOrigin = TransformOrigin(0f, 0f)
-                    }
-            ) {
-                // نستخدم 1f لأن التكبير يتم عبر الحاوية الأب (graphicsLayer)
-                TextBlockBackground(1f)
-                TextBlockContent(1f)
-            }
+        var viewSize by remember { mutableStateOf(IntSize.Zero) }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { viewSize = it },
+        ) {
+            if (viewSize.width <= 0) return@Box
+
+            val maxW = viewSize.width.toFloat()
+            val maxH = viewSize.height.toFloat()
+
+            TextBlockBackground(scale, viewTL, maxW, maxH)
+            TextBlockContent(scale, viewTL, maxW, maxH)
         }
     }
 
     @Composable
-    fun TextBlockBackground(zoomScale: Float) {
+    fun TextBlockBackground(scale: Float, viewTL: PointF, maxW: Float, maxH: Float) {
         translation.blocks.forEach { block ->
             if (block.translation.isNullOrBlank()) return@forEach
-            
-            val padX = block.symWidth / 2
-            val padY = block.symHeight / 2
-            
-            // التصحيح: قمنا بزيادة معامل الطرح من 1.2f إلى 2.0f لسحب الفقاعة بقوة أكبر لليسار
-            // لأنك ذكرت أن التصحيح السابق كان صغيراً جداً.
-            val bgX = (block.x - (padX * 2.0f)) * zoomScale
-            val bgY = (block.y - (padY * 0.5f)) * zoomScale
-            
-            // زيادة العرض (padX * 3.0f) لتعويض السحب ومنع خروج النص من اليمين
-            val bgWidth = (block.width + (padX * 3.0f)) * zoomScale
-            val bgHeight = (block.height + padY) * zoomScale
-            
+
+            val padX = block.symWidth  * PAD_X_FACTOR
+            val padY = block.symHeight * PAD_Y_FACTOR
+
+            // موقع نهائي = موقع حافة الصورة + (موقع الفقاعة في الصورة) × scale
+            // — نفس المنطق الذي يستخدمه الويبتون —
+            val bgX = (viewTL.x + (block.x - padX / 2f) * scale).coerceIn(0f, maxW)
+            val bgY = (viewTL.y + (block.y - padY / 2f) * scale).coerceIn(0f, maxH)
+            val bgW = ((block.width  + padX) * scale).coerceAtMost(maxW - bgX)
+            val bgH = ((block.height + padY) * scale).coerceAtMost(maxH - bgY)
+
+            if (bgW <= 0f || bgH <= 0f) return@forEach
+
             val isVertical = block.angle > 85
-            
+
             Box(
                 modifier = Modifier
                     .offset(bgX.pxToDp(), bgY.pxToDp())
-                    .requiredSize(bgWidth.pxToDp(), bgHeight.pxToDp())
+                    .requiredSize(bgW.pxToDp(), bgH.pxToDp())
                     .rotate(if (isVertical) 0f else block.angle)
                     .background(Color.White, shape = RoundedCornerShape(4.dp)),
             )
@@ -118,15 +122,18 @@ class PagerTranslationsView : AbstractComposeView {
     }
 
     @Composable
-    fun TextBlockContent(zoomScale: Float) {
+    fun TextBlockContent(scale: Float, viewTL: PointF, maxW: Float, maxH: Float) {
         translation.blocks.forEach { block ->
-            // قمنا بمزامنة الحشوة مع الخلفية لضمان بقاء النص في المنتصف
             SmartTranslationBlock(
-                block = block,
-                scaleFactor = zoomScale,
-                fontFamily = fontFamily,
-                customPadX = block.symWidth * 2.5f, 
-                customPadY = block.symHeight / 2
+                block       = block,
+                scaleFactor = scale,
+                offsetX     = viewTL.x,
+                offsetY     = viewTL.y,
+                maxW        = maxW,
+                maxH        = maxH,
+                fontFamily  = fontFamily,
+                customPadX  = block.symWidth  * PAD_X_FACTOR,
+                customPadY  = block.symHeight * PAD_Y_FACTOR,
             )
         }
     }
