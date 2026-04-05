@@ -33,7 +33,6 @@ class PagerTranslationsView : AbstractComposeView {
     private val fontFamily: FontFamily
 
     companion object {
-        // ثوابت مشتركة للخلفية والنص — عدّل هنا فقط
         private const val PAD_X_FACTOR = 2.5f
         private const val PAD_Y_FACTOR = 0.5f
     }
@@ -60,51 +59,45 @@ class PagerTranslationsView : AbstractComposeView {
         this.fontFamily = Font(resId = this.font.res, weight = FontWeight.Bold).toFontFamily()
     }
 
-    // يُضبط من PagerPageHolder.updateTranslationCoords:
-    //   viewTLState ← sourceToViewCoord(0,0)   ← الزاوية العلوية اليسرى للصورة بالبكسل
-    //   scaleState  ← renderedWidth             ← عرض الصورة المُصيَّر على الشاشة بالبكسل
-    //                 (محسوب من sourceToViewCoord أيضاً لضمان التوافق)
-    val scaleState = MutableStateFlow(0f)
+    // يُضبط من updateTranslationCoords في PagerPageHolder:
+    // scaleState  ← vi.scale               (scale كامل: fit-to-screen × zoom المستخدم)
+    // viewTLState ← sourceToViewCoord(0,0) (موقع الزاوية العلوية للصورة بالبكسل)
+    val scaleState = MutableStateFlow(1f)
     val viewTLState = MutableStateFlow(PointF())
 
     @Composable
     override fun Content() {
         val viewTL by viewTLState.collectAsState()
-        val renderedWidth by scaleState.collectAsState()
-
-        // لا تُرسم شيئاً حتى تصلنا قيم صحيحة من updateTranslationCoords
-        if (renderedWidth <= 0f || translation.imgWidth <= 0) return
-
-        // نفس طريقة Webtoon: scaleFactor = عرض مُصيَّر / عرض الصورة الأصلية
-        // الفرق الوحيد: نضيف viewTL كـ offset لأن الصورة قد لا تبدأ من (0,0)
-        val scaleFactor = renderedWidth / translation.imgWidth
+        val scale  by scaleState.collectAsState()
 
         Box(modifier = Modifier.fillMaxSize()) {
-            TextBlockBackground(viewTL, scaleFactor)
-            TextBlockContent(viewTL, scaleFactor)
+            TextBlockBackground(scale, viewTL)
+            TextBlockContent(scale, viewTL)
         }
     }
 
     @Composable
-    fun TextBlockBackground(viewTL: PointF, scaleFactor: Float) {
+    fun TextBlockBackground(scale: Float, viewTL: PointF) {
         translation.blocks.forEach { block ->
             if (block.translation.isNullOrBlank()) return@forEach
 
             val padX = block.symWidth  * PAD_X_FACTOR
             val padY = block.symHeight * PAD_Y_FACTOR
 
-            // نفس صيغة Webtoon تماماً + offset موقع الصورة على الشاشة
-            val bgX     = viewTL.x + (block.x - padX / 2f) * scaleFactor
-            val bgY     = viewTL.y + (block.y - padY / 2f) * scaleFactor
-            val bgWidth  = (block.width  + padX) * scaleFactor
-            val bgHeight = (block.height + padY) * scaleFactor
+            // حساب الموضع النهائي مباشرةً (نفس نهج الويبتون):
+            // viewTL = موضع الزاوية العلوية للصورة بالبكسل على الشاشة
+            // scale  = vi.scale (بكسل صورة → بكسل شاشة)
+            val bgX = viewTL.x + (block.x - padX / 2f) * scale
+            val bgY = viewTL.y + (block.y - padY / 2f) * scale
+            val bgW = (block.width  + padX) * scale
+            val bgH = (block.height + padY) * scale
 
             val isVertical = block.angle > 85
 
             Box(
                 modifier = Modifier
                     .offset(bgX.pxToDp(), bgY.pxToDp())
-                    .requiredSize(bgWidth.pxToDp(), bgHeight.pxToDp())
+                    .requiredSize(bgW.pxToDp(), bgH.pxToDp())
                     .rotate(if (isVertical) 0f else block.angle)
                     .background(Color.White, shape = RoundedCornerShape(4.dp)),
             )
@@ -112,16 +105,16 @@ class PagerTranslationsView : AbstractComposeView {
     }
 
     @Composable
-    fun TextBlockContent(viewTL: PointF, scaleFactor: Float) {
+    fun TextBlockContent(scale: Float, viewTL: PointF) {
         translation.blocks.forEach { block ->
             SmartTranslationBlock(
-                block = block,
-                scaleFactor = scaleFactor,
-                fontFamily = fontFamily,
-                customPadX = block.symWidth  * PAD_X_FACTOR,
-                customPadY = block.symHeight * PAD_Y_FACTOR,
-                offsetX = viewTL.x,
-                offsetY = viewTL.y,
+                block       = block,
+                scaleFactor = scale,
+                offsetX     = viewTL.x,
+                offsetY     = viewTL.y,
+                fontFamily  = fontFamily,
+                customPadX  = block.symWidth  * PAD_X_FACTOR,
+                customPadY  = block.symHeight * PAD_Y_FACTOR,
             )
         }
     }
