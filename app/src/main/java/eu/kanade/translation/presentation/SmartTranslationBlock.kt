@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.sp
 import eu.kanade.translation.model.TranslationBlock
+import kotlin.math.max
 
 @Composable
 fun SmartTranslationBlock(
@@ -28,11 +29,6 @@ fun SmartTranslationBlock(
     block: TranslationBlock,
     scaleFactor: Float,
     fontFamily: FontFamily,
-    // offsetX/offsetY: موضع الزاوية العلوية للصورة بالبكسل على الشاشة.
-    // القيمة الافتراضية 0f تحافظ على التوافق مع وضع الويبتون.
-    // في وضع المانجا يُمرَّر viewTL.x و viewTL.y من PagerTranslationsView.
-    offsetX: Float = 0f,
-    offsetY: Float = 0f,
     customPadX: Float = block.symWidth * 2f,
     customPadY: Float = block.symHeight,
 ) {
@@ -41,12 +37,10 @@ fun SmartTranslationBlock(
     val padX = customPadX
     val padY = customPadY
 
-    // الموضع النهائي على الشاشة بالبكسل:
-    // offset + (موضع البلوك في الصورة - نصف الحشو) × مقياس العرض
-    // لا نستخدم max() لأن offsetX/offsetY كافيان لضمان ظهور البلوك ضمن الشاشة،
-    // والـ clip الطبيعي لـ Compose يتكفل بالباقي.
-    val xPx = offsetX + (block.x - padX / 2f) * scaleFactor
-    val yPx = offsetY + (block.y - padY / 2f) * scaleFactor
+    // max() يحمي من قيم سالبة عند الحافة (مهم لوضع الويبتون حيث scaleFactor < 1).
+    // في وضع المانجا scaleFactor=1f وgraphicsLayer يتكفل بالتكبير، فالقيم صغيرة دائماً.
+    val xPx = max((block.x - padX / 2f) * scaleFactor, 0f)
+    val yPx = max((block.y - padY / 2f) * scaleFactor, 0f)
 
     val width  = ((block.width  + padX) * scaleFactor).pxToDp()
     val height = ((block.height + padY) * scaleFactor).pxToDp()
@@ -67,8 +61,8 @@ fun SmartTranslationBlock(
             val maxHeightPx = with(density) { height.roundToPx() }
 
             // Binary search لإيجاد أكبر حجم خط يناسب المساحة
-            var low     = 1
-            var high    = 100
+            var low      = 1
+            var high     = 100
             var bestSize = low
 
             while (low <= high) {
