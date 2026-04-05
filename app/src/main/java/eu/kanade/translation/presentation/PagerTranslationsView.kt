@@ -12,16 +12,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.AbstractComposeView
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.toFontFamily
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.isVisible
 import eu.kanade.translation.data.TranslationFont
@@ -72,38 +75,41 @@ class PagerTranslationsView : AbstractComposeView {
         val viewTL by viewTLState.collectAsState()
         val scale  by scaleState.collectAsState()
 
-        Box(modifier = Modifier.fillMaxSize()) {
-            // graphicsLayer يتكفل بتطبيق vi.scale بصرياً دون أن تمر القيم المضاعَفة
-            // عبر نظام Compose Layout/Constraints (يتجنب IllegalArgumentException).
-            // الأطفال بإحداثيات الصورة الأصلية (صغيرة)، graphicsLayer يكبّرها عند الرسم.
-            Box(
-                modifier = Modifier
-                    .offset(viewTL.x.pxToDp(), viewTL.y.pxToDp())
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        transformOrigin = TransformOrigin(0f, 0f)
-                    },
-            ) {
-                TextBlockBackground()
-                TextBlockContent()
-            }
+        // نقيس الـ view بنفس طريقة الويبتون لضمان حدود صحيحة
+        var viewSize by remember { mutableStateOf(IntSize.Zero) }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { viewSize = it },
+        ) {
+            if (viewSize.width <= 0) return@Box
+
+            val maxW = viewSize.width.toFloat()
+            val maxH = viewSize.height.toFloat()
+
+            TextBlockBackground(scale, viewTL, maxW, maxH)
+            TextBlockContent(scale, viewTL, maxW, maxH)
         }
     }
 
     @Composable
-    fun TextBlockBackground() {
+    fun TextBlockBackground(scale: Float, viewTL: PointF, maxW: Float, maxH: Float) {
         translation.blocks.forEach { block ->
             if (block.translation.isNullOrBlank()) return@forEach
 
             val padX = block.symWidth  * PAD_X_FACTOR
             val padY = block.symHeight * PAD_Y_FACTOR
 
-            // الإحداثيات بوحدات الصورة — graphicsLayer يضاعفها بصرياً لاحقاً
-            val bgX = block.x - padX / 2f
-            val bgY = block.y - padY / 2f
-            val bgW = block.width  + padX
-            val bgH = block.height + padY
+            // حساب الموضع النهائي بالبكسل مباشرةً (نفس منطق الويبتون + إزاحة viewTL):
+            //   screenX = viewTL.x + blockImageX * scale
+            // coerceIn/coerceAtMost تحميان من overflow في Compose Constraints
+            val bgX = (viewTL.x + (block.x - padX / 2f) * scale).coerceIn(0f, maxW)
+            val bgY = (viewTL.y + (block.y - padY / 2f) * scale).coerceIn(0f, maxH)
+            val bgW = ((block.width  + padX) * scale).coerceAtMost(maxW - bgX)
+            val bgH = ((block.height + padY) * scale).coerceAtMost(maxH - bgY)
+
+            if (bgW <= 0f || bgH <= 0f) return@forEach
 
             val isVertical = block.angle > 85
 
@@ -118,12 +124,15 @@ class PagerTranslationsView : AbstractComposeView {
     }
 
     @Composable
-    fun TextBlockContent() {
+    fun TextBlockContent(scale: Float, viewTL: PointF, maxW: Float, maxH: Float) {
         translation.blocks.forEach { block ->
-            // scaleFactor=1f لأن graphicsLayer يتكفل بالتكبير البصري
             SmartTranslationBlock(
                 block       = block,
-                scaleFactor = 1f,
+                scaleFactor = scale,
+                offsetX     = viewTL.x,
+                offsetY     = viewTL.y,
+                maxW        = maxW,
+                maxH        = maxH,
                 fontFamily  = fontFamily,
                 customPadX  = block.symWidth  * PAD_X_FACTOR,
                 customPadY  = block.symHeight * PAD_Y_FACTOR,
