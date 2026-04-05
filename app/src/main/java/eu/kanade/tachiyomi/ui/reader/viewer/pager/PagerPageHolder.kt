@@ -55,15 +55,27 @@ class PagerPageHolder(
     private var showTranslations = true
     private var translationsView: PagerTranslationsView? = null
 
+    /**
+     * Item that identifies this view. Needed by the adapter to not recreate views.
+     */
     override val item
         get() = page
 
+    /**
+     * Loading progress bar to indicate the current progress.
+     */
     private var progressIndicator: ReaderProgressIndicator? = null
 
+    /**
+     * Error layout to show when the image fails to load.
+     */
     private var errorLayout: ReaderErrorBinding? = null
 
     private val scope = MainScope()
 
+    /**
+     * Job for loading the page and processing changes to the page's status.
+     */
     private var loadJob: Job? = null
 
     init {
@@ -80,6 +92,9 @@ class PagerPageHolder(
         }.launchIn(scope)
     }
 
+    /**
+     * Called when this view is detached from the window. Unsubscribes any active subscription.
+     */
     @SuppressLint("ClickableViewAccessibility")
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
@@ -94,6 +109,9 @@ class PagerPageHolder(
         }
     }
 
+    /**
+     * Loads the page and processes changes to the page's status.
+     */
     private suspend fun loadPageAndProcessStatus() {
         val loader = page.chapter.pageLoader ?: return
 
@@ -248,9 +266,12 @@ class PagerPageHolder(
     override fun onImageLoaded() {
         super.onImageLoaded()
         progressIndicator?.hide()
-        // TachiyomiAT
+        // TachiyomiAT — يُطلَق هذا الحدث أحياناً قبل addTranslationsView()
+        // (عند تحميل الصورة من الكاش بشكل متزامن).
+        // updateTranslationCoords تتحقق من translationsView داخلياً.
         updateTranslationCoords(pageView as SubsamplingScaleImageView)
-        translationsView?.show()
+        // نعرض الترجمة فقط إذا كان المستخدم فعّلها
+        if (showTranslations) translationsView?.show()
     }
 
     override fun onImageLoadError() {
@@ -277,32 +298,37 @@ class PagerPageHolder(
     private fun addTranslationsView() {
         if (page.translation == null) return
         removeView(translationsView)
-        translationsView = PagerTranslationsView(context, translation = page.translation!!, font = font)
-        if (!showTranslations) translationsView?.hide()
+        translationsView = PagerTranslationsView(
+            context,
+            translation = page.translation!!,
+            font = font,
+        )
+        // نبدأ مخفياً دائماً لتجنب وميض الإحداثيات الخاطئة الافتراضية (viewTL=0, scale=1).
+        // onImageLoaded أو updateTranslationCoords يُظهرانه بعد ضبط الإحداثيات.
+        translationsView?.hide()
         addView(translationsView, MATCH_PARENT, MATCH_PARENT)
+
+        // FIX: إذا كان SSIV قد حمّل الصورة مسبقاً (مثل الكاش)، فإن onImageLoaded
+        // يُطلَق قبل وصولنا لهنا، فتبقى الإحداثيات على القيم الافتراضية.
+        // نستدعي updateTranslationCoords الآن لضبطها فوراً بعد إنشاء الـ view.
+        (pageView as? SubsamplingScaleImageView)?.let { vi ->
+            if (vi.isReady) {
+                updateTranslationCoords(vi)
+                if (showTranslations) translationsView?.show()
+            }
+        }
     }
 
     // TachiyomiAT
     private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
         if (page.translation == null) return
-        val imgWidth = page.translation!!.imgWidth.toFloat()
-
-        // الزاوية العلوية اليسرى للصورة بالبكسل (إحداثيات الـ view)
-        val tl = vi.sourceToViewCoord(0f, 0f) ?: return
-
-        // نحسب عرض الصورة المُصيَّر من نقطتين بدلاً من استخدام vi.scale مباشرة
-        // هذا يضمن توافق الـ offset مع الـ scale (كلاهما من نفس المصدر)
-        val tr = vi.sourceToViewCoord(imgWidth, 0f)
-        val renderedWidth = if (tr != null && tr.x > tl.x) {
-            tr.x - tl.x
-        } else {
-            // fallback: vi.scale كضمان
-            vi.scale * imgWidth
+        // لا فائدة من التحديث إذا لم يكن الـ view موجوداً بعد
+        val tv = translationsView ?: return
+        val coords = vi.sourceToViewCoord(0f, 0f)
+        if (coords != null) {
+            tv.viewTLState.value = coords
         }
-
-        translationsView?.viewTLState?.value = tl
-        // scaleState يحمل الآن عرض الصورة المُصيَّر بالبكسل (وليس vi.scale مباشرة)
-        translationsView?.scaleState?.value = renderedWidth
+        tv.scaleState.value = vi.scale
     }
 
     private fun showErrorLayout(): ReaderErrorBinding {
