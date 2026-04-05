@@ -91,6 +91,7 @@ class MigratorTest {
 
     @Test
     fun largeMigration() = runBlocking {
+        // نمرر قائمة ذات حجم معروف ونتحقق أن كل الـ migrations الممررة نُفِّذت
         val input = listOf(
             Migration.of(Migration.ALWAYS) { true },
             Migration.of(2f) { true },
@@ -113,7 +114,9 @@ class MigratorTest {
         execute.await()
 
         verify { migrationJobFactory.create(capture(migrations)) }
-        assertEquals(10, migrations.captured.size)
+        // نتحقق أن كل الـ migrations الممررة نُفِّذت (بدل hardcoded 10)
+        // هذا يحمي من كسر الاختبار عند إضافة migrations جديدة للتطبيق
+        assertEquals(input.size, migrations.captured.size)
         verify { migrationCompletedListener() }
     }
 
