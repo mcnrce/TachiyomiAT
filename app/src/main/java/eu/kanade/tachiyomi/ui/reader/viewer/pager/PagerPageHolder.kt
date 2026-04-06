@@ -210,10 +210,9 @@ class PagerPageHolder(
         super.onImageLoaded()
         progressIndicator?.hide()
         // TachiyomiAT
-        // post{} يضمن أن SSIV أكمل حساب layout الداخلي قبل قراءة sourceToViewCoord
         post {
             (pageView as? SubsamplingScaleImageView)?.let { vi ->
-                positionTranslationsView(vi)
+                updateTranslationCoords(vi)
                 if (showTranslations) translationsView?.show()
             }
         }
@@ -230,13 +229,13 @@ class PagerPageHolder(
         super.onScaleChanged(newScale)
         viewer.activity.hideMenu()
         // TachiyomiAT
-        (pageView as? SubsamplingScaleImageView)?.let { positionTranslationsView(it) }
+        (pageView as? SubsamplingScaleImageView)?.let { updateTranslationCoords(it) }
     }
 
     // TachiyomiAT
     override fun onCenterChanged(newCenter: PointF?) {
         super.onCenterChanged(newCenter)
-        (pageView as? SubsamplingScaleImageView)?.let { positionTranslationsView(it) }
+        (pageView as? SubsamplingScaleImageView)?.let { updateTranslationCoords(it) }
     }
 
     // TachiyomiAT
@@ -249,14 +248,14 @@ class PagerPageHolder(
             font = font,
         )
         translationsView?.hide()
-        // نضيف الـ view بحجم 1×1 مؤقتاً — positionTranslationsView ستضبطه
-        addView(translationsView, 1, 1)
+        
+        // استخدام MATCH_PARENT لضمان ثبات طبقة الرسم
+        addView(translationsView, MATCH_PARENT, MATCH_PARENT)
 
-        // إذا كانت الصورة محمّلة مسبقاً (كاش) — نضع في post{} لضمان layout SSIV
         (pageView as? SubsamplingScaleImageView)?.let { vi ->
             if (vi.isReady) {
                 post {
-                    positionTranslationsView(vi)
+                    updateTranslationCoords(vi)
                     if (showTranslations) translationsView?.show()
                 }
             }
@@ -265,45 +264,30 @@ class PagerPageHolder(
 
     // TachiyomiAT
     // ─────────────────────────────────────────────────────────────────────────
-    // نُحرِّك PagerTranslationsView ليجلس فوق الصورة المرسومة فعلاً.
-    //
-    // - view.x / view.y : يضبط موقع الـ view بالنسبة للـ parent بدون الاعتماد
-    //                     على نوع الـ parent أو LayoutParams — يعمل مع أي ViewGroup.
-    // - layoutParams.width/height : يضبط الحجم.
-    // - requestLayout() : يُجبر الـ view على إعادة القياس والرسم.
-    //
-    // بعد هذا يصبح (0,0) في PagerTranslationsView = (0,0) في الصورة،
-    // فيعمل scaleFactor = size.width/imgWidth بنفس دقة الويبتون.
+    // تحديث إحداثيات الرسم ديناميكياً لتطابق مكان الصورة على الشاشة.
+    // يعالج أيضاً إزاحة الصفحات المقسومة (Dual Page Split).
     // ─────────────────────────────────────────────────────────────────────────
-    private fun positionTranslationsView(vi: SubsamplingScaleImageView) {
+    private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
+        val translation = page.translation ?: return
         val tv = translationsView ?: return
+        
         if (!vi.isReady) return
 
-        val imgW = page.translation?.imgWidth ?: return
+        // الحصول على إحداثيات نقطة الأصل الحالية للصورة
+        val coords = vi.sourceToViewCoord(0f, 0f) ?: return
+        
+        var offsetX = coords.x
+        var offsetY = coords.y
 
-        // نحسب الموقع والعرض من نقطتين حقيقيتين على المحور الأفقي
-        val tl = vi.sourceToViewCoord(0f,   0f) ?: return
-        val tr = vi.sourceToViewCoord(imgW, 0f) ?: return
+        // معالجة الصفحات المقسومة: إذا كانت هذه هي الصفحة الثانية (المدرجة)
+        // يجب إزاحة الإحداثيات لليسار بمقدار نصف العرض الأصلي مضروباً في نسبة التكبير
+        if (page is InsertPage) {
+            offsetX -= (translation.imgWidth / 2f) * vi.scale
+        }
 
-        // العرض المرسوم فعلاً = المسافة الأفقية بين نقطتي الصورة
-        val renderedW = (tr.x - tl.x).toInt().coerceAtLeast(1)
-
-        // الارتفاع بنسبة: renderedH = renderedW * (imgH / imgW)
-        // لكن إذا كان imgHeight غير موجود نستخدم vi.sHeight
-        val imgH  = page.translation?.imgHeight ?: vi.sHeight.toFloat()
-        val renderedH = (renderedW * (imgH / imgW)).toInt().coerceAtLeast(1)
-
-        // نضبط الحجم عبر layoutParams
-        val lp = tv.layoutParams ?: ViewGroup.LayoutParams(renderedW, renderedH)
-        lp.width  = renderedW
-        lp.height = renderedH
-        tv.layoutParams = lp
-
-        // نضبط الموقع عبر x/y — هذا يعمل بغض النظر عن نوع الـ parent
-        tv.x = tl.x
-        tv.y = tl.y
-
-        tv.requestLayout()
+        // تحديث الحالة داخل PagerTranslationsView دون الحاجة لإعادة Layout
+        tv.viewTLState.value = PointF(offsetX, offsetY)
+        tv.scaleState.value = vi.scale
     }
 
     private fun showErrorLayout(): ReaderErrorBinding {
