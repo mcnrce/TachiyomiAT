@@ -29,58 +29,52 @@ fun SmartTranslationBlock(
     block: TranslationBlock,
     scaleFactor: Float,
     fontFamily: FontFamily,
-    customPadX: Float = block.symWidth * 2f,
-    customPadY: Float = block.symHeight,
+
 ) {
-    if (block.translation.isNullOrBlank()) return
-
-    val padX = customPadX
-    val padY = customPadY
-
-    val xPx   = max((block.x - padX / 2f) * scaleFactor, 0f)
-    val yPx   = max((block.y - padY / 2f) * scaleFactor, 0f)
-    val width  = ((block.width  + padX) * scaleFactor).pxToDp()
+    val padX = block.symWidth * 2
+    val padY = block.symHeight
+    val xPx = max((block.x - padX / 2) * scaleFactor, 0.0f)
+    val yPx = max((block.y - padY / 2) * scaleFactor, 0.0f)
+    val width = ((block.width + padX) * scaleFactor).pxToDp()
     val height = ((block.height + padY) * scaleFactor).pxToDp()
-
     val isVertical = block.angle > 85
-
     Box(
         modifier = modifier
             .wrapContentSize(Alignment.CenterStart, true)
             .offset(xPx.pxToDp(), yPx.pxToDp())
             .requiredSize(width, height),
     ) {
-        val density  = LocalDensity.current
+        val density = LocalDensity.current
         val fontSize = remember { mutableStateOf(16.sp) }
-
         SubcomposeLayout { constraints ->
-            val maxWidthPx  = with(density) { width.roundToPx() }
+            val maxWidthPx = with(density) { width.roundToPx() }
             val maxHeightPx = with(density) { height.roundToPx() }
 
-            var low      = 1
-            var high     = 100
+            // Binary search for optimal font size
+            var low = 1
+            var high = 100 // Initial upper bound
             var bestSize = low
 
             while (low <= high) {
-                val mid = (low + high) / 2
-                val measured = subcompose(mid.sp) {
+                val mid = ((low + high) / 2)
+                val textLayoutResult = subcompose(mid.sp) {
                     Text(
-                        text       = block.translation,
-                        fontSize   = mid.sp,
+                        text = block.translation,
+                        fontSize = mid.sp,
                         fontFamily = fontFamily,
-                        color      = Color.Black,
-                        overflow   = TextOverflow.Visible,
-                        textAlign  = TextAlign.Center,
-                        maxLines   = Int.MAX_VALUE,
-                        softWrap   = true,
-                        modifier   = Modifier
+                        color = Color.Black,
+                        overflow = TextOverflow.Visible,
+                        textAlign = TextAlign.Center,
+                        maxLines = Int.MAX_VALUE,
+                        softWrap = true,
+                        modifier = Modifier
                             .width(width)
                             .rotate(if (isVertical) 0f else block.angle)
                             .align(Alignment.Center),
                     )
                 }[0].measure(Constraints(maxWidth = maxWidthPx))
 
-                if (measured.height <= maxHeightPx) {
+                if (textLayoutResult.height <= maxHeightPx) {
                     bestSize = mid
                     low = mid + 1
                 } else {
@@ -89,20 +83,22 @@ fun SmartTranslationBlock(
             }
             fontSize.value = bestSize.sp
 
+            // Measure final layout
             val textPlaceable = subcompose(Unit) {
                 Text(
-                    text       = block.translation,
-                    fontSize   = fontSize.value,
+                    text = block.translation,
+                    fontSize = fontSize.value,
                     fontFamily = fontFamily,
-                    color      = Color.Black,
-                    softWrap   = true,
-                    overflow   = TextOverflow.Visible,
-                    textAlign  = TextAlign.Center,
-                    maxLines   = Int.MAX_VALUE,
-                    modifier   = Modifier
+                    color = Color.Black,
+                    softWrap = true,
+                    overflow = TextOverflow.Visible,
+                    textAlign = TextAlign.Center,
+                    maxLines = Int.MAX_VALUE,
+                    modifier = Modifier
                         .width(width)
                         .rotate(if (isVertical) 0f else block.angle)
                         .align(Alignment.Center),
+//                        .background(color = Color.Blue),
                 )
             }[0].measure(constraints)
 
