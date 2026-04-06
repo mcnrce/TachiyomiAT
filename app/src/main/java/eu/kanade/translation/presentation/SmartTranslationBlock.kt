@@ -29,10 +29,6 @@ fun SmartTranslationBlock(
     block: TranslationBlock,
     scaleFactor: Float,
     fontFamily: FontFamily,
-    // وضع الويبتون: لا يمرر هذه القيم → تبقى 0f (الصورة تبدأ من (0,0))
-    // وضع الباجر:  يمرر viewTL.x/y من PagerTranslationsView
-    offsetX: Float = 0f,
-    offsetY: Float = 0f,
     customPadX: Float = block.symWidth * 2f,
     customPadY: Float = block.symHeight,
 ) {
@@ -41,12 +37,8 @@ fun SmartTranslationBlock(
     val padX = customPadX
     val padY = customPadY
 
-    // الموضع النهائي على الشاشة:
-    //   screenX = offsetX + (block.x - padding/2) × scaleFactor
-    // max(0f) يحمي من قيم سالبة طفيفة عند حافة الصورة
-    val xPx = max(offsetX + (block.x - padX / 2f) * scaleFactor, 0f)
-    val yPx = max(offsetY + (block.y - padY / 2f) * scaleFactor, 0f)
-
+    val xPx   = max((block.x - padX / 2f) * scaleFactor, 0f)
+    val yPx   = max((block.y - padY / 2f) * scaleFactor, 0f)
     val width  = ((block.width  + padX) * scaleFactor).pxToDp()
     val height = ((block.height + padY) * scaleFactor).pxToDp()
 
