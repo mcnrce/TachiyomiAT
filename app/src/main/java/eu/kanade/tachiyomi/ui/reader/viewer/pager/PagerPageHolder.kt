@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.PointF
 import android.view.LayoutInflater
-import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import androidx.core.view.isVisible
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
@@ -38,11 +37,15 @@ import tachiyomi.domain.translation.TranslationPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
+/**
+ * View of the ViewPager that contains a page of a chapter.
+ */
 @SuppressLint("ViewConstructor")
 class PagerPageHolder(
     readerThemedContext: Context,
     val viewer: PagerViewer,
     val page: ReaderPage,
+    // TachiyomiAT
     translationPreferences: TranslationPreferences = Injekt.get(),
     private val font: TranslationFont = TranslationFont.fromPref(translationPreferences.translationFont()),
     readerPreferences: ReaderPreferences = Injekt.get(),
@@ -52,11 +55,27 @@ class PagerPageHolder(
     private var showTranslations = true
     private var translationsView: PagerTranslationsView? = null
 
-    override val item get() = page
+    /**
+     * Item that identifies this view. Needed by the adapter to not recreate views.
+     */
+    override val item
+        get() = page
 
-    private var progressIndicator: ReaderProgressIndicator? = null
+    /**
+     * Loading progress bar to indicate the current progress.
+     */
+    private var progressIndicator: ReaderProgressIndicator? = null // = ReaderProgressIndicator(readerThemedContext)
+
+    /**
+     * Error layout to show when the image fails to load.
+     */
     private var errorLayout: ReaderErrorBinding? = null
+
     private val scope = MainScope()
+
+    /**
+     * Job for loading the page and processing changes to the page's status.
+     */
     private var loadJob: Job? = null
 
     init {
@@ -65,10 +84,17 @@ class PagerPageHolder(
         showTranslations = readerPreferences.showTranslations().get()
         readerPreferences.showTranslations().changes().onEach {
             showTranslations = it
-            if (it) translationsView?.show() else translationsView?.hide()
+            if (it) {
+                translationsView?.show()
+            } else {
+                translationsView?.hide()
+            }
         }.launchIn(scope)
     }
 
+    /**
+     * Called when this view is detached from the window. Unsubscribes any active subscription.
+     */
     @SuppressLint("ClickableViewAccessibility")
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
@@ -83,10 +109,20 @@ class PagerPageHolder(
         }
     }
 
+    /**
+     * Loads the page and processes changes to the page's status.
+     *
+     * Returns immediately if the page has no PageLoader.
+     * Otherwise, this function does not return. It will continue to process status changes until
+     * the Job is cancelled.
+     */
     private suspend fun loadPageAndProcessStatus() {
         val loader = page.chapter.pageLoader ?: return
+
         supervisorScope {
-            launchIO { loader.loadPage(page) }
+            launchIO {
+                loader.loadPage(page)
+            }
             page.statusFlow.collectLatest { state ->
                 when (state) {
                     Page.State.QUEUE -> setQueued()
@@ -108,27 +144,41 @@ class PagerPageHolder(
         }
     }
 
+    /**
+     * Called when the page is queued.
+     */
     private fun setQueued() {
         initProgressIndicator()
         progressIndicator?.show()
         removeErrorLayout()
     }
 
+    /**
+     * Called when the page is loading.
+     */
     private fun setLoading() {
         initProgressIndicator()
         progressIndicator?.show()
         removeErrorLayout()
     }
 
+    /**
+     * Called when the page is downloading.
+     */
     private fun setDownloading() {
         initProgressIndicator()
         progressIndicator?.show()
         removeErrorLayout()
     }
 
+    /**
+     * Called when the page is ready.
+     */
     private suspend fun setImage() {
         progressIndicator?.setProgress(0)
+
         val streamFn = page.stream ?: return
+
         try {
             val (source, isAnimated, background) = withIOContext {
                 val source = streamFn().use { process(item, Buffer().readFrom(it)) }
@@ -142,31 +192,49 @@ class PagerPageHolder(
             }
             withUIContext {
                 setImage(
-                    source, isAnimated,
+                    source,
+                    isAnimated,
                     Config(
-                        zoomDuration      = viewer.config.doubleTapAnimDuration,
-                        minimumScaleType  = viewer.config.imageScaleType,
-                        cropBorders       = viewer.config.imageCropBorders,
+                        zoomDuration = viewer.config.doubleTapAnimDuration,
+                        minimumScaleType = viewer.config.imageScaleType,
+                        cropBorders = viewer.config.imageCropBorders,
                         zoomStartPosition = viewer.config.imageZoomType,
-                        landscapeZoom     = viewer.config.landscapeZoom,
+                        landscapeZoom = viewer.config.landscapeZoom,
                     ),
                 )
-                if (!isAnimated) pageBackground = background
+                if (!isAnimated) {
+                    pageBackground = background
+                }
                 removeErrorLayout()
             }
         } catch (e: Throwable) {
             logcat(LogPriority.ERROR, e)
-            withUIContext { setError() }
+            withUIContext {
+                setError()
+            }
         }
     }
 
     private fun process(page: ReaderPage, imageSource: BufferedSource): BufferedSource {
-        if (viewer.config.dualPageRotateToFit) return rotateDualPage(imageSource)
-        if (!viewer.config.dualPageSplit) return imageSource
-        if (page is InsertPage) return splitInHalf(imageSource)
+        if (viewer.config.dualPageRotateToFit) {
+            return rotateDualPage(imageSource)
+        }
+
+        if (!viewer.config.dualPageSplit) {
+            return imageSource
+        }
+
+        if (page is InsertPage) {
+            return splitInHalf(imageSource)
+        }
+
         val isDoublePage = ImageUtil.isWideImage(imageSource)
-        if (!isDoublePage) return imageSource
+        if (!isDoublePage) {
+            return imageSource
+        }
+
         onPageSplit(page)
+
         return splitInHalf(imageSource)
     }
 
@@ -175,30 +243,38 @@ class PagerPageHolder(
         return if (isDoublePage) {
             val rotation = if (viewer.config.dualPageRotateToFitInvert) -90f else 90f
             ImageUtil.rotateImage(imageSource, rotation)
-        } else imageSource
+        } else {
+            imageSource
+        }
     }
 
     private fun splitInHalf(imageSource: BufferedSource): BufferedSource {
         var side = when {
-            viewer is L2RPagerViewer && page is InsertPage  -> ImageUtil.Side.RIGHT
+            viewer is L2RPagerViewer && page is InsertPage -> ImageUtil.Side.RIGHT
             viewer !is L2RPagerViewer && page is InsertPage -> ImageUtil.Side.LEFT
             viewer is L2RPagerViewer && page !is InsertPage -> ImageUtil.Side.LEFT
             viewer !is L2RPagerViewer && page !is InsertPage -> ImageUtil.Side.RIGHT
             else -> error("We should choose a side!")
         }
+
         if (viewer.config.dualPageInvert) {
             side = when (side) {
                 ImageUtil.Side.RIGHT -> ImageUtil.Side.LEFT
-                ImageUtil.Side.LEFT  -> ImageUtil.Side.RIGHT
+                ImageUtil.Side.LEFT -> ImageUtil.Side.RIGHT
             }
         }
+
         return ImageUtil.splitInHalf(imageSource, side)
     }
 
     private fun onPageSplit(page: ReaderPage) {
-        viewer.onPageSplit(page, InsertPage(page))
+        val newPage = InsertPage(page)
+        viewer.onPageSplit(page, newPage)
     }
 
+    /**
+     * Called when the page has an error.
+     */
     private fun setError() {
         progressIndicator?.hide()
         showErrorLayout()
@@ -210,15 +286,14 @@ class PagerPageHolder(
         super.onImageLoaded()
         progressIndicator?.hide()
         // TachiyomiAT
-        // post{} يضمن أن SSIV أكمل حساب layout الداخلي قبل قراءة sourceToViewCoord
-        post {
-            (pageView as? SubsamplingScaleImageView)?.let { vi ->
-                positionTranslationsView(vi)
-                if (showTranslations) translationsView?.show()
-            }
-        }
+        updateTranslationCoords(pageView as SubsamplingScaleImageView)
+        // TachiyomiAT
+        translationsView?.show()
     }
 
+    /**
+     * Called when an image fails to decode.
+     */
     override fun onImageLoadError() {
         super.onImageLoadError()
         setError()
@@ -226,84 +301,39 @@ class PagerPageHolder(
         translationsView?.hide()
     }
 
+    /**
+     * Called when an image is zoomed in/out.
+     */
     override fun onScaleChanged(newScale: Float) {
         super.onScaleChanged(newScale)
         viewer.activity.hideMenu()
         // TachiyomiAT
-        (pageView as? SubsamplingScaleImageView)?.let { positionTranslationsView(it) }
+        updateTranslationCoords(pageView as SubsamplingScaleImageView)
     }
 
     // TachiyomiAT
     override fun onCenterChanged(newCenter: PointF?) {
         super.onCenterChanged(newCenter)
-        (pageView as? SubsamplingScaleImageView)?.let { positionTranslationsView(it) }
+        updateTranslationCoords(pageView as SubsamplingScaleImageView)
     }
 
     // TachiyomiAT
     private fun addTranslationsView() {
         if (page.translation == null) return
         removeView(translationsView)
-        translationsView = PagerTranslationsView(
-            context,
-            translation = page.translation!!,
-            font = font,
-        )
-        translationsView?.hide()
-        // نضيف الـ view بحجم 1×1 مؤقتاً — positionTranslationsView ستضبطه
-        addView(translationsView, 1, 1)
-
-        // إذا كانت الصورة محمّلة مسبقاً (كاش) — نضع في post{} لضمان layout SSIV
-        (pageView as? SubsamplingScaleImageView)?.let { vi ->
-            if (vi.isReady) {
-                post {
-                    positionTranslationsView(vi)
-                    if (showTranslations) translationsView?.show()
-                }
-            }
-        }
+        translationsView = PagerTranslationsView(context, translation = page.translation!!, font = font)
+        if (!showTranslations) translationsView?.hide()
+        addView(translationsView, MATCH_PARENT, MATCH_PARENT)
     }
 
     // TachiyomiAT
-    // ─────────────────────────────────────────────────────────────────────────
-    // نُحرِّك PagerTranslationsView ليجلس فوق الصورة المرسومة فعلاً.
-    //
-    // - view.x / view.y : يضبط موقع الـ view بالنسبة للـ parent بدون الاعتماد
-    //                     على نوع الـ parent أو LayoutParams — يعمل مع أي ViewGroup.
-    // - layoutParams.width/height : يضبط الحجم.
-    // - requestLayout() : يُجبر الـ view على إعادة القياس والرسم.
-    //
-    // بعد هذا يصبح (0,0) في PagerTranslationsView = (0,0) في الصورة،
-    // فيعمل scaleFactor = size.width/imgWidth بنفس دقة الويبتون.
-    // ─────────────────────────────────────────────────────────────────────────
-    private fun positionTranslationsView(vi: SubsamplingScaleImageView) {
-        val tv = translationsView ?: return
-        if (!vi.isReady) return
-
-        val imgW = page.translation?.imgWidth ?: return
-
-        // نحسب الموقع والعرض من نقطتين حقيقيتين على المحور الأفقي
-        val tl = vi.sourceToViewCoord(0f,   0f) ?: return
-        val tr = vi.sourceToViewCoord(imgW, 0f) ?: return
-
-        // العرض المرسوم فعلاً = المسافة الأفقية بين نقطتي الصورة
-        val renderedW = (tr.x - tl.x).toInt().coerceAtLeast(1)
-
-        // الارتفاع بنسبة: renderedH = renderedW * (imgH / imgW)
-        // لكن إذا كان imgHeight غير موجود نستخدم vi.sHeight
-        val imgH  = page.translation?.imgHeight ?: vi.sHeight.toFloat()
-        val renderedH = (renderedW * (imgH / imgW)).toInt().coerceAtLeast(1)
-
-        // نضبط الحجم عبر layoutParams
-        val lp = tv.layoutParams ?: ViewGroup.LayoutParams(renderedW, renderedH)
-        lp.width  = renderedW
-        lp.height = renderedH
-        tv.layoutParams = lp
-
-        // نضبط الموقع عبر x/y — هذا يعمل بغض النظر عن نوع الـ parent
-        tv.x = tl.x
-        tv.y = tl.y
-
-        tv.requestLayout()
+    private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
+        if (page.translation == null) return
+        val coords = vi.sourceToViewCoord(0f, 0f)
+        if (coords != null) {
+            translationsView?.viewTLState?.value = coords
+        }
+        translationsView?.scaleState?.value = vi.scale
     }
 
     private fun showErrorLayout(): ReaderErrorBinding {
@@ -314,18 +344,26 @@ class PagerPageHolder(
                 page.chapter.pageLoader?.retryPage(page)
             }
         }
+
         val imageUrl = page.imageUrl
         errorLayout?.actionOpenInWebView?.isVisible = imageUrl != null
-        if (imageUrl != null && imageUrl.startsWith("http", true)) {
-            errorLayout?.actionOpenInWebView?.viewer = viewer
-            errorLayout?.actionOpenInWebView?.setOnClickListener {
-                context.startActivity(WebViewActivity.newIntent(context, imageUrl))
+        if (imageUrl != null) {
+            if (imageUrl.startsWith("http", true)) {
+                errorLayout?.actionOpenInWebView?.viewer = viewer
+                errorLayout?.actionOpenInWebView?.setOnClickListener {
+                    val intent = WebViewActivity.newIntent(context, imageUrl)
+                    context.startActivity(intent)
+                }
             }
         }
+
         errorLayout?.root?.isVisible = true
         return errorLayout!!
     }
 
+    /**
+     * Removes the decode error layout from the holder, if found.
+     */
     private fun removeErrorLayout() {
         errorLayout?.root?.isVisible = false
         errorLayout = null
