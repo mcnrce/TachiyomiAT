@@ -48,7 +48,6 @@ class PagerPageHolder(
     readerPreferences: ReaderPreferences = Injekt.get(),
 ) : ReaderPageImageView(readerThemedContext), ViewPagerAdapter.PositionableView {
 
-    // TachiyomiAT
     private var showTranslations = true
     private var translationsView: PagerTranslationsView? = null
 
@@ -61,7 +60,6 @@ class PagerPageHolder(
 
     init {
         loadJob = scope.launch { loadPageAndProcessStatus() }
-        // TachiyomiAT
         showTranslations = readerPreferences.showTranslations().get()
         readerPreferences.showTranslations().changes().onEach {
             showTranslations = it
@@ -99,7 +97,6 @@ class PagerPageHolder(
                     }
                     Page.State.READY -> {
                         setImage()
-                        // TachiyomiAT
                         addTranslationsView()
                     }
                     Page.State.ERROR -> setError()
@@ -202,14 +199,12 @@ class PagerPageHolder(
     private fun setError() {
         progressIndicator?.hide()
         showErrorLayout()
-        // TachiyomiAT
         translationsView?.hide()
     }
 
     override fun onImageLoaded() {
         super.onImageLoaded()
         progressIndicator?.hide()
-        // TachiyomiAT
         post {
             (pageView as? SubsamplingScaleImageView)?.let { vi ->
                 updateTranslationCoords(vi)
@@ -221,24 +216,20 @@ class PagerPageHolder(
     override fun onImageLoadError() {
         super.onImageLoadError()
         setError()
-        // TachiyomiAT
         translationsView?.hide()
     }
 
     override fun onScaleChanged(newScale: Float) {
         super.onScaleChanged(newScale)
         viewer.activity.hideMenu()
-        // TachiyomiAT
         (pageView as? SubsamplingScaleImageView)?.let { updateTranslationCoords(it) }
     }
 
-    // TachiyomiAT
     override fun onCenterChanged(newCenter: PointF?) {
         super.onCenterChanged(newCenter)
         (pageView as? SubsamplingScaleImageView)?.let { updateTranslationCoords(it) }
     }
 
-    // TachiyomiAT
     private fun addTranslationsView() {
         if (page.translation == null) return
         removeView(translationsView)
@@ -248,8 +239,6 @@ class PagerPageHolder(
             font = font,
         )
         translationsView?.hide()
-        
-        // استخدام MATCH_PARENT لضمان تغطية كامل مساحة الرسم كما في الويبتون
         addView(translationsView, MATCH_PARENT, MATCH_PARENT)
 
         (pageView as? SubsamplingScaleImageView)?.let { vi ->
@@ -262,12 +251,7 @@ class PagerPageHolder(
         }
     }
 
-    // TachiyomiAT
-    // ─────────────────────────────────────────────────────────────────────────
-    // تحديث إحداثيات الرسم ديناميكياً لتطابق مكان الصورة على الشاشة.
-    // يعالج أيضاً إزاحة الصفحات المقسومة (Dual Page Split).
-    // ─────────────────────────────────────────────────────────────────────────
-        private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
+    private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
         val translation = page.translation ?: return
         val tv = translationsView ?: return
         
@@ -276,16 +260,17 @@ class PagerPageHolder(
         val coords = vi.sourceToViewCoord(0f, 0f) ?: return
         
         var offsetX = coords.x
-        var offsetY = coords.y
+        val offsetY = coords.y
 
         if (page is InsertPage) {
             offsetX -= (translation.imgWidth / 2f) * vi.scale
         }
 
-        // استبدل الوصول المباشر للمتغيرات بدالة التحديث
-        tv.updateCoordinates(PointF(offsetX, offsetY), vi.scale)
+        // ملاحظة هامة: إذا فشل الـ Build هنا، تأكد أن المتغيرات في PagerTranslationsView ليست private
+        // أو استخدم الدوال المتوفرة في ذلك الكلاس لتمرير الإحداثيات والمقياس.
+        tv.viewTLState.value = PointF(offsetX, offsetY)
+        tv.scaleState.value = vi.scale
     }
-
 
     private fun showErrorLayout(): ReaderErrorBinding {
         if (errorLayout == null) {
