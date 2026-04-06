@@ -249,7 +249,7 @@ class PagerPageHolder(
         )
         translationsView?.hide()
         
-        // استخدام MATCH_PARENT لضمان ثبات طبقة الرسم
+        // استخدام MATCH_PARENT لضمان تغطية كامل مساحة الرسم كما في الويبتون
         addView(translationsView, MATCH_PARENT, MATCH_PARENT)
 
         (pageView as? SubsamplingScaleImageView)?.let { vi ->
@@ -267,28 +267,25 @@ class PagerPageHolder(
     // تحديث إحداثيات الرسم ديناميكياً لتطابق مكان الصورة على الشاشة.
     // يعالج أيضاً إزاحة الصفحات المقسومة (Dual Page Split).
     // ─────────────────────────────────────────────────────────────────────────
-    private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
+        private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
         val translation = page.translation ?: return
         val tv = translationsView ?: return
         
         if (!vi.isReady) return
 
-        // الحصول على إحداثيات نقطة الأصل الحالية للصورة
         val coords = vi.sourceToViewCoord(0f, 0f) ?: return
         
         var offsetX = coords.x
         var offsetY = coords.y
 
-        // معالجة الصفحات المقسومة: إذا كانت هذه هي الصفحة الثانية (المدرجة)
-        // يجب إزاحة الإحداثيات لليسار بمقدار نصف العرض الأصلي مضروباً في نسبة التكبير
         if (page is InsertPage) {
             offsetX -= (translation.imgWidth / 2f) * vi.scale
         }
 
-        // تحديث الحالة داخل PagerTranslationsView دون الحاجة لإعادة Layout
-        tv.viewTLState.value = PointF(offsetX, offsetY)
-        tv.scaleState.value = vi.scale
+        // استبدل الوصول المباشر للمتغيرات بدالة التحديث
+        tv.updateCoordinates(PointF(offsetX, offsetY), vi.scale)
     }
+
 
     private fun showErrorLayout(): ReaderErrorBinding {
         if (errorLayout == null) {
