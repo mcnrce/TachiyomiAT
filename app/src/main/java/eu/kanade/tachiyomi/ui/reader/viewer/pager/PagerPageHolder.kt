@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.PointF
 import android.view.LayoutInflater
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.widget.FrameLayout
 import androidx.core.view.isVisible
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import eu.kanade.tachiyomi.databinding.ReaderErrorBinding
@@ -209,12 +210,9 @@ class PagerPageHolder(
         super.onImageLoaded()
         progressIndicator?.hide()
         // TachiyomiAT
-        // نؤخر التحديث لـ frame التالي بـ post{}:
-        // SSIV قد يُطلق onImageLoaded قبل اكتمال Layout Pass خاصته،
-        // فيُعيد sourceToViewCoord قيمة خاطئة (0,0) أو قيمة stale.
-        // post{} يضمن تنفيذ الكود بعد أن يُكمل SSIV رسمه الأول.
+        // post{} يضمن تنفيذ الكود بعد اكتمال Layout Pass في SSIV
         (pageView as? SubsamplingScaleImageView)?.post {
-            updateTranslationCoords(pageView as SubsamplingScaleImageView)
+            positionTranslationsView(pageView as SubsamplingScaleImageView)
             if (showTranslations) translationsView?.show()
         }
     }
@@ -229,14 +227,14 @@ class PagerPageHolder(
     override fun onScaleChanged(newScale: Float) {
         super.onScaleChanged(newScale)
         viewer.activity.hideMenu()
-        // TachiyomiAT — هنا لا نحتاج post{} لأن onScaleChanged يأتي بعد layout
-        updateTranslationCoords(pageView as SubsamplingScaleImageView)
+        // TachiyomiAT
+        positionTranslationsView(pageView as SubsamplingScaleImageView)
     }
 
     // TachiyomiAT
     override fun onCenterChanged(newCenter: PointF?) {
         super.onCenterChanged(newCenter)
-        updateTranslationCoords(pageView as SubsamplingScaleImageView)
+        positionTranslationsView(pageView as SubsamplingScaleImageView)
     }
 
     // TachiyomiAT
@@ -248,16 +246,14 @@ class PagerPageHolder(
             translation = page.translation!!,
             font = font,
         )
-        // نبدأ مخفياً — يُعرض فقط بعد ضبط الإحداثيات الصحيحة في updateTranslationCoords
         translationsView?.hide()
+        // نضيفه بـ MATCH_PARENT مؤقتاً — positionTranslationsView ستضبطه لاحقاً
         addView(translationsView, MATCH_PARENT, MATCH_PARENT)
 
-        // إذا كانت الصورة محمّلة مسبقاً (كاش): SSIV جاهز بالفعل.
-        // نستخدم post{} هنا أيضاً لضمان اكتمال layout قبل قراءة الإحداثيات.
         (pageView as? SubsamplingScaleImageView)?.let { vi ->
             if (vi.isReady) {
                 vi.post {
-                    updateTranslationCoords(vi)
+                    positionTranslationsView(vi)
                     if (showTranslations) translationsView?.show()
                 }
             }
@@ -266,29 +262,36 @@ class PagerPageHolder(
 
     // TachiyomiAT
     // ─────────────────────────────────────────────────────────────────────────
-    // نحسب scale من نقطتين حقيقيتين بدلاً من vi.scale مباشرةً.
-    // هذا يعطي نفس نتيجة الويبتون: renderedWidth / sourceWidth.
+    // نُحرِّك PagerTranslationsView ليجلس فوق الصورة بالضبط.
+    // بعدها scaleFactor داخل PagerTranslationsView = size.width / imgWidth
+    // وهو نفس الحساب المستخدم في WebtoonTranslationsView تماماً.
     //
-    // vi.scale قد يحمل قيمة غير محدّثة في بعض الحالات (مثل أثناء animation).
-    // حساب scale من sourceToViewCoord دائماً صحيح لأنه يعكس الحالة الفعلية.
+    // نستخدم translation.imgWidth لا vi.sWidth لأن الصورة قد تكون مجتزأة
+    // (cropBorders, splitInHalf…) فتختلف vi.sWidth عن imgWidth.
     // ─────────────────────────────────────────────────────────────────────────
-    private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
-        if (page.translation == null) return
+    private fun positionTranslationsView(vi: SubsamplingScaleImageView) {
         val tv = translationsView ?: return
         if (!vi.isReady) return
 
-        val imgW = page.translation!!.imgWidth
+        val imgW = page.translation?.imgWidth ?: return
+        val imgH = page.translation?.imgHeight ?: return
 
-        // نقطتان على المحور الأفقي لحساب scale بدقة
-        val tl = vi.sourceToViewCoord(0f,   0f) ?: return
-        val tr = vi.sourceToViewCoord(imgW, 0f) ?: return
+        // نحسب الإطار الفعلي للصورة على الشاشة بالبكسل
+        val tl = vi.sourceToViewCoord(0f,   0f  ) ?: return
+        val br = vi.sourceToViewCoord(imgW, imgH) ?: return
 
-        // scale = عرض الصورة المرسومة ÷ عرض الصورة الأصلي
-        // = نفس scaleFactor في الويبتون
-        val scale = (tr.x - tl.x) / imgW
+        val left = tl.x.toInt()
+        val top  = tl.y.toInt()
+        val w    = (br.x - tl.x).toInt().coerceAtLeast(1)
+        val h    = (br.y - tl.y).toInt().coerceAtLeast(1)
 
-        tv.viewTLState.value = tl
-        tv.scaleState.value  = scale
+        tv.layoutParams = (tv.layoutParams as? FrameLayout.LayoutParams
+            ?: FrameLayout.LayoutParams(w, h)).apply {
+            width       = w
+            height      = h
+            leftMargin  = left
+            topMargin   = top
+        }
     }
 
     private fun showErrorLayout(): ReaderErrorBinding {
