@@ -216,7 +216,6 @@ class PagerPageHolder(
     override fun onImageLoadError() {
         super.onImageLoadError()
         setError()
-        // TachiyomiAT
         translationsView?.hide()
     }
 
@@ -255,40 +254,42 @@ class PagerPageHolder(
 
     // TachiyomiAT
     // ─────────────────────────────────────────────────────────────────────────
-    // عند تعطيل cropBorders:
-    //   vi.sWidth ≈ imgWidth → cropOffsetX = 0 → لا تغيير
+    // عند cropBorders=false:
+    //   vi.sWidth ≈ imgWidth → cropLeft ≈ 0 → viewTL = sourceToViewCoord(0,0) ✓
     //
-    // عند تشغيل cropBorders:
-    //   SSIV يقطع الحواف البيضاء فيصبح vi.sWidth < imgWidth.
-    //   sourceToViewCoord(0,0) يُعيد موقع (0,0) في الصورة المقطوعة،
-    //   لكن block.x/y في إحداثيات الصورة الأصلية.
+    // عند cropBorders=true:
+    //   SSIV يقطع الحواف فيصبح vi.sWidth < imgWidth.
+    //   sourceToViewCoord(0,0) = موقع (0,0) في الصورة المقطوعة على الشاشة.
+    //   لكن block.x/y بإحداثيات الصورة الأصلية.
     //
-    //   الفرق = cropOffsetX = (imgWidth - vi.sWidth) / 2  (نفترض قطع متماثل)
+    //   cropLeft  = (imgWidth  - vi.sWidth)  / 2   ← افتراض قطع متماثل
+    //   cropTop   = (imgHeight - vi.sHeight) / 2
     //
-    //   لتحويل block.x الأصلي لإحداثيات الشاشة:
-    //     screenX = tl.x - cropOffsetX * scale + block.x * scale
-    //             = adjustedTL.x + block.x * scale
+    //   viewTL الأصلي (موقع (0,0) في الصورة الأصلية) =
+    //       sourceToViewCoord(0,0).x - cropLeft * scale
     //
-    //   عند cropBorders=false: cropOffsetX=0 → نفس الصيغة السابقة ✓
-    //   عند cropBorders=true:  نُعوِّض عن إزاحة القطع ✓
+    // ملاحظة: إذا كانت imgHeight = 0 (بيانات قديمة) نستخدم vi.sHeight كبديل آمن
+    //         فيصبح cropTop = 0 ولا يحدث تعديل رأسي.
     // ─────────────────────────────────────────────────────────────────────────
     private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
         if (page.translation == null) return
         val tv = translationsView ?: return
-        val tl = vi.sourceToViewCoord(0f, 0f) ?: return
+        if (!vi.isReady) return
+
+        val tl    = vi.sourceToViewCoord(0f, 0f) ?: return
         val scale = vi.scale
 
-        val imgW = page.translation!!.imgWidth
-        val imgH = page.translation!!.imgHeight
+        val imgW  = page.translation!!.imgWidth
+        // إذا كانت imgHeight غير محددة (0) نفترض أنها = vi.sHeight (لا يوجد قطع رأسي)
+        val imgH  = page.translation!!.imgHeight.takeIf { it > 0f } ?: vi.sHeight.toFloat()
 
-        // إزاحة القطع بالبكسل (صفر إذا لم يكن هناك قطع)
-        val cropOffsetX = (imgW - vi.sWidth.toFloat()) / 2f
-        val cropOffsetY = (imgH - vi.sHeight.toFloat()) / 2f
+        // المسافة المقطوعة من اليسار/الأعلى (صفر إذا لم يكن هناك قطع)
+        val cropLeft = ((imgW - vi.sWidth.toFloat()) / 2f).coerceAtLeast(0f)
+        val cropTop  = ((imgH - vi.sHeight.toFloat()) / 2f).coerceAtLeast(0f)
 
-        // viewTL المعدَّل: يُزيل أثر القطع من الإحداثيات
         tv.viewTLState.value = PointF(
-            tl.x - cropOffsetX * scale,
-            tl.y - cropOffsetY * scale,
+            tl.x - cropLeft * scale,
+            tl.y - cropTop  * scale,
         )
         tv.scaleState.value = scale
     }
