@@ -19,4 +19,6 @@
     <string name="pref_engine_model">LLM Model</string>
     <string name="pref_engine_temperature">LLM Temperature</string>
     <string name="pref_engine_max_output">LLM Max Output Token Count</string>
+    <string name="pref_translation_filtered_words">Filtered Words</string>
+    <string name="pref_sub_translation_filtered_words">Words to ignore, separated by comma (e.g: sfx, ha, ah)</string>
 </resources>
