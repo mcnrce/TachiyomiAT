@@ -88,8 +88,9 @@ class WebtoonTranslationsView :
     @Composable
     fun TextBlockBackground(scaleFactor: Float) {
         translation.blocks.forEach { block ->
-            val padX = block.symWidth / 2
-            val padY = block.symHeight / 2
+            if (block.translation.isNullOrBlank()) return@forEach
+            val padX = block.symWidth
+            val padY = block.symHeight
             val bgX = (block.x - padX / 2) * scaleFactor
             val bgY = (block.y - padY / 2) * scaleFactor
             val bgWidth = (block.width + padX) * scaleFactor
