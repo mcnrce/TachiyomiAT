@@ -275,6 +275,20 @@ class ChapterTranslator(
             )
         }
         translation.blocks = smartMergeBlocks(translation.blocks, width.toFloat(), height.toFloat())
+
+        // فلترة الكتل التي يطابق نصها الأصلي أي كلمة من قائمة الكلمات المفلترة
+        val filteredWords = translationPreferences.translationFilteredWords().get()
+            .split(",")
+            .map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() }
+
+        if (filteredWords.isNotEmpty()) {
+            translation.blocks = translation.blocks.filter { block ->
+                val blockText = block.text.lowercase()
+                filteredWords.none { word -> blockText.contains(word) }
+            }.toMutableList()
+        }
+
         return translation
     }
 
