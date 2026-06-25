@@ -105,6 +105,11 @@ object SettingsTranslationScreen : SearchableSettings {
                     pref = translationPreferences.translationEngineMaxOutputTokens(),
                     title = stringResource(ATMR.strings.pref_engine_max_output),
                 ),
+                Preference.PreferenceItem.EditTextPreference(
+                    pref = translationPreferences.translationFilteredWords(),
+                    title = stringResource(ATMR.strings.pref_translation_filtered_words),
+                    subtitle = stringResource(ATMR.strings.pref_sub_translation_filtered_words),
+                ),
             ),
         )
     }
