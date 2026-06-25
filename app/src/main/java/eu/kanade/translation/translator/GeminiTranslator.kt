@@ -6,21 +6,17 @@ import com.google.ai.client.generativeai.type.HarmCategory
 import com.google.ai.client.generativeai.type.SafetySetting
 import com.google.ai.client.generativeai.type.content
 import com.google.ai.client.generativeai.type.generationConfig
-import com.google.android.gms.tasks.Tasks
-import com.google.mlkit.common.model.DownloadConditions
-import com.google.mlkit.nl.translate.TranslateLanguage
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.TranslatorOptions
 import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
 import logcat.logcat
 import org.json.JSONObject
-@Suppress
+
+@Suppress("PropertyName", "MaxLineLength")
 class GeminiTranslator(
     override val fromLang: TextRecognizerLanguage,
     override val toLang: TextTranslatorLanguage,
-     apiKey: String,
-     modelName: String,
+    apiKey: String,
+    modelName: String,
     val maxOutputToken: Int,
     val temp: Float,
 ) : TextTranslator {
@@ -43,60 +39,105 @@ class GeminiTranslator(
         ),
         systemInstruction = content {
             text(
-                "## System Prompt for Manhwa/Manga/Manhua Translation\n" +
-                    "\n" +
-                    "You are a highly skilled AI tasked with translating text from scanned images of comics (manhwa, manga, manhua) while preserving the original structure and removing any watermarks or site links. \n" +
-                    "\n" +
-                    "**Here's how you should operate:**\n" +
-                    "\n" +
-                    "1. **Input:** You'll receive a JSON object where keys are image filenames (e.g., \"001.jpg\") and values are lists of text strings extracted from those images.\n" +
-                    "\n" +
-                    "2. **Translation:** Translate all text strings to the target language `${toLang.label}`. Ensure the translation is natural and fluent, adapting idioms and expressions to fit the target language's cultural context.\n" +
-                    "\n" +
-                    "3. **Watermark/Site Link Removal:** Replace any watermarks or site links (e.g., \"colamanga.com\") with the placeholder \"RTMTH\".\n" +
-                    "\n" +
-                    "4. **Structure Preservation:** Maintain the exact same structure as the input JSON. The output JSON should have the same number of keys (image filenames) and the same number of text strings within each list.\n" +
-                    "\n" +
-                    "**Example:**\n" +
-                    "\n" +
-                    "**Input:**\n" +
-                    "\n" +
-                    "```json\n" +
-                    "{\"001.jpg\":[\"chinese1\",\"chinese2\"],\"002.jpg\":[\"chinese2\",\"colamanga.com\"]}\n" +
-                    "```\n" +
-                    "\n" +
-                    "**Output (for `${toLang.label}` = English):**\n" +
-                    "\n" +
-                    "```json\n" +
-                    "{\"001.jpg\":[\"eng1\",\"eng2\"],\"002.jpg\":[\"eng2\",\"RTMTH\"]}\n" +
-                    "```\n" +
-                    "\n" +
-                    "**Key Points:**\n" +
-                    "\n" +
-                    "* Prioritize accurate and natural-sounding translations.\n" +
-                    "* Be meticulous in removing all watermarks and site links.\n" +
-                    "* Ensure the output JSON structure perfectly mirrors the input structure.\n" +
-                    "Return {[key:string]:Array<String>}",
-
-                )
+                "System Instruction – Comic Translation (Strict JSON Mode)\n" +
+                    "You are an AI translator specialized in manhwa, manga, and manhua OCR text.\n" +
+                    "Input is a JSON object: keys are image filenames, values are arrays of strings.\n" +
+                    "Translate each string independently into ${toLang.label}.\n" +
+                    "If a string is a watermark, URL, or scan credit, replace it with \"RTMTH\".\n" +
+                    "Do not merge, split, reorder, infer, or expand text.\n" +
+                    "Output MUST be valid JSON only, same structure, same lengths.\n" +
+                    "No explanations. No comments. No extra text.",
+            )
         },
     )
 
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
         try {
-            val data = pages.mapValues { (k, v) -> v.blocks.map { b -> b.text } }
-            val json = JSONObject(data)
-            val response = model.generateContent(json.toString())
-            val resJson = JSONObject("${response.text}")
-            for ((k, v) in pages) {
-                v.blocks.forEachIndexed { i, b ->
-                    run {
-                        val res = resJson.optJSONArray(k)?.optString(i, "NULL")
-                        b.translation = if (res == null || res == "NULL") b.text else res
+            val pageEntries = pages.entries.toList()
+            var currentIndex = 0
+
+            val MAX_WORDS_PER_BATCH = 450
+            val MAX_PAGES_PER_BATCH = 25
+
+            while (currentIndex < pageEntries.size) {
+                val batch = mutableListOf<Map.Entry<String, PageTranslation>>()
+                var batchWordCount = 0
+
+                while (currentIndex < pageEntries.size &&
+                    batch.size < MAX_PAGES_PER_BATCH &&
+                    batchWordCount < MAX_WORDS_PER_BATCH
+                ) {
+                    val entry = pageEntries[currentIndex]
+                    val pageText = entry.value.blocks.joinToString(" ") { it.text }
+                    val wordCount = pageText.split(Regex("\\s+")).size
+
+                    if (batch.isNotEmpty() && batchWordCount + wordCount > MAX_WORDS_PER_BATCH) break
+
+                    batch.add(entry)
+                    batchWordCount += wordCount
+                    currentIndex++
+                }
+
+                val batchData = batch.associate { (key, page) ->
+                    key to page.blocks.map { it.text }
+                }
+                val inputJson = JSONObject(batchData)
+
+                var responseText = ""
+                var attempt = 0
+                while (attempt < 2 && responseText.isBlank()) {
+                    val response = model.generateContent(inputJson.toString())
+                    responseText = response.text ?: ""
+                    if (responseText.isBlank()) {
+                        attempt++
+                        if (attempt < 2) Thread.sleep(2000)
                     }
                 }
-                v.blocks =
-                    v.blocks.filterNot { it.translation.contains("RTMTH") }.toMutableList()
+
+                val start = responseText.indexOf('{')
+                val end = responseText.lastIndexOf('}')
+
+                if (start == -1 || end == -1 || end <= start) {
+                    logcat { "Invalid or Empty JSON response at index $currentIndex" }
+                    throw Exception("فشل الحصول على رد من الذكاء الاصطناعي للدفعة الحالية")
+                }
+
+                val resJson = JSONObject(responseText.substring(start, end + 1))
+
+                // --- منطق إصلاح اتجاه النص للغات RTL ---
+                val rtlLanguages = setOf(
+                    TextTranslatorLanguage.ARABIC,
+                    TextTranslatorLanguage.PERSIAN,
+                    TextTranslatorLanguage.HEBREW,
+                    TextTranslatorLanguage.URDU,
+                    TextTranslatorLanguage.PUSHTO_PASHTO,
+                    TextTranslatorLanguage.SINDHI,
+                    TextTranslatorLanguage.UIGHUR_UYGHUR,
+                    TextTranslatorLanguage.YIDDISH,
+                    TextTranslatorLanguage.KURDISH,
+                )
+
+                val isRTL = rtlLanguages.contains(toLang)
+                val rtlMarker = if (isRTL) "\u200F" else ""
+
+                for ((key, page) in batch) {
+                    val arr = resJson.optJSONArray(key)
+
+                    page.blocks.forEachIndexed { index, block ->
+                        val translated = arr?.optString(index, "__NULL__")
+
+                        block.translation = when {
+                            block.angle < -15.0f || block.angle > 15.0f -> ""
+                            translated == null || translated == "__NULL__" -> block.text
+                            translated == "RTMTH" -> ""
+                            else -> rtlMarker + translated
+                        }
+                    }
+                }
+
+                if (currentIndex < pageEntries.size) {
+                    Thread.sleep(1000)
+                }
             }
         } catch (e: Exception) {
             logcat { "Image Translation Error : ${e.stackTraceToString()}" }
@@ -104,8 +145,5 @@ class GeminiTranslator(
         }
     }
 
-    override fun close() {
-    }
-
-
+    override fun close() {}
 }
