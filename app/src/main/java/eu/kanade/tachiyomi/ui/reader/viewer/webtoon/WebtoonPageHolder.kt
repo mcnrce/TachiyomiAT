@@ -145,6 +145,10 @@ class WebtoonPageHolder(
         frame.recycle()
         progressIndicator.setProgress(0)
         progressContainer.isVisible = true
+
+        // TachiyomiAT - تنظيف translationsView عند إعادة استخدام الـ holder
+        frame.removeView(translationsView)
+        translationsView = null
     }
 
     /**
