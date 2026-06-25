@@ -7,21 +7,19 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.SubcomposeLayout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.sp
 import eu.kanade.translation.model.TranslationBlock
-import kotlin.math.max
 
 @Composable
 fun SmartTranslationBlock(
@@ -29,82 +27,73 @@ fun SmartTranslationBlock(
     block: TranslationBlock,
     scaleFactor: Float,
     fontFamily: FontFamily,
-
 ) {
-    val padX = block.symWidth * 2
+    val padX = block.symWidth
     val padY = block.symHeight
-    val xPx = max((block.x - padX / 2) * scaleFactor, 0.0f)
-    val yPx = max((block.y - padY / 2) * scaleFactor, 0.0f)
+    val xPx = (block.x - padX / 2) * scaleFactor
+    val yPx = (block.y - padY / 2) * scaleFactor
     val width = ((block.width + padX) * scaleFactor).pxToDp()
     val height = ((block.height + padY) * scaleFactor).pxToDp()
     val isVertical = block.angle > 85
+
+    val density = LocalDensity.current
+
+    // إنشاء أداة القياس هنا بشكل صحيح لمرة واحدة لأنها دالة Composable
+    val textMeasurer = rememberTextMeasurer()
+
+    val fontSize = remember(block.translation, width, height, density) {
+        val maxWidthPx = with(density) { width.roundToPx() }
+        val maxHeightPx = with(density) { height.roundToPx() }
+
+        var low = 1
+        var high = 200
+        var bestSize = low
+
+        while (low <= high) {
+            val mid = (low + high) / 2
+            val style = androidx.compose.ui.text.TextStyle(
+                fontSize = mid.sp,
+                fontFamily = fontFamily,
+            )
+            // استخدام الكائن الجاهز هنا داخل الحلقة بدون مشاكل
+            val result = textMeasurer.measure(
+                text = block.translation ?: "",
+                style = style,
+                constraints = Constraints(maxWidth = maxWidthPx),
+                overflow = TextOverflow.Clip,
+                maxLines = Int.MAX_VALUE,
+                softWrap = true,
+            )
+
+            if (result.size.height <= maxHeightPx) {
+                bestSize = mid
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        bestSize.sp
+    }
+
     Box(
         modifier = modifier
             .wrapContentSize(Alignment.CenterStart, true)
             .offset(xPx.pxToDp(), yPx.pxToDp())
             .requiredSize(width, height),
+        contentAlignment = Alignment.Center,
     ) {
-        val density = LocalDensity.current
-        val fontSize = remember { mutableStateOf(16.sp) }
-        SubcomposeLayout { constraints ->
-            val maxWidthPx = with(density) { width.roundToPx() }
-            val maxHeightPx = with(density) { height.roundToPx() }
-
-            // Binary search for optimal font size
-            var low = 1
-            var high = 100 // Initial upper bound
-            var bestSize = low
-
-            while (low <= high) {
-                val mid = ((low + high) / 2)
-                val textLayoutResult = subcompose(mid.sp) {
-                    Text(
-                        text = block.translation,
-                        fontSize = mid.sp,
-                        fontFamily = fontFamily,
-                        color = Color.Black,
-                        overflow = TextOverflow.Visible,
-                        textAlign = TextAlign.Center,
-                        maxLines = Int.MAX_VALUE,
-                        softWrap = true,
-                        modifier = Modifier
-                            .width(width)
-                            .rotate(if (isVertical) 0f else block.angle)
-                            .align(Alignment.Center),
-                    )
-                }[0].measure(Constraints(maxWidth = maxWidthPx))
-
-                if (textLayoutResult.height <= maxHeightPx) {
-                    bestSize = mid
-                    low = mid + 1
-                } else {
-                    high = mid - 1
-                }
-            }
-            fontSize.value = bestSize.sp
-
-            // Measure final layout
-            val textPlaceable = subcompose(Unit) {
-                Text(
-                    text = block.translation,
-                    fontSize = fontSize.value,
-                    fontFamily = fontFamily,
-                    color = Color.Black,
-                    softWrap = true,
-                    overflow = TextOverflow.Visible,
-                    textAlign = TextAlign.Center,
-                    maxLines = Int.MAX_VALUE,
-                    modifier = Modifier
-                        .width(width)
-                        .rotate(if (isVertical) 0f else block.angle)
-                        .align(Alignment.Center),
-//                        .background(color = Color.Blue),
-                )
-            }[0].measure(constraints)
-
-            layout(textPlaceable.width, textPlaceable.height) {
-                textPlaceable.place(0, 0)
-            }
-        }
+        Text(
+            text = block.translation ?: "",
+            fontSize = fontSize,
+            fontFamily = fontFamily,
+            color = Color.Black,
+            softWrap = true,
+            overflow = TextOverflow.Clip,
+            textAlign = TextAlign.Center,
+            maxLines = Int.MAX_VALUE,
+            modifier = Modifier
+                .width(width)
+                .rotate(if (isVertical) 0f else block.angle),
+        )
     }
 }
