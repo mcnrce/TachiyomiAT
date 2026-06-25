@@ -208,7 +208,6 @@ class ChapterTranslator(
             val chapterPath = downloadProvider.findChapterDir(
                 translation.chapter.name,
                 translation.chapter.scanlator,
-                translation.chapter.url,
                 translation.manga.title,
                 translation.source,
             )!!
