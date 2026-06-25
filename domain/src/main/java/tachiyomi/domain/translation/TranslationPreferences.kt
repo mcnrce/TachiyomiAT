@@ -16,4 +16,7 @@ class TranslationPreferences(
     fun translationEngineApiKey() = preferenceStore.getString("translation_engine_api_key", "")
     fun translationEngineTemperature() = preferenceStore.getString("translation_engine_temperature", "1")
     fun translationEngineMaxOutputTokens() = preferenceStore.getString("translation_engine_output_tokens", "8192")
+
+    // كلمات مفلترة — يكتبها المستخدم مفصولة بفاصلة
+    fun translationFilteredWords() = preferenceStore.getString("translation_filtered_words", "")
 }
