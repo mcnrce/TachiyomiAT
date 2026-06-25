@@ -6,7 +6,6 @@ import android.util.AttributeSet
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.absoluteOffset
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.wrapContentSize
@@ -18,7 +17,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.AbstractComposeView
 import androidx.compose.ui.text.font.Font
@@ -85,10 +83,11 @@ class PagerTranslationsView :
     @Composable
     fun TextBlockBackground(zoomScale: Float) {
         translation.blocks.forEach { block ->
-            val padX = block.symWidth / 2
-            val padY = block.symHeight / 2
-            val bgX = ((block.x - padX / 2) * 1) * zoomScale
-            val bgY = ((block.y - padY / 2) * 1) * zoomScale
+            if (block.translation.isNullOrBlank()) return@forEach
+            val padX = block.symWidth
+            val padY = block.symHeight
+            val bgX = (block.x - padX / 2) * zoomScale
+            val bgY = (block.y - padY / 2) * zoomScale
             val bgWidth = (block.width + padX) * zoomScale
             val bgHeight = (block.height + padY) * zoomScale
             val isVertical = block.angle > 85
