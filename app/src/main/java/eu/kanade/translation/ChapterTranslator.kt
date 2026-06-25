@@ -285,7 +285,7 @@ class ChapterTranslator(
         if (filteredWords.isNotEmpty()) {
             translation.blocks = translation.blocks.filter { block ->
                 val blockText = block.text.lowercase()
-                filteredWords.none { word -> blockText.contains(word) }
+                filteredWords.none { word -> blockText == word }
             }.toMutableList()
         }
 
