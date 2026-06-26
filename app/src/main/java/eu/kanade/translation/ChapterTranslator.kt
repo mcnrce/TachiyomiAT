@@ -276,28 +276,31 @@ class ChapterTranslator(
         }
         translation.blocks = smartMergeBlocks(translation.blocks, width.toFloat(), height.toFloat())
 
-        // فلترة الكتل التي يطابق نصها الأصلي أي كلمة من قائمة الكلمات المفلترة
+        // قائمة الكلمات المفلترة من إعدادات المستخدم
         val filteredWords = translationPreferences.translationFilteredWords().get()
             .split(",")
             .map { it.trim().lowercase() }
             .filter { it.isNotEmpty() }
 
         translation.blocks = translation.blocks.filter { block ->
-    val blockText = block.text.trim()
+            val blockText = block.text.trim()
+            val letters = blockText.filter { it.isLetter() }
 
-    // احذف إذا كان نص الفقاعة حرف أو حرفان إنجليزيان فقط
-    val isShortNoise = blockText.length <= 2 && blockText.all { it.isLetter() && it in 'A'..'z' }
-    if (isShortNoise) return@filter false
+            // احذف إذا كانت جميع الأحرف إنجليزية وعدد الأحرف الفريدة أقل من 3
+            val isAllEnglish = letters.isNotEmpty() && letters.all { it in 'A'..'Z' || it in 'a'..'z' }
+            if (isAllEnglish) {
+                val uniqueLetters = letters.lowercase().toSet().size
+                if (uniqueLetters < 3) return@filter false
+            }
 
-    // احذف إذا طابق أي كلمة من قائمة المستخدم (مطابقة كاملة)
-    if (filteredWords.isNotEmpty()) {
-        val blockLower = blockText.lowercase()
-        if (filteredWords.any { word -> blockLower == word }) return@filter false
-    }
+            // احذف إذا طابق أي كلمة من قائمة المستخدم (مطابقة كاملة)
+            if (filteredWords.isNotEmpty()) {
+                val blockLower = blockText.lowercase()
+                if (filteredWords.any { word -> blockLower == word }) return@filter false
+            }
 
-    true
-}.toMutableList()
-        }
+            true
+        }.toMutableList()
 
         return translation
     }
@@ -334,8 +337,6 @@ class ChapterTranslator(
             if (!merged) i++
         }
 
-        // ... داخل دالة smartMergeBlocks ...
-
         val expandedBlocks = initialBlocks.map { block ->
             val cleanedText = block.text.replace("\n", " ").trim()
             val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
@@ -366,8 +367,6 @@ class ChapterTranslator(
                 y = newY.coerceIn(0f, imgHeight - newHeight.coerceAtMost(imgHeight)),
             )
         }.toMutableList()
-
-// ... يتبع كود حل التصادمات (Collisions) كما هو دون تغيير ...
 
         val iterations = 4
         for (step in 0 until iterations) {
