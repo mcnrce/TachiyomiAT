@@ -19,4 +19,7 @@ class TranslationPreferences(
 
     // كلمات مفلترة — يكتبها المستخدم مفصولة بفاصلة
     fun translationFilteredWords() = preferenceStore.getString("translation_filtered_words", "")
+
+    // ترجمة فورية أثناء القراءة
+    fun realtimeTranslation() = preferenceStore.getBoolean("realtime_translation", false)
 }
