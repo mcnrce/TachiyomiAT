@@ -30,6 +30,11 @@ object SettingsTranslationScreen : SearchableSettings {
                 pref = translationPreferences.autoTranslateAfterDownload(),
                 title = stringResource(ATMR.strings.pref_translate_after_downloading),
             ),
+            Preference.PreferenceItem.SwitchPreference(
+                pref = translationPreferences.realtimeTranslation(),
+                title = stringResource(ATMR.strings.pref_realtime_translation),
+                subtitle = stringResource(ATMR.strings.pref_sub_realtime_translation),
+            ),
             Preference.PreferenceItem.ListPreference(
                 pref = translationPreferences.translationFont(),
                 title = stringResource(ATMR.strings.pref_reader_font),
