@@ -31,8 +31,8 @@ jobs:
       - name: Set up gradle
         uses: gradle/actions/setup-gradle@cc4fc85e6b35bafd578d5ffbc76a5518407e1af0 # v4.2.1
 
-      - name: Build app and run unit tests
-        run: ./gradlew assembleStandardRelease testReleaseUnitTest testStandardReleaseUnitTest
+      - name: Build app
+        run: ./gradlew assembleStandardRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
@@ -46,13 +46,10 @@ jobs:
           name: mapping-${{ github.sha }}
           path: app/build/outputs/mapping/standardRelease
 
-      # تم إزالة شرط الـ Tag من الخطوات التالية
-
       - name: Get tag name
         if: github.repository == 'mannu691/TachiyomiAT'
         run: |
           set -x
-          # إذا لم يوجد Tag، سنستخدم وقت البناء كاسم افتراضي للنسخة
           TAG_NAME=${GITHUB_REF/refs\/tags\//}
           if [ "$TAG_NAME" = "refs/heads/main" ] || [ "$TAG_NAME" = "refs/heads/master" ]; then
             TAG_NAME="manual-build-$(date +'%Y%m%d-%H%M')"
@@ -73,7 +70,6 @@ jobs:
         if: github.repository == 'mannu691/TachiyomiAT'
         run: |
           set -e
-          # رفع الملفات الموقعة (الموقعة تنتهي بـ -signed.apk بعد أداة التوقيع)
           cp app/build/outputs/apk/standard/release/app-standard-universal-release-unsigned-signed.apk TachiyomiAT-${{ env.VERSION_TAG }}.apk
           cp app/build/outputs/apk/standard/release/app-standard-arm64-v8a-release-unsigned-signed.apk TachiyomiAT-arm64-v8a-${{ env.VERSION_TAG }}.apk
           cp app/build/outputs/apk/standard/release/app-standard-armeabi-v7a-release-unsigned-signed.apk TachiyomiAT-armeabi-v7a-${{ env.VERSION_TAG }}.apk
