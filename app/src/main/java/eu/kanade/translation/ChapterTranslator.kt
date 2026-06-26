@@ -282,11 +282,21 @@ class ChapterTranslator(
             .map { it.trim().lowercase() }
             .filter { it.isNotEmpty() }
 
-        if (filteredWords.isNotEmpty()) {
-            translation.blocks = translation.blocks.filter { block ->
-                val blockText = block.text.lowercase()
-                filteredWords.none { word -> blockText == word }
-            }.toMutableList()
+        translation.blocks = translation.blocks.filter { block ->
+    val blockText = block.text.trim()
+
+    // احذف إذا كان نص الفقاعة حرف أو حرفان إنجليزيان فقط
+    val isShortNoise = blockText.length <= 2 && blockText.all { it.isLetter() && it in 'A'..'z' }
+    if (isShortNoise) return@filter false
+
+    // احذف إذا طابق أي كلمة من قائمة المستخدم (مطابقة كاملة)
+    if (filteredWords.isNotEmpty()) {
+        val blockLower = blockText.lowercase()
+        if (filteredWords.any { word -> blockLower == word }) return@filter false
+    }
+
+    true
+}.toMutableList()
         }
 
         return translation
