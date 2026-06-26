@@ -1,11 +1,13 @@
 package eu.kanade.tachiyomi.ui.reader.loader
 
 import android.content.Context
+import eu.kanade.tachiyomi.data.database.models.toDomainChapter
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.download.DownloadProvider
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
+import eu.kanade.translation.TranslationManager
 import mihon.core.archive.archiveReader
 import mihon.core.archive.epubReader
 import tachiyomi.core.common.i18n.stringResource
@@ -13,9 +15,12 @@ import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.model.StubSource
+import tachiyomi.domain.translation.TranslationPreferences
 import tachiyomi.i18n.MR
 import tachiyomi.source.local.LocalSource
 import tachiyomi.source.local.io.Format
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 
 /**
  * Loader used to retrieve the [PageLoader] for a given chapter.
@@ -26,6 +31,8 @@ class ChapterLoader(
     private val downloadProvider: DownloadProvider,
     private val manga: Manga,
     private val source: Source,
+    private val translationManager: TranslationManager = Injekt.get(),
+    private val translationPreferences: TranslationPreferences = Injekt.get(),
 ) {
 
     /**
@@ -55,6 +62,33 @@ class ChapterLoader(
                 // otherwise use the requested page.
                 if (!chapter.chapter.read) {
                     chapter.requestedPage = chapter.chapter.last_page_read
+                }
+
+                // TachiyomiAT: تحميل الترجمة الموجودة لأي فصل بغض النظر عن حالة التحميل
+                // (DownloadPageLoader يقرأ الترجمة بنفسه، هنا نغطي HttpPageLoader وغيره)
+                if (loader !is DownloadPageLoader) {
+                    val existingTranslation = translationManager.getChapterTranslation(
+                        chapter.chapter.name,
+                        chapter.chapter.scanlator,
+                        manga.title,
+                        source,
+                    )
+                    if (existingTranslation.isNotEmpty()) {
+                        pages.forEach { page ->
+                            if (page.translation == null) {
+                                page.translation = existingTranslation[page.index.toString()]
+                                    ?: existingTranslation.values.elementAtOrNull(page.index)
+                            }
+                        }
+                    }
+
+                    // إذا كان الوضع الفوري مفعلاً ولا توجد ترجمة محفوظة، ابدأ الترجمة
+                    if (translationPreferences.realtimeTranslation().get() && existingTranslation.isEmpty()) {
+                        val domainChapter = chapter.chapter.toDomainChapter()
+                        if (domainChapter != null) {
+                            translationManager.translateChapter(manga, domainChapter)
+                        }
+                    }
                 }
 
                 chapter.state = ReaderChapter.State.Loaded(pages)
