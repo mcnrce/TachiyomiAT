@@ -37,6 +37,7 @@ import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.encodeToStream
+import kotlinx.serialization.json.decodeFromStream
 import logcat.LogPriority
 import mihon.core.archive.archiveReader
 import tachiyomi.core.common.util.lang.launchIO
@@ -197,8 +198,6 @@ class ChapterTranslator(
         pageStreams: List<Pair<String, () -> InputStream>>,
     ) {
         val source = sourceManager.get(manga.source) as? HttpSource ?: return
-        if (provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source) != null) return
-        if (queueState.value.any { it.chapter.id == chapter.id }) return
         val fromLang = TextRecognizerLanguage.fromPref(translationPreferences.translateFromLanguage())
         val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
         val engine = TextTranslators.fromPref(translationPreferences.translationEngine())
@@ -206,9 +205,32 @@ class ChapterTranslator(
             context.toast(ATMR.strings.error_mlkit_language_unsupported)
             return
         }
-        val translation = Translation(source, manga, chapter, fromLang, toLang, pageStreams)
-        addToQueue(translation)
-        if (!isRunning) start()
+
+        // اقرأ الصفحات المترجمة مسبقاً من الملف إن وجد
+        val alreadyTranslated = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
+            ?.let { file ->
+                try {
+                    Json.decodeFromStream<Map<String, PageTranslation>>(file.openInputStream())
+                } catch (e: Throwable) { emptyMap() }
+            } ?: emptyMap()
+
+        // تصفية الصفحات التي لم تُترجم بعد فقط
+        val pendingStreams = pageStreams.filter { (fileName, _) -> !alreadyTranslated.containsKey(fileName) }
+        if (pendingStreams.isEmpty()) return
+
+        val existing = queueState.value.find { it.chapter.id == chapter.id }
+        if (existing != null) {
+            // أضف الصفحات الجديدة للـ Translation الموجود في الـ queue
+            existing.addPageStreams(pendingStreams)
+        } else {
+            val translation = Translation(
+                source, manga, chapter, fromLang, toLang,
+                pendingStreams.toMutableList(),
+                alreadyTranslated.toMutableMap(),
+            )
+            addToQueue(translation)
+            if (!isRunning) start()
+        }
     }
 
     private suspend fun translateChapter(translation: Translation) {
@@ -227,12 +249,24 @@ class ChapterTranslator(
             val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
             val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
 
-            val pages = mutableMapOf<String, PageTranslation>()
+            // ابدأ بالصفحات المترجمة مسبقاً (من الملف القديم إن وجد)
+            val pages = translation.existingPages.toMutableMap()
             val tmpFile = translationMangaDir.createFile("tmp")!!
 
-            // إذا كانت الصفحات ممررة مباشرة (online أو realtime) استخدمها، وإلا اقرأ من الملفات المحلية
-            val streams = translation.pageStreams
-                ?: getChapterPages(
+            // الصفحات الجديدة المنتظرة — نأخذ نسخة snapshot لأن addPageStreams قد يضيف أثناء التشغيل
+            val streamsSnapshot = translation.takePageStreams()
+
+            // إذا لا يوجد شيء لترجمته
+            if (streamsSnapshot.isEmpty() && pages.isNotEmpty()) {
+                // كل شيء مترجم مسبقاً
+                translation.status = Translation.State.TRANSLATED
+                return
+            }
+
+            val streams = if (streamsSnapshot.isNotEmpty()) {
+                streamsSnapshot
+            } else {
+                getChapterPages(
                     downloadProvider.findChapterDir(
                         translation.chapter.name,
                         translation.chapter.scanlator,
@@ -240,23 +274,26 @@ class ChapterTranslator(
                         translation.source,
                     )!!,
                 )
+            }
 
             withContext(Dispatchers.IO) {
                 for ((fileName, streamFn) in streams) {
                     coroutineContext.ensureActive()
+                    // تحقق من الصفحات الجديدة التي أضيفت أثناء الترجمة
+                    val newStreams = translation.takePageStreams()
+                    // أضفها للمعالجة اللاحقة (سنعالجها في الدورة التالية)
+                    if (newStreams.isNotEmpty()) translation.addPageStreams(newStreams)
+
                     streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
                     val image = InputImage.fromFilePath(context, tmpFile.uri)
 
-                    // الفحص الأساسي مع الشحذ والتكبير التلقائي داخل الكلاس المعني
                     val result = textRecognizer.recognize(image)
                     val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
 
-                    // الحسابات تتم بناءً على إحداثيات الكتل المستخرجة من الصورة المكبرة (2x) لتتوافق مع هندسة الدمج
                     val enhancedWidth = image.width * TextRecognizer.SCALE_FACTOR
                     val enhancedHeight = image.height * TextRecognizer.SCALE_FACTOR
                     val pageTranslation = convertToPageTranslation(blocks, enhancedWidth, enhancedHeight)
 
-                    // إرجاع الإحداثيات إلى أبعاد الصفحة الأصلية (1x) لكي تتطابق مع الصورة الأصلية المعروضة للمستخدم
                     for (block in pageTranslation.blocks) {
                         block.x /= TextRecognizer.SCALE_FACTOR
                         block.y /= TextRecognizer.SCALE_FACTOR
@@ -270,11 +307,27 @@ class ChapterTranslator(
                 }
             }
             tmpFile.delete()
+
+            // ترجمة النصوص
             withContext(Dispatchers.IO) {
                 textTranslator.translate(pages)
             }
-            Json.encodeToStream(pages, translationMangaDir.createFile(saveFile)!!.openOutputStream())
-            translation.status = Translation.State.TRANSLATED
+
+            // احفظ الملف — يشمل الصفحات القديمة + الجديدة معاً
+            val existingFile = provider.findTranslationFile(
+                translation.chapter.name, translation.chapter.scanlator,
+                translation.manga.title, translation.source,
+            )
+            val outputStream = existingFile?.openOutputStream()
+                ?: translationMangaDir.createFile(saveFile)!!.openOutputStream()
+            Json.encodeToStream(pages, outputStream)
+
+            // إذا لا تزال هناك صفحات منتظرة → أبقِ في الـ queue لترجمتها
+            if (translation.hasPendingPages()) {
+                translation.status = Translation.State.QUEUE
+            } else {
+                translation.status = Translation.State.TRANSLATED
+            }
         } catch (error: Throwable) {
             translation.status = Translation.State.ERROR
             logcat(LogPriority.ERROR, error)
