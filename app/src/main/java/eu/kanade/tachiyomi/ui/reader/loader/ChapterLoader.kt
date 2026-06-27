@@ -83,10 +83,18 @@ class ChapterLoader(
                     }
 
                     // إذا كان الوضع الفوري مفعلاً ولا توجد ترجمة محفوظة، ابدأ الترجمة
+                    // نمرر الصفحات مباشرة من stream لتعمل مع online والمحمّل على حدٍّ سواء
                     if (translationPreferences.realtimeTranslation().get() && existingTranslation.isEmpty()) {
                         val domainChapter = chapter.chapter.toDomainChapter()
                         if (domainChapter != null) {
-                            translationManager.translateChapter(manga, domainChapter)
+                            val pageStreams = pages.mapNotNull { page ->
+                                val stream = page.stream ?: return@mapNotNull null
+                                val fileName = "page_${page.index}.jpg"
+                                Pair(fileName, stream)
+                            }
+                            if (pageStreams.isNotEmpty()) {
+                                translationManager.queueChapterWithPages(manga, domainChapter, pageStreams)
+                            }
                         }
                     }
                 }
