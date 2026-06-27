@@ -20,9 +20,64 @@ data class Translation(
     val chapter: Chapter,
     val fromLang: TextRecognizerLanguage = TextRecognizerLanguage.CHINESE,
     val toLang: TextTranslatorLanguage = TextTranslatorLanguage.ENGLISH,
-    // صفحات من الكاش للفصول online — إذا كان null يقرأ من الملفات المحلية
-    @Transient val pageStreams: List<Pair<String, () -> InputStream>>? = null,
+    // قائمة الصفحات المنتظرة للترجمة — تتراكم مع الوقت
+    @Transient private val _pageStreams: MutableList<Pair<String, () -> InputStream>> = mutableListOf(),
+    // الصفحات المترجمة مسبقاً من الملف
+    @Transient val existingPages: MutableMap<String, eu.kanade.translation.model.PageTranslation> = mutableMapOf(),
 ) {
+    @Transient
+    private val _statusFlow = MutableStateFlow(State.NOT_TRANSLATED)
+
+    @Transient
+    val statusFlow = _statusFlow.asStateFlow()
+    var status: State
+        get() = _statusFlow.value
+        set(status) {
+            _statusFlow.value = status
+        }
+
+    // إضافة صفحات جديدة بشكل thread-safe
+    @Synchronized
+    fun addPageStreams(pages: List<Pair<String, () -> InputStream>>) {
+        _pageStreams.addAll(pages)
+    }
+
+    // أخذ snapshot من الصفحات المنتظرة وتفريغ القائمة
+    @Synchronized
+    fun takePageStreams(): List<Pair<String, () -> InputStream>> {
+        val snapshot = _pageStreams.toList()
+        _pageStreams.clear()
+        return snapshot
+    }
+
+    // هل لا تزال هناك صفحات منتظرة؟
+    @Synchronized
+    fun hasPendingPages(): Boolean = _pageStreams.isNotEmpty()
+
+    enum class State(val value: Int) {
+        NOT_TRANSLATED(0),
+        QUEUE(1),
+        TRANSLATING(2),
+        TRANSLATED(3),
+        ERROR(4),
+    }
+
+    companion object {
+        suspend fun fromChapterId(
+            chapterId: Long,
+            getChapter: GetChapter = Injekt.get(),
+            getManga: GetManga = Injekt.get(),
+            sourceManager: SourceManager = Injekt.get(),
+        ): Translation? {
+            val chapter = getChapter.await(chapterId) ?: return null
+            val manga = getManga.await(chapter.mangaId) ?: return null
+            val source = sourceManager.get(manga.source) as? HttpSource ?: return null
+
+            return Translation(source, manga, chapter)
+        }
+    }
+}
+
     @Transient
     private val _statusFlow = MutableStateFlow(State.NOT_TRANSLATED)
 
