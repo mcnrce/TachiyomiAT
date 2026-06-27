@@ -328,10 +328,11 @@ class PagerPageHolder(
     // TachiyomiAT: تشغيل الترجمة الفورية عندما تكون الصورة جاهزة
     private fun triggerRealtimeTranslation() {
         val stream = page.stream ?: return
-        val chapter = page.chapter
         val manga = viewer.activity.viewModel.manga ?: return
-        val domainChapter = chapter.chapter.toDomainChapter() ?: return
-        val fileName = "page_${page.index}.jpg"
+        val domainChapter = page.chapter.chapter.toDomainChapter() ?: return
+        // استخدم imageUrl كمفتاح — فريد لكل صفحة ومتسق عبر الجلسات
+        val fileName = page.imageUrl?.substringAfterLast("/")?.substringBefore("?")
+            ?: "page_${page.index}.jpg"
         translationManager.queueChapterWithPages(manga, domainChapter, listOf(Pair(fileName, stream)))
     }
 
