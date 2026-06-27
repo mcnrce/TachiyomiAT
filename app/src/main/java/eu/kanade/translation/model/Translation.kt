@@ -12,6 +12,7 @@ import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.service.SourceManager
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.io.InputStream
 
 data class Translation(
     val source: HttpSource,
@@ -19,6 +20,8 @@ data class Translation(
     val chapter: Chapter,
     val fromLang: TextRecognizerLanguage = TextRecognizerLanguage.CHINESE,
     val toLang: TextTranslatorLanguage = TextTranslatorLanguage.ENGLISH,
+    // صفحات من الكاش للفصول online — إذا كان null يقرأ من الملفات المحلية
+    @Transient val pageStreams: List<Pair<String, () -> InputStream>>? = null,
 ) {
     @Transient
     private val _statusFlow = MutableStateFlow(State.NOT_TRANSLATED)
