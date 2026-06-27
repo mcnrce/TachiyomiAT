@@ -74,16 +74,19 @@ class ChapterLoader(
                         source,
                     )
                     if (existingTranslation.isNotEmpty()) {
+                        // الترجمة مفهرسة باسم الملف — نرتبها أبجدياً (نفس ترتيب ChapterTranslator)
+                        // ثم نطابق كل صفحة بترتيبها
+                        val sortedTranslations = existingTranslation.entries
+                            .sortedBy { it.key }
+                            .map { it.value }
                         pages.forEach { page ->
                             if (page.translation == null) {
-                                page.translation = existingTranslation[page.index.toString()]
-                                    ?: existingTranslation.values.elementAtOrNull(page.index)
+                                page.translation = sortedTranslations.getOrNull(page.index)
                             }
                         }
                     }
 
                     // إذا كان الوضع الفوري مفعلاً ولا توجد ترجمة محفوظة، ابدأ الترجمة
-                    // نمرر الصفحات مباشرة من stream لتعمل مع online والمحمّل على حدٍّ سواء
                     if (translationPreferences.realtimeTranslation().get() && existingTranslation.isEmpty()) {
                         val domainChapter = chapter.chapter.toDomainChapter()
                         if (domainChapter != null) {
