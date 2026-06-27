@@ -61,6 +61,10 @@ class TranslationManager(
         return queueState.value.find { it.chapter.id == chapterId }
     }
 
+    fun getQueuedTranslationForChapter(chapterId: Long): Translation? {
+        return queueState.value.find { it.chapter.id == chapterId }
+    }
+
     fun translateChapter(manga: Manga, chapters: Chapter) {
         translator.queueChapter(manga, chapters)
         startTranslation()
