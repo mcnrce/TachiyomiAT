@@ -32,7 +32,6 @@ class ChapterLoader(
     private val manga: Manga,
     private val source: Source,
     private val translationManager: TranslationManager = Injekt.get(),
-    private val translationPreferences: TranslationPreferences = Injekt.get(),
 ) {
 
     /**
@@ -75,28 +74,12 @@ class ChapterLoader(
                     )
                     if (existingTranslation.isNotEmpty()) {
                         // الترجمة مفهرسة باسم الملف — نرتبها أبجدياً (نفس ترتيب ChapterTranslator)
-                        // ثم نطابق كل صفحة بترتيبها
                         val sortedTranslations = existingTranslation.entries
                             .sortedBy { it.key }
                             .map { it.value }
                         pages.forEach { page ->
                             if (page.translation == null) {
                                 page.translation = sortedTranslations.getOrNull(page.index)
-                            }
-                        }
-                    }
-
-                    // إذا كان الوضع الفوري مفعلاً ولا توجد ترجمة محفوظة، ابدأ الترجمة
-                    if (translationPreferences.realtimeTranslation().get() && existingTranslation.isEmpty()) {
-                        val domainChapter = chapter.chapter.toDomainChapter()
-                        if (domainChapter != null) {
-                            val pageStreams = pages.mapNotNull { page ->
-                                val stream = page.stream ?: return@mapNotNull null
-                                val fileName = "page_${page.index}.jpg"
-                                Pair(fileName, stream)
-                            }
-                            if (pageStreams.isNotEmpty()) {
-                                translationManager.queueChapterWithPages(manga, domainChapter, pageStreams)
                             }
                         }
                     }
