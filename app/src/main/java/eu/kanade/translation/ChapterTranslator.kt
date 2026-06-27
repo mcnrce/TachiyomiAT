@@ -190,6 +190,27 @@ class ChapterTranslator(
         addToQueue(translation)
     }
 
+    // للترجمة الفورية — تمرير الصفحات مباشرة من الكاش (online أو downloaded)
+    fun queueChapterWithPages(
+        manga: Manga,
+        chapter: Chapter,
+        pageStreams: List<Pair<String, () -> InputStream>>,
+    ) {
+        val source = sourceManager.get(manga.source) as? HttpSource ?: return
+        if (provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source) != null) return
+        if (queueState.value.any { it.chapter.id == chapter.id }) return
+        val fromLang = TextRecognizerLanguage.fromPref(translationPreferences.translateFromLanguage())
+        val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
+        val engine = TextTranslators.fromPref(translationPreferences.translationEngine())
+        if (engine == TextTranslators.MLKIT && !TextTranslatorLanguage.mlkitSupportedLanguages().contains(toLang)) {
+            context.toast(ATMR.strings.error_mlkit_language_unsupported)
+            return
+        }
+        val translation = Translation(source, manga, chapter, fromLang, toLang, pageStreams)
+        addToQueue(translation)
+        if (!isRunning) start()
+    }
+
     private suspend fun translateChapter(translation: Translation) {
         try {
             if (translation.fromLang != textRecognizer.language) {
@@ -205,16 +226,20 @@ class ChapterTranslator(
             }
             val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
             val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
-            val chapterPath = downloadProvider.findChapterDir(
-                translation.chapter.name,
-                translation.chapter.scanlator,
-                translation.manga.title,
-                translation.source,
-            )!!
 
             val pages = mutableMapOf<String, PageTranslation>()
             val tmpFile = translationMangaDir.createFile("tmp")!!
-            val streams = getChapterPages(chapterPath)
+
+            // إذا كانت الصفحات ممررة مباشرة (online أو realtime) استخدمها، وإلا اقرأ من الملفات المحلية
+            val streams = translation.pageStreams
+                ?: getChapterPages(
+                    downloadProvider.findChapterDir(
+                        translation.chapter.name,
+                        translation.chapter.scanlator,
+                        translation.manga.title,
+                        translation.source,
+                    )!!,
+                )
 
             withContext(Dispatchers.IO) {
                 for ((fileName, streamFn) in streams) {
@@ -275,33 +300,6 @@ class ChapterTranslator(
             )
         }
         translation.blocks = smartMergeBlocks(translation.blocks, width.toFloat(), height.toFloat())
-
-        // قائمة الكلمات المفلترة من إعدادات المستخدم
-        val filteredWords = translationPreferences.translationFilteredWords().get()
-            .split(",")
-            .map { it.trim().lowercase() }
-            .filter { it.isNotEmpty() }
-
-        translation.blocks = translation.blocks.filter { block ->
-            val blockText = block.text.trim()
-            val letters = blockText.filter { it.isLetter() }
-
-            // احذف إذا كانت جميع الأحرف إنجليزية وعدد الأحرف الفريدة أقل من 3
-            val isAllEnglish = letters.isNotEmpty() && letters.all { it in 'A'..'Z' || it in 'a'..'z' }
-            if (isAllEnglish) {
-                val uniqueLetters = letters.lowercase().toSet().size
-                if (uniqueLetters < 3) return@filter false
-            }
-
-            // احذف إذا طابق أي كلمة من قائمة المستخدم (مطابقة كاملة)
-            if (filteredWords.isNotEmpty()) {
-                val blockLower = blockText.lowercase()
-                if (filteredWords.any { word -> blockLower == word }) return@filter false
-            }
-
-            true
-        }.toMutableList()
-
         return translation
     }
 
@@ -337,6 +335,8 @@ class ChapterTranslator(
             if (!merged) i++
         }
 
+        // ... داخل دالة smartMergeBlocks ...
+
         val expandedBlocks = initialBlocks.map { block ->
             val cleanedText = block.text.replace("\n", " ").trim()
             val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
@@ -367,6 +367,8 @@ class ChapterTranslator(
                 y = newY.coerceIn(0f, imgHeight - newHeight.coerceAtMost(imgHeight)),
             )
         }.toMutableList()
+
+// ... يتبع كود حل التصادمات (Collisions) كما هو دون تغيير ...
 
         val iterations = 4
         for (step in 0 until iterations) {
