@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
+import java.io.InputStream
 import kotlinx.coroutines.flow.onStart
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
@@ -63,6 +64,15 @@ class TranslationManager(
     fun translateChapter(manga: Manga, chapters: Chapter) {
         translator.queueChapter(manga, chapters)
         startTranslation()
+    }
+
+    // للترجمة الفورية — تمرير الصفحات مباشرة من الكاش
+    fun queueChapterWithPages(
+        manga: Manga,
+        chapter: Chapter,
+        pageStreams: List<Pair<String, () -> InputStream>>,
+    ) {
+        translator.queueChapterWithPages(manga, chapter, pageStreams)
     }
 
     fun getChapterTranslationStatus(
