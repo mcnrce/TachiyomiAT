@@ -122,8 +122,29 @@ class WebtoonPageHolder(
     fun bind(page: ReaderPage) {
         this.page = page
         loadJob?.cancel()
-        loadJob = scope.launch { loadPageAndProcessStatus() }
+        loadJob = scope.launch {
+            loadPageAndProcessStatus()
+        }
         refreshLayoutParams()
+
+        // TachiyomiAT: استمع لتحديثات الترجمة الفورية عند ربط الصفحة
+        if (realtimeTranslation) {
+            scope.launch {
+                translationManager.queueState.collect { queue ->
+                    val translation = queue.find { it.chapter.id == page.chapter.chapter.id }
+                    if (translation != null) {
+                        translation.pageTranslatedFlow.collect { (fileName, pageTranslation) ->
+                            val pageFileName = page.imageUrl?.substringAfterLast("/")?.substringBefore("?")
+                                ?: "page_${page.index}.jpg"
+                            if (fileName == pageFileName && page.translation == null) {
+                                page.translation = pageTranslation
+                                withUIContext { addTranslationsView() }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private fun refreshLayoutParams() {
@@ -307,7 +328,8 @@ class WebtoonPageHolder(
         val stream = page.stream ?: return
         val manga = viewer.activity.viewModel.manga ?: return
         val domainChapter = page.chapter.chapter.toDomainChapter() ?: return
-        val fileName = "page_${page.index}.jpg"
+        val fileName = page.imageUrl?.substringAfterLast("/")?.substringBefore("?")
+            ?: "page_${page.index}.jpg"
         translationManager.queueChapterWithPages(manga, domainChapter, listOf(Pair(fileName, stream)))
     }
 
