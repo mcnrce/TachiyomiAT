@@ -281,7 +281,6 @@ class ChapterTranslator(
                     coroutineContext.ensureActive()
                     // تحقق من الصفحات الجديدة التي أضيفت أثناء الترجمة
                     val newStreams = translation.takePageStreams()
-                    // أضفها للمعالجة اللاحقة (سنعالجها في الدورة التالية)
                     if (newStreams.isNotEmpty()) translation.addPageStreams(newStreams)
 
                     streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
@@ -311,6 +310,11 @@ class ChapterTranslator(
             // ترجمة النصوص
             withContext(Dispatchers.IO) {
                 textTranslator.translate(pages)
+            }
+
+            // أصدر حدث لكل صفحة انتهت ترجمتها لتحديث الـ UI فوراً
+            pages.forEach { (fileName, pageTranslation) ->
+                translation.emitPageTranslated(fileName, pageTranslation)
             }
 
             // احفظ الملف — يشمل الصفحات القديمة + الجديدة معاً
