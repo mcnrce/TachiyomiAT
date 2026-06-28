@@ -6,15 +6,22 @@ import eu.kanade.tachiyomi.source.Source
 import eu.kanade.translation.data.TranslationProvider
 import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.model.Translation
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
-import java.io.InputStream
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.onStart
+import java.io.InputStream
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 import tachiyomi.core.common.util.lang.launchIO
@@ -32,12 +39,28 @@ class TranslationManager(
     private val translationPreferences: TranslationPreferences = Injekt.get(),
 ) {
     private val translator = ChapterTranslator(context, provider)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // Global flow — يُصدر (chapterId, fileName, PageTranslation) بعد كل صفحة تنتهي
+    private val _globalPageTranslatedFlow = MutableSharedFlow<Triple<Long, String, PageTranslation>>(extraBufferCapacity = 128)
+    val globalPageTranslatedFlow = _globalPageTranslatedFlow.asSharedFlow()
 
     val isRunning: Boolean
         get() = translator.isRunning
 
     val queueState
         get() = translator.queueState
+
+    init {
+        // استمع لكل Translation يدخل الـ queue وأعد إصدار أحداثه في الـ global flow
+        queueState.onEach { queue ->
+            queue.forEach { translation ->
+                translation.pageTranslatedFlow.onEach { (fileName, pageTranslation) ->
+                    _globalPageTranslatedFlow.emit(Triple(translation.chapter.id, fileName, pageTranslation))
+                }.launchIn(scope)
+            }
+        }.launchIn(scope)
+    }
 
     fun translatorStart() = translator.start()
     fun translatorStop(reason: String? = null) = translator.stop(reason)
@@ -103,6 +126,7 @@ class TranslationManager(
         val file = provider.findTranslationFile(chapterName, chapterScanlator, mangaTitle, source)
         return file?.exists() == true
     }
+
     fun getChapterTranslation(
         chapterName: String,
         scanlator: String?,
@@ -110,21 +134,13 @@ class TranslationManager(
         source: Source,
     ): Map<String, PageTranslation> {
         try {
-            val file = provider.findTranslationFile(
-                chapterName,
-                scanlator,
-                title,
-                source,
-            ) ?: return emptyMap()
+            val file = provider.findTranslationFile(chapterName, scanlator, title, source) ?: return emptyMap()
             return getChapterTranslation(file)
-        } catch (_: Exception) {
-        }
+        } catch (_: Exception) {}
         return emptyMap()
     }
 
-    fun getChapterTranslation(
-        file: UniFile,
-    ): Map<String, PageTranslation> {
+    fun getChapterTranslation(file: UniFile): Map<String, PageTranslation> {
         try {
             return Json.decodeFromStream<Map<String, PageTranslation>>(file.openInputStream())
         } catch (e: Exception) {
