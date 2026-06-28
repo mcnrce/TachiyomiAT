@@ -375,6 +375,33 @@ class ChapterTranslator(
             )
         }
         translation.blocks = smartMergeBlocks(translation.blocks, width.toFloat(), height.toFloat())
+
+        // قائمة الكلمات المفلترة من إعدادات المستخدم
+        val filteredWords = translationPreferences.translationFilteredWords().get()
+            .split(",")
+            .map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() }
+
+        translation.blocks = translation.blocks.filter { block ->
+            val blockText = block.text.trim()
+            val letters = blockText.filter { it.isLetter() }
+
+            // احذف إذا كانت جميع الأحرف إنجليزية وعدد الأحرف الفريدة أقل من 3
+            val isAllEnglish = letters.isNotEmpty() && letters.all { it in 'A'..'Z' || it in 'a'..'z' }
+            if (isAllEnglish) {
+                val uniqueLetters = letters.lowercase().toSet().size
+                if (uniqueLetters < 3) return@filter false
+            }
+
+            // احذف إذا طابق أي كلمة من قائمة المستخدم (مطابقة كاملة)
+            if (filteredWords.isNotEmpty()) {
+                val blockLower = blockText.lowercase()
+                if (filteredWords.any { word -> blockLower == word }) return@filter false
+            }
+
+            true
+        }.toMutableList()
+
         return translation
     }
 
