@@ -8,6 +8,7 @@ import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.translation.TranslationManager
+import tachiyomi.domain.translation.TranslationPreferences
 import mihon.core.archive.archiveReader
 import mihon.core.archive.epubReader
 import tachiyomi.core.common.i18n.stringResource
@@ -32,6 +33,7 @@ class ChapterLoader(
     private val manga: Manga,
     private val source: Source,
     private val translationManager: TranslationManager = Injekt.get(),
+    private val translationPreferences: TranslationPreferences = Injekt.get(),
 ) {
 
     /**
@@ -72,6 +74,7 @@ class ChapterLoader(
                         manga.title,
                         source,
                     )
+
                     if (existingTranslation.isNotEmpty()) {
                         // الترجمة مفهرسة باسم الملف — نرتبها أبجدياً (نفس ترتيب ChapterTranslator)
                         val sortedTranslations = existingTranslation.entries
@@ -81,6 +84,17 @@ class ChapterLoader(
                             if (page.translation == null) {
                                 page.translation = sortedTranslations.getOrNull(page.index)
                             }
+                        }
+                    }
+
+                    // إذا كان وضع الترجمة الفورية مفعلاً وعدد الصفحات المترجمة أقل من إجمالي الصفحات
+                    // نضع علامة على الصفحات غير المترجمة حتى يطلب الـ holder ترجمتها عند READY
+                    if (translationPreferences.realtimeTranslation().get()) {
+                        val translatedCount = existingTranslation.size
+                        if (translatedCount < pages.size) {
+                            // الصفحات التي لا تزال بدون ترجمة ستُعالج في triggerRealtimeTranslation
+                            // عندما تصبح READY في الـ holder — لا نحتاج شيئاً هنا
+                            // فقط نتأكد أن الصفحات المترجمة حُملت صحيحاً أعلاه
                         }
                     }
                 }
