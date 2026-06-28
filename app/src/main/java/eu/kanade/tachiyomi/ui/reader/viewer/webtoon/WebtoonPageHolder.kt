@@ -20,8 +20,6 @@ import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.util.system.dpToPx
 import eu.kanade.translation.data.TranslationFont
 import eu.kanade.translation.presentation.WebtoonTranslationsView
-import eu.kanade.translation.TranslationManager
-import eu.kanade.tachiyomi.data.database.models.toDomainChapter
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.flow.collectLatest
@@ -55,8 +53,6 @@ class WebtoonPageHolder(
     translationPreferences: TranslationPreferences = Injekt.get(),
     private val font: TranslationFont = TranslationFont.fromPref(translationPreferences.translationFont()),
     readerPreferences: ReaderPreferences = Injekt.get(),
-    private val translationManager: TranslationManager = Injekt.get(),
-    private val realtimeTranslation: Boolean = translationPreferences.realtimeTranslation().get(),
 ) : WebtoonBaseHolder(frame, viewer) {
 
     // TachiyomiAT
@@ -122,25 +118,19 @@ class WebtoonPageHolder(
     fun bind(page: ReaderPage) {
         this.page = page
         loadJob?.cancel()
-        loadJob = scope.launch {
-            loadPageAndProcessStatus()
-        }
+        loadJob = scope.launch { loadPageAndProcessStatus() }
         refreshLayoutParams()
 
-        // TachiyomiAT: استمع لتحديثات الترجمة الفورية عند ربط الصفحة
+        // TachiyomiAT: مراقبة مستمرة للترجمة الفورية عبر global flow
         if (realtimeTranslation) {
             scope.launch {
-                translationManager.queueState.collect { queue ->
-                    val translation = queue.find { it.chapter.id == page.chapter.chapter.id }
-                    if (translation != null) {
-                        translation.pageTranslatedFlow.collect { (fileName, pageTranslation) ->
-                            val pageFileName = page.imageUrl?.substringAfterLast("/")?.substringBefore("?")
-                                ?: "page_${page.index}.jpg"
-                            if (fileName == pageFileName && page.translation == null) {
-                                page.translation = pageTranslation
-                                withUIContext { addTranslationsView() }
-                            }
-                        }
+                val pageFileName = page.imageUrl?.substringAfterLast("/")?.substringBefore("?")
+                    ?: "page_${page.index}.jpg"
+                val chapterId = page.chapter.chapter.id
+                translationManager.globalPageTranslatedFlow.collect { (cId, fileName, pageTranslation) ->
+                    if (cId == chapterId && fileName == pageFileName && page.translation == null) {
+                        page.translation = pageTranslation
+                        withUIContext { addTranslationsView() }
                     }
                 }
             }
@@ -205,10 +195,6 @@ class WebtoonPageHolder(
                         setImage()
                         // TachiyomiAT
                         addTranslationsView()
-                        // TachiyomiAT: ترجمة فورية
-                        if (page.translation == null && realtimeTranslation) {
-                            triggerRealtimeTranslation(page)
-                        }
                     }
                     Page.State.ERROR -> setError()
                 }
@@ -321,16 +307,6 @@ class WebtoonPageHolder(
         removeErrorLayout()
         // TachiyomiAT
         translationsView?.show()
-    }
-
-    // TachiyomiAT: تشغيل الترجمة الفورية عندما تكون الصورة جاهزة
-    private fun triggerRealtimeTranslation(page: ReaderPage) {
-        val stream = page.stream ?: return
-        val manga = viewer.activity.viewModel.manga ?: return
-        val domainChapter = page.chapter.chapter.toDomainChapter() ?: return
-        val fileName = page.imageUrl?.substringAfterLast("/")?.substringBefore("?")
-            ?: "page_${page.index}.jpg"
-        translationManager.queueChapterWithPages(manga, domainChapter, listOf(Pair(fileName, stream)))
     }
 
     // TachiyomiAT
