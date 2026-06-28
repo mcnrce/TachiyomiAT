@@ -3,6 +3,7 @@ package eu.kanade.translation
 import android.content.Context
 import android.view.textservice.SentenceSuggestionsInfo
 import android.view.textservice.SpellCheckerSession
+import android.view.textservice.SuggestionsInfo
 import android.view.textservice.TextInfo
 import android.view.textservice.TextServicesManager
 import java.util.Locale
@@ -14,7 +15,7 @@ class AndroidTextCorrector(
     locale: Locale
 ) : SpellCheckerSession.SpellCheckerSessionListener {
 
-    private val textServicesManager = context.getSystemService(Context.TEXT_SERVICES_SERVICE) as TextServicesManager
+    private val textServicesManager = context.getSystemService(Context.TEXT_SERVICES_MANAGER_SERVICE) as TextServicesManager
     private var spellCheckerSession: SpellCheckerSession? = null
     
     private var latch: CountDownLatch? = null
@@ -34,7 +35,7 @@ class AndroidTextCorrector(
         
         // إذا كان النص عبارة عن كلمة واحدة تبدأ بحرف كبير، فغالباً هو اسم علم (تخطى الفحص)
         val trimmed = originalText.trim()
-        if (trimmed.contains(" ").not() && trimmed.firstOrNull()?.isUpperCase() == true) {
+        if (!trimmed.contains(" ") && trimmed.firstOrNull()?.isUpperCase() == true) {
             return originalText
         }
 
@@ -81,7 +82,7 @@ class AndroidTextCorrector(
             if (originalWord.isBlank()) continue
 
             // تحقق مما إذا كان المحرك يرى الكلمة كخطأ إملائي (Typo) وأن الاسم ليس علماً مبدوءاً بحرف كبير
-            val isTypo = (suggestionsInfo.suggestionsAttributes and SpellCheckerSession.SuggestionsInfo.RESULT_ATTR_LOOKS_LIKE_TYPO) != 0
+            val isTypo = (suggestionsInfo.suggestionsAttributes and SuggestionsInfo.RESULT_ATTR_LOOKS_LIKE_TYPO) != 0
             val isCapitalized = originalWord.firstOrNull()?.isUpperCase() == true
 
             if (isTypo && !isCapitalized && suggestionsInfo.suggestionsCount > 0) {
@@ -100,8 +101,8 @@ class AndroidTextCorrector(
         latch?.countDown()
     }
 
-    override fun onGetSuggestions(results: Array<out com.view.textservice.SuggestionsInfo>?) {
-        // تم الاستعاضة عنها بدالة فحص الجمل الكاملة أعلاه لأداء وسياق أفضل
+    override fun onGetSuggestions(results: Array<out SuggestionsInfo>?) {
+        // تم تنفيذها لأنها إجبارية في الـ Interface، لكن الاعتماد الفعلي على دالة الجمل أعلاه
     }
 
     fun close() {
