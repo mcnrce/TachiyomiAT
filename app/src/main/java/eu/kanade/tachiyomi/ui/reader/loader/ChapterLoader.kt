@@ -75,14 +75,10 @@ class ChapterLoader(
                     )
 
                     if (existingTranslation.isNotEmpty()) {
-                        // الترجمة مفهرسة باسم الملف — نرتبها أبجدياً (نفس ترتيب ChapterTranslator)
-                        val sortedTranslations = existingTranslation.entries
-                            .sortedBy { it.key }
-                            .map { it.value }
+                        // نطابق بـ index كمفتاح ثابت — نفس ما يستخدمه الـ holder
                         pages.forEach { page ->
-                            if (page.translation == null) {
-                                page.translation = sortedTranslations.getOrNull(page.index)
-                            }
+                            val key = String.format("%03d.jpg", page.index)
+                            page.translation = existingTranslation[key]
                         }
                     }
 
