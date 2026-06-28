@@ -128,8 +128,7 @@ class WebtoonPageHolder(
         // TachiyomiAT: مراقبة مستمرة للترجمة الفورية عبر global flow
         if (realtimeTranslation) {
             scope.launch {
-                val pageFileName = page.imageUrl?.substringAfterLast("/")?.substringBefore("?")
-                    ?: "page_${page.index}.jpg"
+                val pageFileName = String.format("%03d.jpg", page.index)
                 val chapterId = page.chapter.chapter.id
                 translationManager.globalPageTranslatedFlow.collect { event ->
                     if (event.first == chapterId && event.second == pageFileName && page.translation == null) {
@@ -322,8 +321,7 @@ class WebtoonPageHolder(
         val stream = page.stream ?: return
         val manga = viewer.activity.viewModel.manga ?: return
         val domainChapter = page.chapter.chapter.toDomainChapter() ?: return
-        val fileName = page.imageUrl?.substringAfterLast("/")?.substringBefore("?")
-            ?: "page_${page.index}.jpg"
+        val fileName = String.format("%03d.jpg", page.index)
         translationManager.queueChapterWithPages(manga, domainChapter, listOf(Pair(fileName, stream)))
     }
 
