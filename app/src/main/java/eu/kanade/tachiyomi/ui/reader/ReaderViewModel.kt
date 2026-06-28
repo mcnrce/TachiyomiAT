@@ -73,6 +73,7 @@ import tachiyomi.domain.manga.interactor.GetManga
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.service.SourceManager
 import tachiyomi.source.local.isLocal
+import eu.kanade.translation.TranslationManager
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.time.Instant
@@ -99,6 +100,7 @@ class ReaderViewModel @JvmOverloads constructor(
     private val upsertHistory: UpsertHistory = Injekt.get(),
     private val updateChapter: UpdateChapter = Injekt.get(),
     private val setMangaViewerFlags: SetMangaViewerFlags = Injekt.get(),
+    private val translationManager: TranslationManager = Injekt.get(),
 ) : ViewModel() {
 
     private val mutableState = MutableStateFlow(State())
@@ -313,6 +315,12 @@ class ReaderViewModel @JvmOverloads constructor(
 
         withUIContext {
             mutableState.update {
+                // TachiyomiAT: أزل ترجمة الفصل السابق من الـ queue عند الانتقال لفصل جديد
+                it.viewerChapters?.currChapter?.chapter?.let { prevChapter ->
+                    translationManager.getQueuedTranslationOrNull(prevChapter.id!!)
+                        ?.let { t -> translationManager.cancelQueuedTranslation(t) }
+                }
+
                 // Add new references first to avoid unnecessary recycling
                 newChapters.ref()
                 it.viewerChapters?.unref()
