@@ -192,6 +192,8 @@ class ChapterTranslator(
     }
 
     private suspend fun translateChapter(translation: Translation) {
+        // تهيئة كائن المصحح التلقائي كمتغير فارغ في البداية لتسهيل الإغلاق في كتلة catch/finally
+        var corrector: AndroidTextCorrector? = null
         try {
             if (translation.fromLang != textRecognizer.language) {
                 textRecognizer.close()
@@ -217,9 +219,9 @@ class ChapterTranslator(
             val tmpFile = translationMangaDir.createFile("tmp")!!
             val streams = getChapterPages(chapterPath)
 
-            // تهيئة مصحح النصوص الافتراضي بناءً على لغة المصدر المكتشفة
+            // تهيئة مصحح النصوص التلقائي الافتراضي بناءً على لغة الفصل المصدر المتواجدة بالـ Translation
             val locale = Locale(translation.fromLang.code)
-            val corrector = AndroidTextCorrector(context, locale)
+            corrector = AndroidTextCorrector(context, locale)
 
             withContext(Dispatchers.IO) {
                 for ((fileName, streamFn) in streams) {
@@ -234,9 +236,12 @@ class ChapterTranslator(
                     val enhancedHeight = image.height * TextRecognizer.SCALE_FACTOR
                     val pageTranslation = convertToPageTranslation(blocks, enhancedWidth, enhancedHeight)
 
-                    // 🌟 مرحلة التدخل والتصحيح للتوقعات المستخرجة من الـ OCR قبل الترجمة
+                    // 🌟 مرحلة التدخل والتصحيح للتوقعات المستخرجة من الـ OCR قبل إرسالها للترجمة
                     for (block in pageTranslation.blocks) {
-                        block.text = corrector.correctText(block.text)
+                        val originalText = block.text
+                        val correctedText = corrector.correctText(originalText)
+                        // حماية إجبارية: إذا أرجع المصحح نصاً فارغاً نتيجة عطل أو تخطي، نحتفظ بالنص الأصلي
+                        block.text = if (correctedText.isNotBlank()) correctedText else originalText
                     }
 
                     for (block in pageTranslation.blocks) {
@@ -252,7 +257,10 @@ class ChapterTranslator(
                 }
             }
             tmpFile.delete()
-            corrector.close() // إغلاق جلسة المصحح لتحرير الموارد
+            
+            // إغلاق جلسة المصحح فور الانتهاء من معالجة نصوص جميع صفحات الفصل لتحرير موارد النظام
+            corrector.close()
+            corrector = null
 
             withContext(Dispatchers.IO) {
                 textTranslator.translate(pages)
@@ -262,6 +270,9 @@ class ChapterTranslator(
         } catch (error: Throwable) {
             translation.status = Translation.State.ERROR
             logcat(LogPriority.ERROR, error)
+        } finally {
+            // ضمان إغلاق جلسة الخيط المستقل للمصحح حتى في حالة حدوث استثناء مفاجئ (Crash) للغرفة
+            corrector?.close()
         }
     }
 
