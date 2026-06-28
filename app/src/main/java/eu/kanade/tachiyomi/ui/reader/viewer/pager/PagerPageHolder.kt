@@ -103,7 +103,13 @@ class PagerPageHolder(
                 translationManager.globalPageTranslatedFlow.collect { event ->
                     if (event.first == chapterId && event.second == pageFileName && page.translation == null) {
                         page.translation = event.third
-                        withUIContext { addTranslationsView() }
+                        withUIContext {
+                            addTranslationsView()
+                            // تحديث إحداثيات الفقاعات فوراً بعد الإضافة
+                            (pageView as? SubsamplingScaleImageView)?.let {
+                                updateTranslationCoords(it)
+                            }
+                        }
                     }
                 }
             }
