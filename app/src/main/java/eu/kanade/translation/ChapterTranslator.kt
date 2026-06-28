@@ -22,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -263,7 +264,7 @@ class ChapterTranslator(
             var emptyCycles = 0
 
             while (true) {
-                coroutineContext.ensureActive()
+                currentCoroutineContext().ensureActive()
 
                 // اقرأ الصفحات المنتظرة
                 val streamsSnapshot = translation.takePageStreams()
