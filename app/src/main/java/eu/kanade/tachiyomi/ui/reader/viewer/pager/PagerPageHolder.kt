@@ -18,7 +18,6 @@ import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
 import eu.kanade.translation.data.TranslationFont
 import eu.kanade.translation.presentation.PagerTranslationsView
-import eu.kanade.translation.TranslationManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.flow.collectLatest
@@ -32,7 +31,6 @@ import okio.BufferedSource
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.lang.withUIContext
-import eu.kanade.tachiyomi.data.database.models.toDomainChapter
 import tachiyomi.core.common.util.system.ImageUtil
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.domain.translation.TranslationPreferences
@@ -51,8 +49,6 @@ class PagerPageHolder(
     translationPreferences: TranslationPreferences = Injekt.get(),
     private val font: TranslationFont = TranslationFont.fromPref(translationPreferences.translationFont()),
     readerPreferences: ReaderPreferences = Injekt.get(),
-    private val translationManager: TranslationManager = Injekt.get(),
-    private val realtimeTranslation: Boolean = translationPreferences.realtimeTranslation().get(),
 ) : ReaderPageImageView(readerThemedContext), ViewPagerAdapter.PositionableView {
 
     // TachiyomiAT
@@ -94,6 +90,21 @@ class PagerPageHolder(
                 translationsView?.hide()
             }
         }.launchIn(scope)
+
+        // TachiyomiAT: مراقبة مستمرة للترجمة الفورية عبر global flow
+        if (realtimeTranslation) {
+            scope.launch {
+                val pageFileName = page.imageUrl?.substringAfterLast("/")?.substringBefore("?")
+                    ?: "page_${page.index}.jpg"
+                val chapterId = page.chapter.chapter.id
+                translationManager.globalPageTranslatedFlow.collect { (cId, fileName, pageTranslation) ->
+                    if (cId == chapterId && fileName == pageFileName && page.translation == null) {
+                        page.translation = pageTranslation
+                        withUIContext { addTranslationsView() }
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -141,10 +152,6 @@ class PagerPageHolder(
                         setImage()
                         // TachiyomiAT
                         addTranslationsView()
-                        // TachiyomiAT: ترجمة فورية — إذا لم تكن الصفحة مترجمة والوضع الفوري مفعّل
-                        if (page.translation == null && realtimeTranslation) {
-                            triggerRealtimeTranslation()
-                        }
                     }
                     Page.State.ERROR -> setError()
                 }
@@ -323,17 +330,6 @@ class PagerPageHolder(
     override fun onCenterChanged(newCenter: PointF?) {
         super.onCenterChanged(newCenter)
         updateTranslationCoords(pageView as SubsamplingScaleImageView)
-    }
-
-    // TachiyomiAT: تشغيل الترجمة الفورية عندما تكون الصورة جاهزة
-    private fun triggerRealtimeTranslation() {
-        val stream = page.stream ?: return
-        val manga = viewer.activity.viewModel.manga ?: return
-        val domainChapter = page.chapter.chapter.toDomainChapter() ?: return
-        // استخدم imageUrl كمفتاح — فريد لكل صفحة ومتسق عبر الجلسات
-        val fileName = page.imageUrl?.substringAfterLast("/")?.substringBefore("?")
-            ?: "page_${page.index}.jpg"
-        translationManager.queueChapterWithPages(manga, domainChapter, listOf(Pair(fileName, stream)))
     }
 
     // TachiyomiAT
