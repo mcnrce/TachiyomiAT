@@ -1,6 +1,7 @@
 package eu.kanade.translation
 
 import android.content.Context
+import android.graphics.Bitmap
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.hippo.unifile.UniFile
@@ -205,12 +206,15 @@ class ChapterTranslator(
             }
             val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
             val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
+            
+            // تم تعديلها هنا لتستقبل 4 متغيرات فقط لتطابق الـ المقنع القديم تماماً 
             val chapterPath = downloadProvider.findChapterDir(
                 translation.chapter.name,
                 translation.chapter.scanlator,
                 translation.manga.title,
                 translation.source,
             )!!
+
             val pages = mutableMapOf<String, PageTranslation>()
             val tmpFile = translationMangaDir.createFile("tmp")!!
             val streams = getChapterPages(chapterPath)
@@ -221,13 +225,128 @@ class ChapterTranslator(
                     streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
                     val image = InputImage.fromFilePath(context, tmpFile.uri)
 
-                    val result = textRecognizer.recognize(image)
-                    val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
+                    val enhancedBitmap = textRecognizer.getEnhancedBitmap(image)
 
-                    val enhancedWidth = image.width * TextRecognizer.SCALE_FACTOR
-                    val enhancedHeight = image.height * TextRecognizer.SCALE_FACTOR
-                    val pageTranslation = convertToPageTranslation(blocks, enhancedWidth, enhancedHeight)
+                    // ═══════════════════════════════════════════════════════
+                    // المرحلة 1: OCR أولي عبر شبكة قطاعات 3×3 لمعاينة الصفحة كاملة بدقة
+                    // ═══════════════════════════════════════════════════════
+                    val initialBlocks = mutableListOf<TranslationBlock>()
+                    val cols = 3
+                    val rows = 3
+                    val tileW = enhancedBitmap.width / cols
+                    val tileH = enhancedBitmap.height / rows
 
+                    for (r in 0 until rows) {
+                        for (c in 0 until cols) {
+                            val tile = Bitmap.createBitmap(
+                                enhancedBitmap,
+                                c * tileW,
+                                r * tileH,
+                                tileW,
+                                tileH
+                            )
+                            val tileResult = textRecognizer.recognize(InputImage.fromBitmap(tile, 0))
+                            tileResult.textBlocks.forEach { block ->
+                                val bounds = block.boundingBox!!
+                                val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()?.symbols?.firstOrNull()?.boundingBox
+                                initialBlocks.add(
+                                    TranslationBlock(
+                                        text = block.text,
+                                        width = bounds.width().toFloat(),
+                                        height = bounds.height().toFloat(),
+                                        symWidth = symBounds?.width()?.toFloat() ?: 12f,
+                                        symHeight = symBounds?.height()?.toFloat() ?: 12f,
+                                        angle = block.lines.firstOrNull()?.angle ?: 0f,
+                                        x = bounds.left.toFloat() + (c * tileW),
+                                        y = bounds.top.toFloat() + (r * tileH),
+                                    )
+                                )
+                            }
+                            tile.recycle()
+                        }
+                    }
+
+                    // ═══════════════════════════════════════════════════════
+                    // المرحلة 2: الدمج الأولي لتحديد فقاعات النصوص التقريبية
+                    // ═══════════════════════════════════════════════════════
+                    val roughBubbles = smartMergeBlocks(initialBlocks, enhancedBitmap.width.toFloat(), enhancedBitmap.height.toFloat())
+
+                    // ═══════════════════════════════════════════════════════
+                    // المرحلة 3: OCR مخصص ومستقل داخل نطاق كل فقاعة تم كشفها + حواف الأمان
+                    // ═══════════════════════════════════════════════════════
+                    val refinedBlocks = mutableListOf<TranslationBlock>()
+                    val pad = 15
+
+                    for (bubble in roughBubbles) {
+                        val cropX = (bubble.x.toInt() - pad).coerceIn(0, enhancedBitmap.width - 1)
+                        val cropY = (bubble.y.toInt() - pad).coerceIn(0, enhancedBitmap.height - 1)
+                        val cropW = (bubble.width.toInt() + pad * 2).coerceAtMost(enhancedBitmap.width - cropX)
+                        val cropH = (bubble.height.toInt() + pad * 2).coerceAtMost(enhancedBitmap.height - cropY)
+
+                        if (cropW <= 0 || cropH <= 0) continue
+
+                        val croppedBitmap = Bitmap.createBitmap(enhancedBitmap, cropX, cropY, cropW, cropH)
+                        val secondResult = textRecognizer.recognize(InputImage.fromBitmap(croppedBitmap, 0))
+
+                        secondResult.textBlocks.forEach { block ->
+                            val bounds = block.boundingBox!!
+                            val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()?.symbols?.firstOrNull()?.boundingBox
+                            refinedBlocks.add(
+                                TranslationBlock(
+                                    text = block.text,
+                                    width = bounds.width().toFloat(),
+                                    height = bounds.height().toFloat(),
+                                    symWidth = symBounds?.width()?.toFloat() ?: 12f,
+                                    symHeight = symBounds?.height()?.toFloat() ?: 12f,
+                                    angle = block.lines.firstOrNull()?.angle ?: 0f,
+                                    x = bounds.left.toFloat() + cropX,
+                                    y = bounds.top.toFloat() + cropY,
+                                )
+                            )
+                        }
+                        croppedBitmap.recycle()
+                    }
+
+                    // ═══════════════════════════════════════════════════════
+                    // المرحلة 4: تهيئة الصفحة والدمج النهائي وحل التصادمات والتصغير
+                    // ═══════════════════════════════════════════════════════
+                    val pageTranslation = PageTranslation(
+                        imgWidth = enhancedBitmap.width.toFloat(),
+                        imgHeight = enhancedBitmap.height.toFloat()
+                    ).apply {
+                        if (refinedBlocks.isNotEmpty()) {
+                            blocks.addAll(refinedBlocks)
+                        }
+                    }
+
+                    // تجميع ودمج الكتل والفقاعات النهائية ذكياً
+                    pageTranslation.blocks = smartMergeBlocks(pageTranslation.blocks, enhancedBitmap.width.toFloat(), enhancedBitmap.height.toFloat())
+
+                    // فلترة الكلمات والرموز والتحقق من جودة النصوص الإنجليزية (كما في ملفك المرفق)
+                    val filteredWords = translationPreferences.translationFilteredWords().get()
+                        .split(",")
+                        .map { it.trim().lowercase() }
+                        .filter { it.isNotEmpty() }
+
+                    pageTranslation.blocks = pageTranslation.blocks.filter { block ->
+                        val blockText = block.text.trim()
+                        val letters = blockText.filter { it.isLetter() }
+
+                        val isAllEnglish = letters.isNotEmpty() && letters.all { it in 'A'..'Z' || it in 'a'..'z' }
+                        if (isAllEnglish) {
+                            val uniqueLetters = letters.lowercase().toSet().size
+                            if (uniqueLetters < 3) return@filter false
+                        }
+
+                        if (filteredWords.isNotEmpty()) {
+                            val blockLower = blockText.lowercase()
+                            if (filteredWords.any { word -> blockLower == word }) return@filter false
+                        }
+
+                        true
+                    }.toMutableList()
+
+                    // تصغير كافة الإحداثيات والصناديق لكي تتطابق بدقة هندسية مع أبعاد الشاشة الأصلية
                     for (block in pageTranslation.blocks) {
                         block.x /= TextRecognizer.SCALE_FACTOR
                         block.y /= TextRecognizer.SCALE_FACTOR
@@ -238,6 +357,7 @@ class ChapterTranslator(
                     pageTranslation.imgHeight /= TextRecognizer.SCALE_FACTOR
 
                     if (pageTranslation.blocks.isNotEmpty()) pages[fileName] = pageTranslation
+                    enhancedBitmap.recycle()
                 }
             }
             tmpFile.delete()
@@ -271,30 +391,6 @@ class ChapterTranslator(
             )
         }
         translation.blocks = smartMergeBlocks(translation.blocks, width.toFloat(), height.toFloat())
-
-        val filteredWords = translationPreferences.translationFilteredWords().get()
-            .split(",")
-            .map { it.trim().lowercase() }
-            .filter { it.isNotEmpty() }
-
-        translation.blocks = translation.blocks.filter { block ->
-            val blockText = block.text.trim()
-            val letters = blockText.filter { it.isLetter() }
-
-            val isAllEnglish = letters.isNotEmpty() && letters.all { it in 'A'..'Z' || it in 'a'..'z' }
-            if (isAllEnglish) {
-                val uniqueLetters = letters.lowercase().toSet().size
-                if (uniqueLetters < 3) return@filter false
-            }
-
-            if (filteredWords.isNotEmpty()) {
-                val blockLower = blockText.lowercase()
-                if (filteredWords.any { word -> blockLower == word }) return@filter false
-            }
-
-            true
-        }.toMutableList()
-
         return translation
     }
 
@@ -330,10 +426,10 @@ class ChapterTranslator(
             if (!merged) i++
         }
 
+        // التوسيع المتطابق والمحسن لنسب النص والترجمة
         val expandedBlocks = initialBlocks.map { block ->
             val cleanedText = block.text.replace("\n", " ").trim()
-            val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
-
+            val cleanedTranslation = block.translation.replace("\n", " ").trim()
             val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
                 .coerceIn(1.0f, 1.25f)
             val finalScale = kotlin.math.sqrt(textRatio.toDouble()).toFloat()
@@ -341,12 +437,12 @@ class ChapterTranslator(
             var newWidth = block.width * finalScale
             var newHeight = block.height * finalScale
 
+            // إضافة التوسيع العمودي الافتراضي 1.3f ليتطابق مع سلوك ملفك القديم تماماً
             val verticalBonus = 1.3f
             newHeight *= verticalBonus
 
             val newX = block.x - (newWidth - block.width) / 2f
             val newY = block.y - (newHeight - block.height) / 2f
-
             block.copy(
                 text = cleanedText,
                 translation = cleanedTranslation,
@@ -357,6 +453,7 @@ class ChapterTranslator(
             )
         }.toMutableList()
 
+        // خوارزمية حل تصادم الكتل (8 اتجاهات)
         val iterations = 4
         for (step in 0 until iterations) {
             var collisionsResolved = 0
