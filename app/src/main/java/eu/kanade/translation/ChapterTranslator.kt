@@ -175,74 +175,83 @@ class ChapterTranslator(
     }
 
     private suspend fun translateChapter(translation: Translation) {
-        try {
-            if (translation.fromLang != textRecognizer.language) {
-                textRecognizer.close()
-                textRecognizer = TextRecognizer(translation.fromLang)
-            }
-            if (translation.fromLang != textTranslator.fromLang || translation.toLang != textTranslator.toLang) {
-                withContext(Dispatchers.IO) { textTranslator.close() }
-                textTranslator = TextTranslators.fromPref(translationPreferences.translationEngine())
-                    .build(translationPreferences, translation.fromLang, translation.toLang)
-            }
-            val mangaDir = provider.getMangaDir(translation.manga.title, translation.source)
-            val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
-            val path = downloadProvider.findChapterDir(
-                translation.chapter.name,
-                translation.chapter.scanlator,
-                translation.manga.title,
-                translation.source,
-            )!!
-
-            val pages = mutableMapOf<String, PageTranslation>()
-            val tmp = mangaDir.createFile("tmp")!!
-            val streams = getChapterPages(path)
-
-            withContext(Dispatchers.IO) {
-                for ((name, streamFn) in streams) {
-                    coroutineContext.ensureActive()
-                    streamFn().use { tmp.openOutputStream().use { out -> it.copyTo(out) } }
-                    val img = InputImage.fromFilePath(context, tmp.uri)
-                    val bitmap = textRecognizer.getEnhancedBitmap(img)
-                    val result = textRecognizer.recognize(img)
-                    val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
-                    val pt = convertToPageTranslation(blocks, bitmap.width, bitmap.height)
-
-                    for (block in pt.blocks) {
-                        try {
-                            val cx = block.x.toInt().coerceIn(0, bitmap.width - 1)
-                            val cy = block.y.toInt().coerceIn(0, bitmap.height - 1)
-                            val cw = block.width.toInt().coerceAtMost(bitmap.width - cx).coerceAtLeast(1)
-                            val ch = block.height.toInt().coerceAtMost(bitmap.height - cy).coerceAtLeast(1)
-                            val cropped = Bitmap.createBitmap(bitmap, cx, cy, cw, ch)
-                            val res2 = textRecognizer.recognize(InputImage.fromBitmap(cropped, 0))
-                            if (res2.textBlocks.isNotEmpty()) {
-                                val txt = res2.textBlocks.joinToString(" ") { it.text.trim() }
-                                if (txt.length > block.text.length) block.text = txt
-                            }
-                            cropped.recycle()
-                        } catch (e: Exception) { logcat(LogPriority.WARN, e) { "Failed second OCR" } }
-                    }
-                    pt.blocks.forEach { b ->
-                        b.x /= TextRecognizer.SCALE_FACTOR
-                        b.y /= TextRecognizer.SCALE_FACTOR
-                        b.width /= TextRecognizer.SCALE_FACTOR
-                        b.height /= TextRecognizer.SCALE_FACTOR
-                    }
-                    pt.imgWidth /= TextRecognizer.SCALE_FACTOR
-                    pt.imgHeight /= TextRecognizer.SCALE_FACTOR
-                    if (pt.blocks.isNotEmpty()) pages[name] = pt
-                    bitmap.recycle()
-                }
-            }
-            tmp.delete()
-            withContext(Dispatchers.IO) { textTranslator.translate(pages) }
-            Json.encodeToStream(pages, mangaDir.createFile(saveFile)!!.openOutputStream())
-            translation.status = Translation.State.TRANSLATED
-        } catch (e: Throwable) {
-            translation.status = Translation.State.ERROR
-            logcat(LogPriority.ERROR, e)
+    try {
+        if (translation.fromLang != textRecognizer.language) {
+            textRecognizer.close()
+            textRecognizer = TextRecognizer(translation.fromLang)
         }
+        if (translation.fromLang != textTranslator.fromLang || translation.toLang != textTranslator.toLang) {
+            withContext(Dispatchers.IO) { textTranslator.close() }
+            textTranslator = TextTranslators.fromPref(translationPreferences.translationEngine())
+                .build(translationPreferences, translation.fromLang, translation.toLang)
+        }
+        val mangaDir = provider.getMangaDir(translation.manga.title, translation.source)
+        val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
+        val path = downloadProvider.findChapterDir(
+            translation.chapter.name,
+            translation.chapter.scanlator,
+            translation.chapter.url,
+            translation.manga.title,
+            translation.source,
+        )!!
+
+        val pages = mutableMapOf<String, PageTranslation>()
+        val tmp = mangaDir.createFile("tmp")!!
+        val streams = getChapterPages(path)
+
+        withContext(Dispatchers.IO) {
+            for ((name, streamFn) in streams) {
+                coroutineContext.ensureActive()
+                streamFn().use { tmp.openOutputStream().use { out -> it.copyTo(out) } }
+                val img = InputImage.fromFilePath(context, tmp.uri)
+                
+                // ✅ الحل: استخدام getEnhancedBitmap مباشرة
+                val bitmap = textRecognizer.getEnhancedBitmap(img)
+                val result = textRecognizer.recognize(img)
+                val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
+                val pt = convertToPageTranslation(blocks, bitmap.width, bitmap.height)
+
+                // OCR ثانوي على كل كتلة
+                for (block in pt.blocks) {
+                    try {
+                        val cx = block.x.toInt().coerceIn(0, bitmap.width - 1)
+                        val cy = block.y.toInt().coerceIn(0, bitmap.height - 1)
+                        val cw = block.width.toInt().coerceAtMost(bitmap.width - cx).coerceAtLeast(1)
+                        val ch = block.height.toInt().coerceAtMost(bitmap.height - cy).coerceAtLeast(1)
+                        val cropped = Bitmap.createBitmap(bitmap, cx, cy, cw, ch)
+                        val res2 = textRecognizer.recognize(InputImage.fromBitmap(cropped, 0))
+                        if (res2.textBlocks.isNotEmpty()) {
+                            val txt = res2.textBlocks.joinToString(" ") { it.text.trim() }
+                            if (txt.length > block.text.length) block.text = txt
+                        }
+                        cropped.recycle()
+                    } catch (e: Exception) { 
+                        logcat(LogPriority.WARN, e) { "Failed second OCR" } 
+                    }
+                }
+                
+                // تطبيق Scale Factor
+                pt.blocks.forEach { b ->
+                    b.x /= TextRecognizer.SCALE_FACTOR
+                    b.y /= TextRecognizer.SCALE_FACTOR
+                    b.width /= TextRecognizer.SCALE_FACTOR
+                    b.height /= TextRecognizer.SCALE_FACTOR
+                }
+                pt.imgWidth /= TextRecognizer.SCALE_FACTOR
+                pt.imgHeight /= TextRecognizer.SCALE_FACTOR
+                
+                if (pt.blocks.isNotEmpty()) pages[name] = pt
+                bitmap.recycle()
+            }
+        }
+        tmp.delete()
+        withContext(Dispatchers.IO) { textTranslator.translate(pages) }
+        Json.encodeToStream(pages, mangaDir.createFile(saveFile)!!.openOutputStream())
+        translation.status = Translation.State.TRANSLATED
+    } catch (e: Throwable) {
+        translation.status = Translation.State.ERROR
+        logcat(LogPriority.ERROR, e)
+    }
     }
 
     private fun convertToPageTranslation(blocks: List<Text.TextBlock>, w: Int, h: Int): PageTranslation {
