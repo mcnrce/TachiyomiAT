@@ -222,16 +222,13 @@ class ChapterTranslator(
                     streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
                     val image = InputImage.fromFilePath(context, tmpFile.uri)
 
-                    // الفحص الأساسي مع الشحذ والتكبير التلقائي داخل الكلاس المعني
                     val result = textRecognizer.recognize(image)
                     val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
 
-                    // الحسابات تتم بناءً على إحداثيات الكتل المستخرجة من الصورة المكبرة (2x) لتتوافق مع هندسة الدمج
                     val enhancedWidth = image.width * TextRecognizer.SCALE_FACTOR
                     val enhancedHeight = image.height * TextRecognizer.SCALE_FACTOR
                     val pageTranslation = convertToPageTranslation(blocks, enhancedWidth, enhancedHeight)
 
-                    // إرجاع الإحداثيات إلى أبعاد الصفحة الأصلية (1x) لكي تتطابق مع الصورة الأصلية المعروضة للمستخدم
                     for (block in pageTranslation.blocks) {
                         block.x /= TextRecognizer.SCALE_FACTOR
                         block.y /= TextRecognizer.SCALE_FACTOR
@@ -240,6 +237,9 @@ class ChapterTranslator(
                     }
                     pageTranslation.imgWidth /= TextRecognizer.SCALE_FACTOR
                     pageTranslation.imgHeight /= TextRecognizer.SCALE_FACTOR
+
+                    // تعيين المحرك المستخدم كـ ML Kit فقط
+                    pageTranslation.engineUsed = "mlkit"
 
                     if (pageTranslation.blocks.isNotEmpty()) pages[fileName] = pageTranslation
                 }
@@ -260,7 +260,10 @@ class ChapterTranslator(
         val translation = PageTranslation(imgWidth = width.toFloat(), imgHeight = height.toFloat())
         for (block in blocks) {
             val bounds = block.boundingBox!!
-            val symBounds = block.lines.first().elements.first().symbols.first().boundingBox!!
+            val firstLine = block.lines.firstOrNull()
+            val firstElement = firstLine?.elements?.firstOrNull()
+            val symBounds = firstElement?.symbols?.firstOrNull()?.boundingBox ?: bounds
+            
             translation.blocks.add(
                 TranslationBlock(
                     text = block.text,
@@ -268,7 +271,7 @@ class ChapterTranslator(
                     height = bounds.height().toFloat(),
                     symWidth = symBounds.width().toFloat(),
                     symHeight = symBounds.height().toFloat(),
-                    angle = block.lines.first().angle,
+                    angle = firstLine?.angle ?: 0f,
                     x = bounds.left.toFloat(),
                     y = bounds.top.toFloat(),
                 ),
@@ -276,7 +279,6 @@ class ChapterTranslator(
         }
         translation.blocks = smartMergeBlocks(translation.blocks, width.toFloat(), height.toFloat())
 
-        // قائمة الكلمات المفلترة من إعدادات المستخدم
         val filteredWords = translationPreferences.translationFilteredWords().get()
             .split(",")
             .map { it.trim().lowercase() }
@@ -286,14 +288,12 @@ class ChapterTranslator(
             val blockText = block.text.trim()
             val letters = blockText.filter { it.isLetter() }
 
-            // احذف إذا كانت جميع الأحرف إنجليزية وعدد الأحرف الفريدة أقل من 3
             val isAllEnglish = letters.isNotEmpty() && letters.all { it in 'A'..'Z' || it in 'a'..'z' }
             if (isAllEnglish) {
                 val uniqueLetters = letters.lowercase().toSet().size
                 if (uniqueLetters < 3) return@filter false
             }
 
-            // احذف إذا طابق أي كلمة من قائمة المستخدم (مطابقة كاملة)
             if (filteredWords.isNotEmpty()) {
                 val blockLower = blockText.lowercase()
                 if (filteredWords.any { word -> blockLower == word }) return@filter false
@@ -341,20 +341,16 @@ class ChapterTranslator(
             val cleanedText = block.text.replace("\n", " ").trim()
             val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
 
-            // 1. حساب معامل التكبير الأساسي بناءً على طول النص المترجم مقارنة بالأصل
             val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
                 .coerceIn(1.0f, 1.25f)
             val finalScale = kotlin.math.sqrt(textRatio.toDouble()).toFloat()
 
-            // 2. التكبير المبدئي المتناسق للعرض والارتفاع
             var newWidth = block.width * finalScale
             var newHeight = block.height * finalScale
 
-            // 3. التوسيع العمودي الإجباري والنهائي بنسبة 1.15 لجميع النصوص الأفقية المترجمة
             val verticalBonus = 1.3f
             newHeight *= verticalBonus
 
-            // 4. إعادة حساب المركز (Center) لكي تتوسع الكتلة عمودياً وأفقياً بالتساوي من كل الجهات
             val newX = block.x - (newWidth - block.width) / 2f
             val newY = block.y - (newHeight - block.height) / 2f
 
