@@ -1,125 +1,235 @@
 package eu.kanade.translation
 
 import android.content.Context
-import android.view.textservice.SentenceSuggestionsInfo
-import android.view.textservice.SpellCheckerSession
-import android.view.textservice.SpellCheckerSession.SpellCheckerSessionListener
-import android.view.textservice.SuggestionsInfo
-import android.view.textservice.TextInfo
-import android.view.textservice.TextServicesManager
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeoutOrNull
+import logcat.LogPriority
+import tachiyomi.core.common.util.system.logcat
 import java.util.Locale
-import kotlin.coroutines.resume
 
+/**
+ * مصحح نصوص OCR يعتمد على خوارزمية SymSpell المضمنة محلياً.
+ * لا يحتاج إنترنت أو إعدادات النظام أو لوحة مفاتيح معينة.
+ * القاموس: app/src/main/assets/symspell/en.txt
+ */
 class AndroidTextCorrector(private val context: Context) {
 
-    private val tsm = context.getSystemService(Context.TEXT_SERVICES_MANAGER_SERVICE)
-        as TextServicesManager
+    // القاموس: كلمة → تكرارها في النصوص الإنجليزية
+    private val dictionary = mutableMapOf<String, Long>()
 
-    // Session مفتوحة دائماً لكل locale
-    private val sessions = mutableMapOf<Locale, SpellCheckerSession?>()
+    // أقصى مسافة تحريف نقبلها (1 = أسرع وأدق لأخطاء OCR)
+    private val maxEditDistance = 2
 
-    fun getOrCreateSession(locale: Locale): SpellCheckerSession? {
-        return sessions.getOrPut(locale) {
-            tsm.newSpellCheckerSession(null, locale, DummyListener, true)
+    // أقل تكرار للكلمة لكي نقبلها كتصحيح (يمنع الكلمات النادرة الغريبة)
+    private val minFrequency = 1L
+
+    // هل تم تحميل القاموس
+    @Volatile
+    private var isLoaded = false
+
+    init {
+        loadDictionary()
+    }
+
+    // ── تحميل القاموس ────────────────────────────────────────────────────────
+
+    private fun loadDictionary() {
+        try {
+            context.assets.open("symspell/en.txt").bufferedReader().use { reader ->
+                reader.lineSequence().forEach { line ->
+                    val parts = line.trim().split(" ", "\t")
+                    if (parts.size >= 2) {
+                        val word = parts[0].lowercase()
+                        val freq = parts[1].toLongOrNull() ?: return@forEach
+                        if (freq >= minFrequency) {
+                            dictionary[word] = freq
+                        }
+                    }
+                }
+            }
+            isLoaded = true
+            logcat(LogPriority.DEBUG) { "SymSpell dictionary loaded: ${dictionary.size} words" }
+        } catch (e: Exception) {
+            logcat(LogPriority.ERROR) { "SymSpell dictionary load failed: ${e.message}" }
         }
     }
 
+    // ── الواجهة الرئيسية ──────────────────────────────────────────────────────
+
     /**
-     * يصحح نص block كامل دفعة واحدة.
-     * يستخدم getSentenceSuggestions لأنها تعطي offset لكل كلمة داخل النص.
+     * يصحح نص block كامل كلمة كلمة.
+     * - كلمات تبدأ بحرف كبير → تُترك (أسماء علم)
+     * - كلمات موجودة في القاموس → تُترك
+     * - كلمات خاطئة → تُستبدل بأقرب كلمة في القاموس
      */
     suspend fun correctBlock(text: String, locale: Locale = Locale.ENGLISH): String {
-        if (text.isBlank()) return text
+        if (!isLoaded || text.isBlank()) return text
 
-        // تأكد من وجود session دائمة مفتوحة
-        getOrCreateSession(locale) ?: return text
+        // SymSpell حالياً للإنجليزية فقط
+        if (locale != Locale.ENGLISH && locale.language != "en") return text
 
-        val result = withTimeoutOrNull(2000L) {
-            suspendCancellableCoroutine<Array<out SentenceSuggestionsInfo>?> { cont ->
-                var tempSession: SpellCheckerSession? = null
+        val tokens = tokenize(text)
+        val result = StringBuilder()
 
-                val listener = object : SpellCheckerSessionListener {
-                    override fun onGetSuggestions(results: Array<out SuggestionsInfo>?) {
-                        // لا نستخدم هذه — نستخدم getSentenceSuggestions
-                    }
+        for (token in tokens) {
+            if (!token.isWord) {
+                result.append(token.value)
+                continue
+            }
 
-                    override fun onGetSentenceSuggestions(results: Array<out SentenceSuggestionsInfo>?) {
-                        tempSession?.close()
-                        if (cont.isActive) cont.resume(results)
+            val word = token.value
+
+            // كلمة تبدأ بحرف كبير → اسم علم، تجاهل
+            if (word[0].isUpperCase()) {
+                result.append(word)
+                continue
+            }
+
+            // كلمة قصيرة جداً (حرف أو حرفان) → تجاهل
+            if (word.length <= 2) {
+                result.append(word)
+                continue
+            }
+
+            val lower = word.lowercase()
+
+            // الكلمة موجودة في القاموس → صحيحة
+            if (dictionary.containsKey(lower)) {
+                result.append(word)
+                continue
+            }
+
+            // ابحث عن أقرب تصحيح
+            val suggestion = findBestSuggestion(lower)
+            if (suggestion != null) {
+                // حافظ على حالة الأحرف الأصلية إذا كانت الكلمة كلها كبيرة
+                val corrected = if (word.all { it.isUpperCase() }) {
+                    suggestion.uppercase()
+                } else {
+                    suggestion
+                }
+                result.append(corrected)
+            } else {
+                result.append(word)
+            }
+        }
+
+        return result.toString()
+    }
+
+    // ── خوارزمية SymSpell المبسطة ─────────────────────────────────────────────
+
+    /**
+     * يجد أفضل اقتراح للكلمة الخاطئة.
+     * يولّد كل المتغيرات ضمن مسافة التحريف ويبحث عنها في القاموس.
+     */
+    private fun findBestSuggestion(word: String): String? {
+        var bestWord: String? = null
+        var bestFreq = 0L
+        var bestDist = Int.MAX_VALUE
+
+        // توليد كل الكلمات ضمن مسافة تحريف 1
+        val candidates1 = generateEdits(word)
+
+        for (candidate in candidates1) {
+            val freq = dictionary[candidate] ?: continue
+            val dist = 1
+            if (dist < bestDist || (dist == bestDist && freq > bestFreq)) {
+                bestDist = dist
+                bestFreq = freq
+                bestWord = candidate
+            }
+        }
+
+        // إذا لم نجد شيئاً بمسافة 1، نجرب مسافة 2
+        if (bestWord == null && maxEditDistance >= 2) {
+            for (candidate1 in candidates1) {
+                val candidates2 = generateEdits(candidate1)
+                for (candidate2 in candidates2) {
+                    val freq = dictionary[candidate2] ?: continue
+                    val dist = 2
+                    if (dist < bestDist || (dist == bestDist && freq > bestFreq)) {
+                        bestDist = dist
+                        bestFreq = freq
+                        bestWord = candidate2
                     }
                 }
-
-                tempSession = tsm.newSpellCheckerSession(null, locale, listener, true)
-                tempSession?.getSentenceSuggestions(arrayOf(TextInfo(text)), 3)
-
-                cont.invokeOnCancellation { tempSession?.close() }
             }
-        } ?: return text // timeout → ابقِ النص كما هو
+        }
 
-        return applyCorrections(text, result)
+        // لا نقبل تصحيحاً إذا كان مختلفاً جداً عن الكلمة الأصلية
+        if (bestWord != null && bestWord.length > word.length * 2) return null
+
+        return bestWord
     }
 
     /**
-     * يطبق التصحيحات على النص الأصلي بناءً على offsets التي أعطاها النظام.
+     * يولّد كل الكلمات التي تبعد مسافة تحريف واحدة عن الكلمة.
+     * عمليات التحريف: حذف، استبدال، إدراج، تبديل موضع
      */
-    private fun applyCorrections(
-        original: String,
-        results: Array<out SentenceSuggestionsInfo>?,
-    ): String {
-        if (results.isNullOrEmpty()) return original
+    private fun generateEdits(word: String): Set<String> {
+        val edits = mutableSetOf<String>()
+        val letters = "abcdefghijklmnopqrstuvwxyz"
 
-        val sentenceInfo = results[0]
-        val corrected = StringBuilder(original)
+        for (i in word.indices) {
+            // حذف حرف
+            edits.add(word.removeRange(i, i + 1))
 
-        // نجمع كل التصحيحات أولاً ثم نطبقها من الآخر للأول لكي لا تتأثر الـ offsets
-        data class Correction(val start: Int, val end: Int, val replacement: String)
-        val corrections = mutableListOf<Correction>()
+            // تبديل موضع حرفين متجاورين
+            if (i < word.length - 1) {
+                edits.add(word.substring(0, i) + word[i + 1] + word[i] + word.substring(i + 2))
+            }
 
-        for (i in 0 until sentenceInfo.suggestionsCount) {
-            val info = sentenceInfo.getSuggestionsInfoAt(i)
-            val wordStart = sentenceInfo.getOffsetAt(i)
-            val wordLen = sentenceInfo.getLengthAt(i)
-            val wordEnd = wordStart + wordLen
+            // استبدال حرف
+            for (c in letters) {
+                edits.add(word.substring(0, i) + c + word.substring(i + 1))
+            }
 
-            if (wordStart < 0 || wordEnd > original.length) continue
-
-            val originalWord = original.substring(wordStart, wordEnd)
-
-            // كلمة تبدأ بحرف كبير → اسم علم، تجاهل
-            if (originalWord.isNotEmpty() && originalWord[0].isUpperCase()) continue
-
-            // تحقق إذا النظام يعتبرها خطأ إملائي
-            val attrs = info.suggestionsAttributes
-            val isTypo = (attrs and SuggestionsInfo.RESULT_ATTR_LOOKS_LIKE_TYPO) != 0
-            val notInDict = (attrs and SuggestionsInfo.RESULT_ATTR_IN_THE_DICTIONARY) == 0
-
-            if ((isTypo || notInDict) && info.suggestionsCount > 0) {
-                val suggestion = info.getSuggestionAt(0)
-                // لا نستبدل إذا الاقتراح أطول بكثير (قد يكون خطأ في التصحيح)
-                if (suggestion.length <= originalWord.length * 2) {
-                    corrections.add(Correction(wordStart, wordEnd, suggestion))
-                }
+            // إدراج حرف
+            for (c in letters) {
+                edits.add(word.substring(0, i) + c + word.substring(i))
             }
         }
 
-        // طبّق من الآخر للأول لكي لا تتأثر الـ offsets
-        for (correction in corrections.sortedByDescending { it.start }) {
-            corrected.replace(correction.start, correction.end, correction.replacement)
+        // إدراج حرف في النهاية
+        for (c in letters) {
+            edits.add(word + c)
         }
 
-        return corrected.toString()
+        return edits
     }
+
+    // ── Tokenizer: يفصل الكلمات عن علامات الترقيم والمسافات ────────────────
+
+    private data class Token(val value: String, val isWord: Boolean)
+
+    private fun tokenize(text: String): List<Token> {
+        val tokens = mutableListOf<Token>()
+        val current = StringBuilder()
+        var inWord = false
+
+        for (char in text) {
+            val isWordChar = char.isLetter()
+            if (isWordChar == inWord) {
+                current.append(char)
+            } else {
+                if (current.isNotEmpty()) {
+                    tokens.add(Token(current.toString(), inWord))
+                    current.clear()
+                }
+                current.append(char)
+                inWord = isWordChar
+            }
+        }
+        if (current.isNotEmpty()) {
+            tokens.add(Token(current.toString(), inWord))
+        }
+        return tokens
+    }
+
+    // ── تنظيف ────────────────────────────────────────────────────────────────
 
     fun closeAll() {
-        sessions.values.forEach { it?.close() }
-        sessions.clear()
-    }
-
-    // listener فارغ للـ session الدائمة
-    private object DummyListener : SpellCheckerSessionListener {
-        override fun onGetSuggestions(results: Array<out SuggestionsInfo>?) {}
-        override fun onGetSentenceSuggestions(results: Array<out SentenceSuggestionsInfo>?) {}
+        // لا يوجد sessions لإغلاقها — SymSpell يعمل محلياً بالكامل
+        dictionary.clear()
+        isLoaded = false
     }
 }
