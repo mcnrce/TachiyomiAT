@@ -225,6 +225,12 @@ class ChapterTranslator(
                     streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
                     val image = InputImage.fromFilePath(context, tmpFile.uri)
 
+                    // تخطي الصور الصغيرة جداً — ML Kit يرفض أي صورة أقل من 32×32
+                    if (image.width < 32 || image.height < 32) {
+                        logcat(LogPriority.DEBUG) { "Skipping small image: $fileName (${image.width}x${image.height})" }
+                        continue
+                    }
+
                     // الفحص الأساسي مع الشحذ والتكبير التلقائي داخل الكلاس المعني
                     val result = textRecognizer.recognize(image)
                     val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
