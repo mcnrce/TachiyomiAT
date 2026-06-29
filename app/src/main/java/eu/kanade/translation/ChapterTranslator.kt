@@ -3,6 +3,7 @@ package eu.kanade.translation
 import android.content.Context
 import android.graphics.Bitmap
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
 import com.hippo.unifile.UniFile
 import eu.kanade.tachiyomi.data.download.DownloadProvider
 import eu.kanade.tachiyomi.source.online.HttpSource
@@ -205,7 +206,6 @@ class ChapterTranslator(
             }
             val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
             val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
-
             val chapterPath = downloadProvider.findChapterDir(
                 translation.chapter.name,
                 translation.chapter.scanlator,
@@ -217,119 +217,129 @@ class ChapterTranslator(
             val tmpFile = translationMangaDir.createFile("tmp")!!
             val streams = getChapterPages(chapterPath)
 
+            val scale = TextRecognizer.SCALE_FACTOR.toFloat()
+
             withContext(Dispatchers.IO) {
                 for ((fileName, streamFn) in streams) {
                     coroutineContext.ensureActive()
                     streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
                     val image = InputImage.fromFilePath(context, tmpFile.uri)
 
-                    val enhancedBitmap = textRecognizer.getEnhancedBitmap(image)
+                    val enhancedBitmap = image.bitmapInternal ?: continue
 
-                    // ═══════════════════════════════════════════════════════
-                    // المرحلة 1: OCR أولي على الصفحة الكاملة (بدون تقسيم)
-                    // ═══════════════════════════════════════════════════════
-                    val firstResult = textRecognizer.recognize(InputImage.fromBitmap(enhancedBitmap, 0))
-                    val initialBlocks = firstResult.textBlocks.map { block ->
-                        val bounds = block.boundingBox!!
-                        val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()?.symbols?.firstOrNull()?.boundingBox
-                        TranslationBlock(
-                            text = block.text,
-                            width = bounds.width().toFloat(),
-                            height = bounds.height().toFloat(),
-                            symWidth = symBounds?.width()?.toFloat() ?: 12f,
-                            symHeight = symBounds?.height()?.toFloat() ?: 12f,
-                            angle = block.lines.firstOrNull()?.angle ?: 0f,
-                            x = bounds.left.toFloat(),
-                            y = bounds.top.toFloat(),
-                        )
+                    val initialBlocks = mutableListOf<TranslationBlock>()
+                    val cols = 3
+                    val rows = 3
+                    val tileW = enhancedBitmap.width / cols
+                    val tileH = enhancedBitmap.height / rows
+
+                    for (r in 0 until rows) {
+                        for (c in 0 until cols) {
+                            val tile = Bitmap.createBitmap(
+                                enhancedBitmap,
+                                c * tileW,
+                                r * tileH,
+                                tileW,
+                                tileH
+                            )
+                            val tileResult = textRecognizer.recognize(
+                                InputImage.fromBitmap(tile, 0)
+                            )
+                            tileResult.textBlocks.forEach { block ->
+                                val bounds = block.boundingBox!!
+                                val firstLine = block.lines.firstOrNull()
+                                val firstElem = firstLine?.elements?.firstOrNull()
+                                val symBounds = firstElem?.symbols?.firstOrNull()?.boundingBox
+                                
+                                val rawW = bounds.width().toFloat() / scale
+                                val rawH = bounds.height().toFloat() / scale
+                                val rawX = bounds.left.toFloat() / scale + (c * tileW)
+                                val rawY = bounds.top.toFloat() / scale + (r * tileH)
+
+                                initialBlocks.add(
+                                    TranslationBlock(
+                                        text = block.text,
+                                        width = rawW,
+                                        height = rawH,
+                                        symWidth = (symBounds?.width()?.toFloat() ?: 12f) / scale,
+                                        symHeight = (symBounds?.height()?.toFloat() ?: 12f) / scale,
+                                        angle = block.lines.firstOrNull()?.angle ?: 0f,
+                                        x = rawX,
+                                        y = rawY,
+                                    )
+                                )
+                            }
+                            tile.recycle()
+                        }
                     }
 
-                    // ═══════════════════════════════════════════════════════
-                    // المرحلة 2: الدمج الذكي لتحديد فقاعات النص التقريبية
-                    // ═══════════════════════════════════════════════════════
-                    val roughBubbles = smartMergeBlocks(initialBlocks, enhancedBitmap.width.toFloat(), enhancedBitmap.height.toFloat())
+                    val roughBubbles = smartMergeBlocks(
+                        initialBlocks,
+                        enhancedBitmap.width.toFloat(),
+                        enhancedBitmap.height.toFloat()
+                    )
 
-                    // ═══════════════════════════════════════════════════════
-                    // المرحلة 3: OCR ثاني دقيق داخل نطاق كل فقاعة + هوامش
-                    // نأخذ النص فقط من OCR الثاني ونضعه في إحداثيات الفقاعة الأصلية
-                    // ═══════════════════════════════════════════════════════
                     val refinedBlocks = mutableListOf<TranslationBlock>()
                     val pad = 15
 
                     for (bubble in roughBubbles) {
-                        val cropX = (bubble.x.toInt() - pad).coerceIn(0, enhancedBitmap.width - 1)
-                        val cropY = (bubble.y.toInt() - pad).coerceIn(0, enhancedBitmap.height - 1)
-                        val cropW = (bubble.width.toInt() + pad * 2).coerceAtMost(enhancedBitmap.width - cropX)
-                        val cropH = (bubble.height.toInt() + pad * 2).coerceAtMost(enhancedBitmap.height - cropY)
+                        val cropX = (bubble.x.toInt() - pad)
+                            .coerceIn(0, enhancedBitmap.width - 1)
+                        val cropY = (bubble.y.toInt() - pad)
+                            .coerceIn(0, enhancedBitmap.height - 1)
+                        val cropW = (bubble.width.toInt() + pad * 2)
+                            .coerceAtMost(enhancedBitmap.width - cropX)
+                        val cropH = (bubble.height.toInt() + pad * 2)
+                            .coerceAtMost(enhancedBitmap.height - cropY)
 
                         if (cropW <= 0 || cropH <= 0) continue
 
-                        val croppedBitmap = Bitmap.createBitmap(enhancedBitmap, cropX, cropY, cropW, cropH)
-                        val secondResult = textRecognizer.recognize(InputImage.fromBitmap(croppedBitmap, 0))
+                        val croppedBitmap = Bitmap.createBitmap(
+                            enhancedBitmap,
+                            cropX,
+                            cropY,
+                            cropW,
+                            cropH
+                        )
+                        val secondResult = textRecognizer.recognize(
+                            InputImage.fromBitmap(croppedBitmap, 0)
+                        )
 
-                        // نأخذ النص فقط من OCR الثاني ونضعه في الفقاعة الأصلية
-                        // الإحداثيات تبقى كما هي من المرحلة الأولى (على الصفحة الكاملة)
-                        val refinedText = secondResult.textBlocks.joinToString("\n") { it.text }
-
-                        if (refinedText.isNotBlank()) {
+                        secondResult.textBlocks.forEach { block ->
+                            val bounds = block.boundingBox!!
+                            val firstLine = block.lines.firstOrNull()
+                            val firstElem = firstLine?.elements?.firstOrNull()
+                            val symBounds = firstElem?.symbols?.firstOrNull()?.boundingBox
                             refinedBlocks.add(
-                                bubble.copy(text = refinedText)
+                                TranslationBlock(
+                                    text = block.text,
+                                    width = bounds.width().toFloat() / scale,
+                                    height = bounds.height().toFloat() / scale,
+                                    symWidth = (symBounds?.width()?.toFloat() ?: 12f) / scale,
+                                    symHeight = (symBounds?.height()?.toFloat() ?: 12f) / scale,
+                                    angle = block.lines.firstOrNull()?.angle ?: 0f,
+                                    x = (bounds.left.toFloat() / scale) + cropX,
+                                    y = (bounds.top.toFloat() / scale) + cropY,
+                                )
                             )
                         }
                         croppedBitmap.recycle()
                     }
 
-                    // ═══════════════════════════════════════════════════════
-                    // المرحلة 4: تهيئة الصفحة والدمج النهائي وحل التصادمات
-                    // ═══════════════════════════════════════════════════════
                     val pageTranslation = PageTranslation(
                         imgWidth = enhancedBitmap.width.toFloat(),
                         imgHeight = enhancedBitmap.height.toFloat()
-                    ).apply {
-                        if (refinedBlocks.isNotEmpty()) {
-                            blocks.addAll(refinedBlocks)
-                        }
+                    )
+
+                    pageTranslation.blocks = smartMergeBlocks(
+                        refinedBlocks,
+                        enhancedBitmap.width.toFloat(),
+                        enhancedBitmap.height.toFloat()
+                    )
+
+                    if (pageTranslation.blocks.isNotEmpty()) {
+                        pages[fileName] = pageTranslation
                     }
-
-                    // دمج نهائي للفقاعات
-                    pageTranslation.blocks = smartMergeBlocks(pageTranslation.blocks, enhancedBitmap.width.toFloat(), enhancedBitmap.height.toFloat())
-
-                    // فلترة الكلمات الممنوعة
-                    val filteredWords = translationPreferences.translationFilteredWords().get()
-                        .split(",")
-                        .map { it.trim().lowercase() }
-                        .filter { it.isNotEmpty() }
-
-                    pageTranslation.blocks = pageTranslation.blocks.filter { block ->
-                        val blockText = block.text.trim()
-                        val letters = blockText.filter { it.isLetter() }
-
-                        val isAllEnglish = letters.isNotEmpty() && letters.all { it in 'A'..'Z' || it in 'a'..'z' }
-                        if (isAllEnglish) {
-                            val uniqueLetters = letters.lowercase().toSet().size
-                            if (uniqueLetters < 3) return@filter false
-                        }
-
-                        if (filteredWords.isNotEmpty()) {
-                            val blockLower = blockText.lowercase()
-                            if (filteredWords.any { word -> blockLower == word }) return@filter false
-                        }
-
-                        true
-                    }.toMutableList()
-
-                    // تصغير الإحداثيات لتتطابق مع أبعاد الشاشة الأصلية
-                    for (block in pageTranslation.blocks) {
-                        block.x /= TextRecognizer.SCALE_FACTOR
-                        block.y /= TextRecognizer.SCALE_FACTOR
-                        block.width /= TextRecognizer.SCALE_FACTOR
-                        block.height /= TextRecognizer.SCALE_FACTOR
-                    }
-                    pageTranslation.imgWidth /= TextRecognizer.SCALE_FACTOR
-                    pageTranslation.imgHeight /= TextRecognizer.SCALE_FACTOR
-
-                    if (pageTranslation.blocks.isNotEmpty()) pages[fileName] = pageTranslation
-                    enhancedBitmap.recycle()
                 }
             }
             tmpFile.delete()
@@ -344,25 +354,39 @@ class ChapterTranslator(
         }
     }
 
-    private fun convertToPageTranslation(blocks: List<com.google.mlkit.vision.text.Text.TextBlock>, width: Int, height: Int): PageTranslation {
-        val translation = PageTranslation(imgWidth = width.toFloat(), imgHeight = height.toFloat())
+    private fun convertToPageTranslation(
+        blocks: List<Text.TextBlock>,
+        width: Int,
+        height: Int
+    ): PageTranslation {
+        val translation = PageTranslation(
+            imgWidth = width.toFloat(),
+            imgHeight = height.toFloat()
+        )
+        val scale = TextRecognizer.SCALE_FACTOR.toFloat()
         for (block in blocks) {
             val bounds = block.boundingBox!!
-            val symBounds = block.lines.first().elements.first().symbols.first().boundingBox!!
+            val firstLine = block.lines.first()
+            val firstElem = firstLine.elements.first()
+            val symBounds = firstElem.symbols.first().boundingBox!!
             translation.blocks.add(
                 TranslationBlock(
                     text = block.text,
-                    width = bounds.width().toFloat(),
-                    height = bounds.height().toFloat(),
-                    symWidth = symBounds.width().toFloat(),
-                    symHeight = symBounds.height().toFloat(),
+                    width = bounds.width().toFloat() / scale,
+                    height = bounds.height().toFloat() / scale,
+                    symWidth = symBounds.width().toFloat() / scale,
+                    symHeight = symBounds.height().toFloat() / scale,
                     angle = block.lines.first().angle,
-                    x = bounds.left.toFloat(),
-                    y = bounds.top.toFloat(),
+                    x = bounds.left.toFloat() / scale,
+                    y = bounds.top.toFloat() / scale,
                 ),
             )
         }
-        translation.blocks = smartMergeBlocks(translation.blocks, width.toFloat(), height.toFloat())
+        translation.blocks = smartMergeBlocks(
+            translation.blocks,
+            width.toFloat(),
+            height.toFloat()
+        )
         return translation
     }
 
@@ -386,7 +410,13 @@ class ChapterTranslator(
             var j = i + 1
             var merged = false
             while (j < initialBlocks.size) {
-                if (shouldMergeTextBlock(initialBlocks[i], initialBlocks[j], xThreshold, yThresholdFactor)) {
+                if (shouldMergeTextBlock(
+                        initialBlocks[i],
+                        initialBlocks[j],
+                        xThreshold,
+                        yThresholdFactor
+                    )
+                ) {
                     initialBlocks[i] = mergeTextBlock(initialBlocks[i], initialBlocks[j], isWebtoon)
                     initialBlocks.removeAt(j)
                     i = 0
@@ -398,41 +428,31 @@ class ChapterTranslator(
             if (!merged) i++
         }
 
-        // التوسيع الذكي حسب اتجاه النص
         val expandedBlocks = initialBlocks.map { block ->
             val cleanedText = block.text.replace("\n", " ").trim()
-            val cleanedTranslation = block.translation.replace("\n", " ").trim()
-            val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
-                .coerceIn(1.0f, 1.25f)
+            val cleanedTrans = block.translation?.replace("\n", " ")?.trim() ?: ""
+            val lenRatio = cleanedTrans.length.toFloat() / cleanedText.length.coerceAtLeast(1)
+            val textRatio = lenRatio.coerceIn(1.0f, 1.2f)
             val finalScale = kotlin.math.sqrt(textRatio.toDouble()).toFloat()
 
-            var newWidth = block.width * finalScale
-            var newHeight = block.height * finalScale
-
-            // التوسيع الاتجاهي الذكي:
-            // - نص أفقي (!isVertical) → تكبير عمودي فقط (للترجمة الأطول)
-            // - نص عمودي (isVertical) → تكبير أفقي فقط (للترجمة الأعرض)
-            val isVertical = abs(block.angle) in 70.0..110.0
-            val directionBonus = 1.3f
-            if (isVertical) {
-                newWidth *= directionBonus
+            if (finalScale > 1.01f) {
+                val newWidth = block.width * finalScale
+                val newHeight = block.height * finalScale
+                val newX = block.x - (newWidth - block.width) / 2f
+                val newY = block.y - (newHeight - block.height) / 2f
+                block.copy(
+                    text = cleanedText,
+                    translation = cleanedTrans,
+                    width = newWidth.coerceAtMost(imgWidth),
+                    height = newHeight.coerceAtMost(imgHeight),
+                    x = newX.coerceIn(0f, imgWidth - newWidth.coerceAtMost(imgWidth)),
+                    y = newY.coerceIn(0f, imgHeight - newHeight.coerceAtMost(imgHeight)),
+                )
             } else {
-                newHeight *= directionBonus
+                block.copy(text = cleanedText, translation = cleanedTrans)
             }
-
-            val newX = block.x - (newWidth - block.width) / 2f
-            val newY = block.y - (newHeight - block.height) / 2f
-            block.copy(
-                text = cleanedText,
-                translation = cleanedTranslation,
-                width = newWidth.coerceAtMost(imgWidth),
-                height = newHeight.coerceAtMost(imgHeight),
-                x = newX.coerceIn(0f, imgWidth - newWidth.coerceAtMost(imgWidth)),
-                y = newY.coerceIn(0f, imgHeight - newHeight.coerceAtMost(imgHeight)),
-            )
         }.toMutableList()
 
-        // خوارزمية حل تصادم الكتل (8 اتجاهات)
         val iterations = 4
         for (step in 0 until iterations) {
             var collisionsResolved = 0
@@ -453,7 +473,7 @@ class ChapterTranslator(
                         val moveRightAmt = (staticBlock.x + staticBlock.width) - movingBlock.x + 2f
                         val moveLeftAmt = (movingBlock.x + movingBlock.width) - staticBlock.x + 2f
                         val moveDownAmt = (staticBlock.y + staticBlock.height) - movingBlock.y + 2f
-                        val moveUpAmt = (staticBlock.y + staticBlock.height) - movingBlock.y + 2f
+                        val moveUpAmt = (movingBlock.y + movingBlock.height) - staticBlock.y + 2f
 
                         var directions = listOf(
                             Pair(-moveLeftAmt, 0f),
@@ -468,11 +488,10 @@ class ChapterTranslator(
 
                         var allSidesBlocked = true
                         for (d in directions.indices) {
-                            val testX = (movingBlock.x + directions[d].first).coerceIn(0f, imgWidth - movingBlock.width)
-                            val testY = (movingBlock.y + directions[d].second).coerceIn(
-                                0f,
-                                imgHeight - movingBlock.height,
-                            )
+                            val testX = (movingBlock.x + directions[d].first)
+                                .coerceIn(0f, imgWidth - movingBlock.width)
+                            val testY = (movingBlock.y + directions[d].second)
+                                .coerceIn(0f, imgHeight - movingBlock.height)
                             val testedBlock = movingBlock.copy(x = testX, y = testY)
 
                             var hasCollision = false
@@ -493,13 +512,18 @@ class ChapterTranslator(
                             val newWidth = movingBlock.width * shrinkFactor
                             val newHeight = movingBlock.height * shrinkFactor
                             val newX = movingBlock.x + (movingBlock.width - newWidth) / 2f
-                            val newY = movingBlock.y + (movingBlock.height - newHeight) / 2f
-                            movingBlock = movingBlock.copy(width = newWidth, height = newHeight, x = newX, y = newY)
+                            val newY = movingBlock.height + (movingBlock.height - newHeight) / 2f
+                            movingBlock = movingBlock.copy(
+                                width = newWidth,
+                                height = newHeight,
+                                x = newX,
+                                y = newY
+                            )
 
                             val adjRight = (staticBlock.x + staticBlock.width) - movingBlock.x + 1f
                             val adjLeft = (movingBlock.x + movingBlock.width) - staticBlock.x + 1f
                             val adjDown = (staticBlock.y + staticBlock.height) - movingBlock.y + 1f
-                            val adjUp = (staticBlock.y + staticBlock.height) - movingBlock.y + 1f
+                            val adjUp = (movingBlock.y + movingBlock.height) - staticBlock.y + 1f
                             directions = listOf(
                                 Pair(-adjLeft, 0f),
                                 Pair(adjRight, 0f),
@@ -517,11 +541,10 @@ class ChapterTranslator(
                         var minMoveAmount = Float.MAX_VALUE
 
                         for (d in directions.indices) {
-                            val testX = (movingBlock.x + directions[d].first).coerceIn(0f, imgWidth - movingBlock.width)
-                            val testY = (movingBlock.y + directions[d].second).coerceIn(
-                                0f,
-                                imgHeight - movingBlock.height,
-                            )
+                            val testX = (movingBlock.x + directions[d].first)
+                                .coerceIn(0f, imgWidth - movingBlock.width)
+                            val testY = (movingBlock.y + directions[d].second)
+                                .coerceIn(0f, imgHeight - movingBlock.height)
                             val testedBlock = movingBlock.copy(x = testX, y = testY)
 
                             var nextCollisions = 0
@@ -541,14 +564,10 @@ class ChapterTranslator(
                             }
                         }
 
-                        val finalX = (movingBlock.x + directions[bestDirection].first).coerceIn(
-                            0f,
-                            imgWidth - movingBlock.width,
-                        )
-                        val finalY = (movingBlock.y + directions[bestDirection].second).coerceIn(
-                            0f,
-                            imgHeight - movingBlock.height,
-                        )
+                        val finalX = (movingBlock.x + directions[bestDirection].first)
+                            .coerceIn(0f, imgWidth - movingBlock.width)
+                        val finalY = (movingBlock.y + directions[bestDirection].second)
+                            .coerceIn(0f, imgHeight - movingBlock.height)
                         expandedBlocks[movingIdx] = movingBlock.copy(x = finalX, y = finalY)
                     }
                 }
@@ -585,8 +604,8 @@ class ChapterTranslator(
         val sH = maxOf(r1.symHeight, r2.symHeight, 12f)
         val sW = maxOf(r1.symWidth, r2.symWidth, 12f)
 
-        val maxAllowedGapX = sW * 1.2f
-        val maxAllowedGapY = sH * 1.2f
+        val maxAllowedGapX = sW * 1.1f
+        val maxAllowedGapY = sH * 1.1f
 
         val yOverlap = maxOf(0f, minOf(r1Bottom, r2Bottom) - maxOf(r1.y, r2.y))
         val xOverlap = maxOf(0f, minOf(r1Right, r2Right) - maxOf(r1.x, r2.x))
@@ -599,17 +618,6 @@ class ChapterTranslator(
         val isInCross = isFullHorizontalCover || isFullVerticalCover
         if (!isInCross) return false
 
-        // شرط إضافي: لا دمج إذا تجاوزت المسافة 1.1× حجم الحرف (للنص الأفقي فقط)
-        if (!isVertical) {
-            val vGap = maxOf(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
-            val sideGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
-
-            // إذا كان الفرق الرأسي أكبر من 1.1× ارتفاع الحرف → لا دمج
-            if (vGap > sH * 1.1f) return false
-            // إذا كان الفرق الأفقي أكبر من 1.1× عرض الحرف → لا دمج
-            if (sideGap > sW * 1.1f) return false
-        }
-
         if (isVertical) {
             val sideGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
             if (sideGap > maxAllowedGapX) return false
@@ -621,15 +629,15 @@ class ChapterTranslator(
             val vertGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
             if (vertGap > maxAllowedGapY) return false
 
-            val isTouchingOrClose = sideGap <= (sW * 1.2f) && vertGap <= (sH * 1.2f)
+            val isTouchingOrClose = sideGap <= (sW * 1.1f) && vertGap <= (sH * 1.1f)
             if (!isTouchingOrClose) return false
 
             val dy = abs(r1.y - r2.y)
             val dx = abs(r1.x - r2.x)
-            val isOriginsClose = dy < (sH * 1.2f) && dx < (sW * 1.2f)
-            val isSideBySide = sideGap < (sW * 1.2f) && dy < (sH * 1.2f)
+            val isOriginsClose = dy < (sH * 1.1f) && dx < (sW * 1.1f)
+            val isSideBySide = sideGap < (sW * 1.1f) && dy < (sH * 1.1f)
             val alignedVertically = yOverlap > (sH * 0.15f)
-            val closeHorizontally = sideGap < (sW * 1.2f)
+            val closeHorizontally = sideGap < (sW * 1.1f)
 
             return isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
         } else {
@@ -653,7 +661,11 @@ class ChapterTranslator(
         }
     }
 
-    private fun mergeTextBlock(a: TranslationBlock, b: TranslationBlock, isWebtoon: Boolean): TranslationBlock {
+    private fun mergeTextBlock(
+        a: TranslationBlock,
+        b: TranslationBlock,
+        isWebtoon: Boolean
+    ): TranslationBlock {
         val minX = minOf(a.x, b.x)
         val minY = minOf(a.y, b.y)
         val maxX = maxOf(a.x + a.width, b.x + b.width)
@@ -678,16 +690,24 @@ class ChapterTranslator(
         }
 
         val totalLen = (a.text.length + b.text.length).coerceAtLeast(1)
+        val weightedW = (a.symWidth * a.text.length + b.symWidth * b.text.length) / totalLen
+        val weightedH = (a.symHeight * a.text.length + b.symHeight * b.text.length) / totalLen
+
+        val mergedText = ordered.joinToString(" ") { it.text.trim() }
+        val mergedTranslation = ordered.joinToString(" ") {
+            it.translation?.trim() ?: ""
+        }.trim()
+
         return TranslationBlock(
-            text = ordered.joinToString(" ") { it.text.trim() },
-            translation = ordered.joinToString(" ") { it.translation.trim() }.trim(),
+            text = mergedText,
+            translation = mergedTranslation,
             width = finalWidth,
             height = maxY - minY,
             x = finalX,
             y = minY,
             angle = if (a.text.length >= b.text.length) a.angle else b.angle,
-            symWidth = (a.symWidth * a.text.length + b.symWidth * b.text.length) / totalLen,
-            symHeight = (a.symHeight * a.text.length + b.symHeight * b.text.length) / totalLen,
+            symWidth = weightedW,
+            symHeight = weightedH,
         )
     }
 
@@ -695,10 +715,15 @@ class ChapterTranslator(
         if (chapterPath.isFile) {
             val reader = chapterPath.archiveReader(context)
             return reader.useEntries { entries ->
-                entries.filter { it.isFile && ImageUtil.isImage(it.name) { reader.getInputStream(it.name)!! } }
-                    .sortedWith { f1, f2 -> f1.name.compareToCaseInsensitiveNaturalOrder(f2.name) }.map { entry ->
-                        Pair(entry.name) { reader.getInputStream(entry.name)!! }
-                    }.toList()
+                entries.filter {
+                    it.isFile && ImageUtil.isImage(it.name) {
+                        reader.getInputStream(it.name)!!
+                    }
+                }.sortedWith { f1, f2 ->
+                    f1.name.compareToCaseInsensitiveNaturalOrder(f2.name)
+                }.map { entry ->
+                    Pair(entry.name) { reader.getInputStream(entry.name)!! }
+                }.toList()
             }
         } else {
             return chapterPath.listFiles()!!.filter { ImageUtil.isImage(it.name) }.map { entry ->
@@ -708,7 +733,9 @@ class ChapterTranslator(
     }
 
     private fun areAllTranslationsFinished(): Boolean {
-        return queueState.value.none { it.status.value <= Translation.State.TRANSLATING.value }
+        return queueState.value.none {
+            it.status.value <= Translation.State.TRANSLATING.value
+        }
     }
 
     private fun addToQueue(translation: Translation) {
@@ -718,7 +745,8 @@ class ChapterTranslator(
 
     private fun removeFromQueue(translation: Translation) {
         _queueState.update {
-            if (translation.status == Translation.State.TRANSLATING || translation.status == Translation.State.QUEUE) {
+            val cond = translation.status == Translation.State.TRANSLATING
+            if (cond || translation.status == Translation.State.QUEUE) {
                 translation.status = Translation.State.NOT_TRANSLATED
             }
             it - translation
@@ -729,9 +757,8 @@ class ChapterTranslator(
         _queueState.update { queue ->
             val translations = queue.filter { predicate(it) }
             translations.forEach { translation ->
-                if (translation.status == Translation.State.TRANSLATING ||
-                    translation.status == Translation.State.QUEUE
-                ) {
+                val cond = translation.status == Translation.State.TRANSLATING
+                if (cond || translation.status == Translation.State.QUEUE) {
                     translation.status = Translation.State.NOT_TRANSLATED
                 }
             }
@@ -750,9 +777,8 @@ class ChapterTranslator(
     private fun internalClearQueue() {
         _queueState.update {
             it.forEach { translation ->
-                if (translation.status == Translation.State.TRANSLATING ||
-                    translation.status == Translation.State.QUEUE
-                ) {
+                val cond = translation.status == Translation.State.TRANSLATING
+                if (cond || translation.status == Translation.State.QUEUE) {
                     translation.status = Translation.State.NOT_TRANSLATED
                 }
             }
