@@ -1,150 +1,128 @@
 package eu.kanade.translation
 
 import android.content.Context
-import android.os.Handler
-import android.os.HandlerThread
-import android.os.Looper
 import android.view.textservice.SentenceSuggestionsInfo
 import android.view.textservice.SpellCheckerSession
+import android.view.textservice.SpellCheckerSession.SpellCheckerSessionListener
 import android.view.textservice.SuggestionsInfo
 import android.view.textservice.TextInfo
 import android.view.textservice.TextServicesManager
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
+import kotlin.coroutines.resume
 
-class AndroidTextCorrector(context: Context, private val locale: Locale) : 
-    SpellCheckerSession.SpellCheckerSessionListener {
+class AndroidTextCorrector(private val context: Context) {
 
-    private val appContext = context.applicationContext
-    private val textServicesManager = appContext.getSystemService(Context.TEXT_SERVICES_MANAGER_SERVICE) as? TextServicesManager
-    
-    private var spellCheckerSession: SpellCheckerSession? = null
-    private var handlerThread: HandlerThread? = null
-    private var handler: Handler? = null
+    private val tsm = context.getSystemService(Context.TEXT_SERVICES_MANAGER_SERVICE)
+        as TextServicesManager
 
-    private var currentDeferred: CompletableDeferred<String>? = null
-    private var textUnderCheck: String = ""
+    // Session مفتوحة دائماً لكل locale
+    private val sessions = mutableMapOf<Locale, SpellCheckerSession?>()
 
-    init {
-        try {
-            handlerThread = HandlerThread("SpellCheckerThread").apply { start() }
-            handler = Handler(handlerThread!!.looper)
-
-            handler?.post {
-                try {
-                    spellCheckerSession = textServicesManager?.newSpellCheckerSession(null, locale, this, true)
-                } catch (e: Exception) {
-                    spellCheckerSession = null
-                }
-            }
-        } catch (e: Exception) {
-            spellCheckerSession = null
+    fun getOrCreateSession(locale: Locale): SpellCheckerSession? {
+        return sessions.getOrPut(locale) {
+            tsm.newSpellCheckerSession(null, locale, DummyListener, true)
         }
     }
 
     /**
-     * تصحيح النص بشكل إجباري، وإذا حدث أي خطأ يعود بالنص الأصلي فوراً
+     * يصحح نص block كامل دفعة واحدة.
+     * يستخدم getSentenceSuggestions لأنها تعطي offset لكل كلمة داخل النص.
      */
-    suspend fun correctText(originalText: String): String {
-        val trimmed = originalText.trim()
-        if (spellCheckerSession == null || trimmed.isBlank()) return originalText
+    suspend fun correctBlock(text: String, locale: Locale = Locale.ENGLISH): String {
+        if (text.isBlank()) return text
 
-        // تخطي الكلمات الفردية المبدوءة بحرف كبير لحماية أسماء الشخصيات والمانجا
-        if (!trimmed.contains(" ") && trimmed.firstOrNull()?.isUpperCase() == true) {
-            return originalText
-        }
+        val session = getOrCreateSession(locale) ?: return text
 
-        val deferred = CompletableDeferred<String>()
-        currentDeferred = deferred
-        textUnderCheck = trimmed
+        val result = withTimeoutOrNull(2000L) {
+            suspendCancellableCoroutine { cont ->
+                val listener = object : SpellCheckerSessionListener {
+                    override fun onGetSuggestions(results: Array<out SuggestionsInfo>?) {
+                        // لا نستخدم هذه — نستخدم getSentenceSuggestions
+                    }
 
-        handler?.post {
-            try {
-                spellCheckerSession?.getSentenceSuggestions(arrayOf(TextInfo(trimmed)), 3)
-            } catch (e: Exception) {
-                deferred.complete(trimmed)
-            }
-        }
-
-        return try {
-            // انتظار الرد لمدة أقصاها 800 ملي ثانية لضمان عدم تعليق الواجهة
-            kotlinx.coroutines.withTimeout(800) {
-                deferred.await()
-            }
-        } catch (e: Exception) {
-            trimmed
-        }
-    }
-
-    override fun onGetSentenceSuggestions(results: Array<out SentenceSuggestionsInfo>?) {
-        val deferred = currentDeferred
-        if (results == null || results.isEmpty()) {
-            deferred?.complete(textUnderCheck)
-            return
-        }
-
-        val sb = StringBuilder()
-        val info = results[0]
-        val count = info.suggestionsCount
-
-        if (count == 0) {
-            deferred?.complete(textUnderCheck)
-            return
-        }
-
-        try {
-            for (i in 0 until count) {
-                val suggestionsInfo = info.getSuggestionsInfoAt(i)
-                val offset = info.getOffsetAt(i)
-                val length = info.getLengthAt(i)
-                
-                val originalWord = try {
-                    textUnderCheck.substring(offset, offset + length)
-                } catch (e: Exception) {
-                    ""
-                }
-
-                val isTypo = (suggestionsInfo.suggestionsAttributes and SuggestionsInfo.RESULT_ATTR_LOOKS_LIKE_TYPO) != 0
-
-                if (isTypo && suggestionsInfo.suggestionsCount > 0) {
-                    val bestSuggestion = suggestionsInfo.getSuggestionAt(0)
-                    sb.append(bestSuggestion)
-                } else {
-                    if (originalWord.isNotEmpty()) {
-                        sb.append(originalWord)
-                    } else {
-                        val fallback = suggestionsInfo.getSuggestionAt(0) ?: ""
-                        sb.append(fallback)
+                    override fun onGetSentenceSuggestions(results: Array<out SentenceSuggestionsInfo>?) {
+                        if (cont.isActive) cont.resume(results)
                     }
                 }
 
-                if (i < count - 1) sb.append(" ")
-            }
+                // نعيد إنشاء session مؤقتة للاستماع (لأن الـ session الدائمة لا تقبل listener مختلف)
+                val tempSession = tsm.newSpellCheckerSession(null, locale, listener, true)
+                tempSession?.getSentenceSuggestions(arrayOf(TextInfo(text)), 3)
 
-            val resultText = sb.toString().trim()
-            if (resultText.isNotEmpty()) {
-                deferred?.complete(resultText)
-            } else {
-                deferred?.complete(textUnderCheck)
+                cont.invokeOnCancellation { tempSession?.close() }
             }
-        } catch (e: Exception) {
-            deferred?.complete(textUnderCheck)
-        }
+        } ?: return text // timeout → ابقِ النص كما هو
+
+        return applyCorrections(text, result)
     }
 
-    override fun onGetSuggestions(results: Array<out SuggestionsInfo>?) {
-        // إجبارية من واجهة النظام
-    }
+    /**
+     * يطبق التصحيحات على النص الأصلي بناءً على offsets التي أعطاها النظام.
+     */
+    private fun applyCorrections(
+        original: String,
+        results: Array<out SentenceSuggestionsInfo>?,
+    ): String {
+        if (results.isNullOrEmpty()) return original
 
-    fun close() {
-        handler?.post {
-            try {
-                spellCheckerSession?.cancel()
-                spellCheckerSession = null
-            } catch (e: Exception) {
-                // تجاهل
+        val sentenceInfo = results[0]
+        val corrected = StringBuilder(original)
+        var offset = 0 // تتبع إزاحة النص بعد كل استبدال
+
+        // نجمع كل التصحيحات أولاً ثم نطبقها بالترتيب
+        data class Correction(val start: Int, val end: Int, val replacement: String)
+        val corrections = mutableListOf<Correction>()
+
+        for (i in 0 until sentenceInfo.suggestionsCount) {
+            val info = sentenceInfo.getSuggestionsInfoAt(i)
+            val wordStart = sentenceInfo.getOffsetAt(i)
+            val wordLen = sentenceInfo.getLengthAt(i)
+            val wordEnd = wordStart + wordLen
+
+            if (wordStart < 0 || wordEnd > original.length) continue
+
+            val originalWord = original.substring(wordStart, wordEnd)
+
+            // كلمة تبدأ بحرف كبير → اسم علم، تجاهل
+            if (originalWord.isNotEmpty() && originalWord[0].isUpperCase()) continue
+
+            // تحقق إذا النظام يعتبرها خطأ إملائي
+            val attrs = info.suggestionsAttributes
+            val isTypo = (attrs and SuggestionsInfo.RESULT_ATTR_LOOKS_LIKE_TYPO) != 0
+            val notInDict = (attrs and SuggestionsInfo.RESULT_ATTR_IN_THE_DICTIONARY) == 0
+
+            if ((isTypo || notInDict) && info.suggestionsCount > 0) {
+                val suggestion = info.getSuggestionAt(0)
+                // لا نستبدل إذا الاقتراح أطول بكثير (قد يكون خطأ)
+                if (suggestion.length <= originalWord.length * 2) {
+                    corrections.add(Correction(wordStart, wordEnd, suggestion))
+                }
             }
         }
-        handlerThread?.quitSafely()
+
+        // طبّق التصحيحات من الآخر للأول لكي لا تتأثر الـ offsets
+        for (correction in corrections.sortedByDescending { it.start }) {
+            corrected.replace(
+                correction.start + offset,
+                correction.end + offset,
+                correction.replacement,
+            )
+            // لا نحتاج offset هنا لأننا نعمل من الآخر للأول
+        }
+
+        return corrected.toString()
+    }
+
+    fun closeAll() {
+        sessions.values.forEach { it?.close() }
+        sessions.clear()
+    }
+
+    // listener فارغ للـ session الدائمة
+    private object DummyListener : SpellCheckerSessionListener {
+        override fun onGetSuggestions(results: Array<out SuggestionsInfo>?) {}
+        override fun onGetSentenceSuggestions(results: Array<out SentenceSuggestionsInfo>?) {}
     }
 }
