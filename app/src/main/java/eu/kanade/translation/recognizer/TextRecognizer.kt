@@ -1,7 +1,6 @@
 package eu.kanade.translation.recognizer
 
 import android.graphics.Bitmap
-import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
@@ -49,7 +48,7 @@ class TextRecognizer(val language: TextRecognizerLanguage) : Closeable {
 
     /**
      * خوارزمية المعالجة المتقدمة لشحذ الخطوط (Advanced Edge Sharpening):
-     * تكبّر الصورة 2x، وتطبق فلتر تباين حاد جداً يعزل تكسرات البكسلات الناتجة عن التكبير
+     * تكيّر الصورة 2x، وتطبق فلتر تباين حاد جداً يعزل تكسرات البكسلات الناتجة عن التكبير
      * ويحول حواف الحروف الباهتة والمغبشة إلى حدود سوداء قاطعة وصافية تماماً.
      */
     private fun enhanceWithAdvancedSharpening(image: InputImage): InputImage {
@@ -87,7 +86,7 @@ class TextRecognizer(val language: TextRecognizerLanguage) : Closeable {
                         2.5f, 0f, 0f, 0f, -140f, // القناة الحمراء
                         0f, 2.5f, 0f, 0f, -140f, // القناة الخضراء
                         0f, 0f, 2.5f, 0f, -140f, // القناة الزرقاء
-                        0f, 0f, 0f, 1f, 0f, // الحفاظ على الشفافية ثابتة
+                        0f, 0f, 0f, 1f, 0f,      // الحفاظ على الشفافية ثابتة
                     ),
                 ),
             )
