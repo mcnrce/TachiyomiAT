@@ -33,22 +33,25 @@ class AndroidTextCorrector(private val context: Context) {
     suspend fun correctBlock(text: String, locale: Locale = Locale.ENGLISH): String {
         if (text.isBlank()) return text
 
-        val session = getOrCreateSession(locale) ?: return text
+        // تأكد من وجود session دائمة مفتوحة
+        getOrCreateSession(locale) ?: return text
 
         val result = withTimeoutOrNull(2000L) {
-            suspendCancellableCoroutine { cont ->
+            suspendCancellableCoroutine<Array<out SentenceSuggestionsInfo>?> { cont ->
+                var tempSession: SpellCheckerSession? = null
+
                 val listener = object : SpellCheckerSessionListener {
                     override fun onGetSuggestions(results: Array<out SuggestionsInfo>?) {
                         // لا نستخدم هذه — نستخدم getSentenceSuggestions
                     }
 
                     override fun onGetSentenceSuggestions(results: Array<out SentenceSuggestionsInfo>?) {
+                        tempSession?.close()
                         if (cont.isActive) cont.resume(results)
                     }
                 }
 
-                // نعيد إنشاء session مؤقتة للاستماع (لأن الـ session الدائمة لا تقبل listener مختلف)
-                val tempSession = tsm.newSpellCheckerSession(null, locale, listener, true)
+                tempSession = tsm.newSpellCheckerSession(null, locale, listener, true)
                 tempSession?.getSentenceSuggestions(arrayOf(TextInfo(text)), 3)
 
                 cont.invokeOnCancellation { tempSession?.close() }
@@ -69,9 +72,8 @@ class AndroidTextCorrector(private val context: Context) {
 
         val sentenceInfo = results[0]
         val corrected = StringBuilder(original)
-        var offset = 0 // تتبع إزاحة النص بعد كل استبدال
 
-        // نجمع كل التصحيحات أولاً ثم نطبقها بالترتيب
+        // نجمع كل التصحيحات أولاً ثم نطبقها من الآخر للأول لكي لا تتأثر الـ offsets
         data class Correction(val start: Int, val end: Int, val replacement: String)
         val corrections = mutableListOf<Correction>()
 
@@ -95,21 +97,16 @@ class AndroidTextCorrector(private val context: Context) {
 
             if ((isTypo || notInDict) && info.suggestionsCount > 0) {
                 val suggestion = info.getSuggestionAt(0)
-                // لا نستبدل إذا الاقتراح أطول بكثير (قد يكون خطأ)
+                // لا نستبدل إذا الاقتراح أطول بكثير (قد يكون خطأ في التصحيح)
                 if (suggestion.length <= originalWord.length * 2) {
                     corrections.add(Correction(wordStart, wordEnd, suggestion))
                 }
             }
         }
 
-        // طبّق التصحيحات من الآخر للأول لكي لا تتأثر الـ offsets
+        // طبّق من الآخر للأول لكي لا تتأثر الـ offsets
         for (correction in corrections.sortedByDescending { it.start }) {
-            corrected.replace(
-                correction.start + offset,
-                correction.end + offset,
-                correction.replacement,
-            )
-            // لا نحتاج offset هنا لأننا نعمل من الآخر للأول
+            corrected.replace(correction.start, correction.end, correction.replacement)
         }
 
         return corrected.toString()
