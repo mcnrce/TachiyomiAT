@@ -1,7 +1,6 @@
 package eu.kanade.translation.recognizer
 
 import android.graphics.Bitmap
-import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
@@ -29,12 +28,22 @@ class TextRecognizer(val language: TextRecognizerLanguage) : Closeable {
 
     fun recognize(image: InputImage): Text {
         val enhanced = enhanceWithAdvancedSharpening(image)
-        
+
         try {
             return Tasks.await<Text>(recognizer.process(enhanced))
         } finally {
             enhanced.bitmapInternal?.recycle()
         }
+    }
+
+    /**
+     * Returns the enhanced bitmap (2x scaled + sharpened) for external use.
+     * This ensures the bubble detection and OCR use the exact same image.
+     */
+    fun getEnhancedBitmap(image: InputImage): Bitmap {
+        val original = image.bitmapInternal
+            ?: throw IllegalArgumentException("InputImage must contain a bitmap")
+        return createEnhancedBitmap(original)
     }
 
     /**
@@ -44,13 +53,21 @@ class TextRecognizer(val language: TextRecognizerLanguage) : Closeable {
      */
     private fun enhanceWithAdvancedSharpening(image: InputImage): InputImage {
         val original = image.bitmapInternal ?: return image
+        val enhancedBitmap = createEnhancedBitmap(original)
+        return InputImage.fromBitmap(enhancedBitmap, 0)
+    }
 
-        // 1. التكبير النظيف بمقدار 2x 
+    /**
+     * Core enhancement logic: 2x scale + super edge sharpening matrix.
+     * Made public to allow external access for OCR refinement.
+     */
+    fun createEnhancedBitmap(original: Bitmap): Bitmap {
+        // 1. التكبير النظيف بمقدار 2x
         val scaled = Bitmap.createScaledBitmap(
             original,
             original.width * SCALE_FACTOR,
             original.height * SCALE_FACTOR,
-            true // تشغيل البيلينير لمنع تكسر الحروف الحاد
+            true, // تشغيل البيلينير لمنع تكسر الحروف الحاد
         )
 
         val enhancedBitmap = Bitmap.createBitmap(scaled.width, scaled.height, Bitmap.Config.ARGB_8888)
@@ -70,16 +87,16 @@ class TextRecognizer(val language: TextRecognizerLanguage) : Closeable {
                         2.5f, 0f, 0f, 0f, -140f, // القناة الحمراء
                         0f, 2.5f, 0f, 0f, -140f, // القناة الخضراء
                         0f, 0f, 2.5f, 0f, -140f, // القناة الزرقاء
-                        0f, 0f, 0f, 1f, 0f        // الحفاظ على الشفافية ثابتة
+                        0f, 0f, 0f, 1f, 0f, // الحفاظ على الشفافية ثابتة
                     ),
-                ),
+                )
             )
         }
 
         canvas.drawBitmap(scaled, 0f, 0f, paint)
         scaled.recycle() // تفريغ الذاكرة فوراً
 
-        return InputImage.fromBitmap(enhancedBitmap, 0)
+        return enhancedBitmap
     }
 
     override fun close() {
@@ -87,6 +104,6 @@ class TextRecognizer(val language: TextRecognizerLanguage) : Closeable {
     }
 
     companion object {
-        const val SCALE_FACTOR = 2 
+        const val SCALE_FACTOR = 2
     }
 }
