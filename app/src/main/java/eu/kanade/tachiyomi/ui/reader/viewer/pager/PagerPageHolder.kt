@@ -18,6 +18,8 @@ import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
 import eu.kanade.translation.data.TranslationFont
 import eu.kanade.translation.presentation.PagerTranslationsView
+import eu.kanade.translation.TranslationManager
+import eu.kanade.tachiyomi.data.database.models.toDomainChapter
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.flow.collectLatest
@@ -27,306 +29,126 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import logcat.LogPriority
 import okio.Buffer
-import okio.BufferedSource
-import tachiyomi.core.common.util.lang.launchIO
-import tachiyomi.core.common.util.lang.withIOContext
-import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.core.common.util.system.ImageUtil
 import tachiyomi.core.common.util.system.logcat
-import tachiyomi.domain.translation.TranslationPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.io.BufferedInputStream
+import java.io.InputStream
 
 /**
- * View of the ViewPager that contains a page of a chapter.
+ * View holder for a page in the pager viewer.
  */
-@SuppressLint("ViewConstructor")
 class PagerPageHolder(
-    readerThemedContext: Context,
-    val viewer: PagerViewer,
+    private val viewer: PagerViewer,
     val page: ReaderPage,
-    // TachiyomiAT
-    translationPreferences: TranslationPreferences = Injekt.get(),
-    private val font: TranslationFont = TranslationFont.fromPref(translationPreferences.translationFont()),
-    readerPreferences: ReaderPreferences = Injekt.get(),
-) : ReaderPageImageView(readerThemedContext), ViewPagerAdapter.PositionableView {
+) : ReaderPageImageView(viewer.activity), ViewPagerAdapter.PositionableView {
 
-    // TachiyomiAT
-    private var showTranslations = true
-    private var translationsView: PagerTranslationsView? = null
+    private val readerPreferences: ReaderPreferences = Injekt.get()
+
+    private var item: ReaderPage? = null
 
     /**
-     * Item that identifies this view. Needed by the adapter to not recreate views.
+
+     * Layout containing the error progress bar.
      */
-    override val item
-        get() = page
+    private var progressIndicator: ReaderProgressIndicator? = null
 
     /**
-     * Loading progress bar to indicate the current progress.
-     */
-    private var progressIndicator: ReaderProgressIndicator? = null // = ReaderProgressIndicator(readerThemedContext)
-
-    /**
-     * Error layout to show when the image fails to load.
+     * Layout containing the error view.
      */
     private var errorLayout: ReaderErrorBinding? = null
 
+    private var translationsView: PagerTranslationsView? = null
+
+    private val translationManager: TranslationManager = Injekt.get()
+    private var translationJob: Job? = null
     private val scope = MainScope()
 
-    /**
-     * Job for loading the page and processing changes to the page's status.
-     */
-    private var loadJob: Job? = null
-
     init {
-        loadJob = scope.launch { loadPageAndProcessStatus() }
-        // TachiyomiAT
-        showTranslations = readerPreferences.showTranslations().get()
-        readerPreferences.showTranslations().changes().onEach {
-            showTranslations = it
-            if (it) {
-                translationsView?.show()
-            } else {
-                translationsView?.hide()
-            }
-        }.launchIn(scope)
+        addView(
+            this.imageView,
+            LayoutParams(MATCH_PARENT, MATCH_PARENT),
+        )
+        refreshOnUiThread()
     }
 
-    /**
-     * Called when this view is detached from the window. Unsubscribes any active subscription.
-     */
-    @SuppressLint("ClickableViewAccessibility")
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
-        loadJob?.cancel()
-        loadJob = null
+        translationJob?.cancel()
+        translationJob = null
+        // تفريغ فوري لمجاري بث الفصل المنتهي لمنع تسريب الذاكرة وتجهيز الفصل التالي
+        translationManager.translator.forceRemoveRealtimeTranslation(page.chapter.chapter.id)
     }
 
-    private fun initProgressIndicator() {
-        if (progressIndicator == null) {
-            progressIndicator = ReaderProgressIndicator(context)
-            addView(progressIndicator)
-        }
-    }
-
-    /**
-     * Loads the page and processes changes to the page's status.
-     *
-     * Returns immediately if the page has no PageLoader.
-     * Otherwise, this function does not return. It will continue to process status changes until
-     * the Job is cancelled.
-     */
-    private suspend fun loadPageAndProcessStatus() {
-        val loader = page.chapter.pageLoader ?: return
-
-        supervisorScope {
-            launchIO {
-                loader.loadPage(page)
-            }
-            page.statusFlow.collectLatest { state ->
-                when (state) {
-                    Page.State.QUEUE -> setQueued()
-                    Page.State.LOAD_PAGE -> setLoading()
-                    Page.State.DOWNLOAD_IMAGE -> {
-                        setDownloading()
-                        page.progressFlow.collectLatest { value ->
-                            progressIndicator?.setProgress(value)
-                        }
-                    }
-                    Page.State.READY -> {
-                        setImage()
-                        // TachiyomiAT
-                        addTranslationsView()
-                    }
-                    Page.State.ERROR -> setError()
-                }
-            }
-        }
+    override fun getPagePosition(): Int {
+        return page.number
     }
 
     /**
-     * Called when the page is queued.
+     * Called when this holder is populated with an [item].
      */
-    private fun setQueued() {
-        initProgressIndicator()
-        progressIndicator?.show()
-        removeErrorLayout()
-    }
-
-    /**
-     * Called when the page is loading.
-     */
-    private fun setLoading() {
-        initProgressIndicator()
-        progressIndicator?.show()
-        removeErrorLayout()
-    }
-
-    /**
-     * Called when the page is downloading.
-     */
-    private fun setDownloading() {
-        initProgressIndicator()
-        progressIndicator?.show()
-        removeErrorLayout()
-    }
-
-    /**
-     * Called when the page is ready.
-     */
-    private suspend fun setImage() {
-        progressIndicator?.setProgress(0)
-
-        val streamFn = page.stream ?: return
-
-        try {
-            val (source, isAnimated, background) = withIOContext {
-                val source = streamFn().use { process(item, Buffer().readFrom(it)) }
-                val isAnimated = ImageUtil.isAnimatedAndSupported(source)
-                val background = if (!isAnimated && viewer.config.automaticBackground) {
-                    ImageUtil.chooseBackground(context, source.peek().inputStream())
-                } else {
-                    null
-                }
-                Triple(source, isAnimated, background)
-            }
-            withUIContext {
-                setImage(
-                    source,
-                    isAnimated,
-                    Config(
-                        zoomDuration = viewer.config.doubleTapAnimDuration,
-                        minimumScaleType = viewer.config.imageScaleType,
-                        cropBorders = viewer.config.imageCropBorders,
-                        zoomStartPosition = viewer.config.imageZoomType,
-                        landscapeZoom = viewer.config.landscapeZoom,
-                    ),
-                )
-                if (!isAnimated) {
-                    pageBackground = background
-                }
-                removeErrorLayout()
-            }
-        } catch (e: Throwable) {
-            logcat(LogPriority.ERROR, e)
-            withUIContext {
-                setError()
-            }
-        }
-    }
-
-    private fun process(page: ReaderPage, imageSource: BufferedSource): BufferedSource {
-        if (viewer.config.dualPageRotateToFit) {
-            return rotateDualPage(imageSource)
-        }
-
-        if (!viewer.config.dualPageSplit) {
-            return imageSource
-        }
-
-        if (page is InsertPage) {
-            return splitInHalf(imageSource)
-        }
-
-        val isDoublePage = ImageUtil.isWideImage(imageSource)
-        if (!isDoublePage) {
-            return imageSource
-        }
-
-        onPageSplit(page)
-
-        return splitInHalf(imageSource)
-    }
-
-    private fun rotateDualPage(imageSource: BufferedSource): BufferedSource {
-        val isDoublePage = ImageUtil.isWideImage(imageSource)
-        return if (isDoublePage) {
-            val rotation = if (viewer.config.dualPageRotateToFitInvert) -90f else 90f
-            ImageUtil.rotateImage(imageSource, rotation)
+    fun onSetValues(item: ReaderPage) {
+        this.item = item
+        if (item is InsertPage) {
+            imageView.setImage(ImageSource.bitmap(item.bitmap))
+        } else if (item.chapter.state is ReaderChapter.State.Loaded) {
+            refreshOnUiThread()
         } else {
-            imageSource
+            imageView.clear()
+            removeErrorLayout()
         }
     }
 
-    private fun splitInHalf(imageSource: BufferedSource): BufferedSource {
-        var side = when {
-            viewer is L2RPagerViewer && page is InsertPage -> ImageUtil.Side.RIGHT
-            viewer !is L2RPagerViewer && page is InsertPage -> ImageUtil.Side.LEFT
-            viewer is L2RPagerViewer && page !is InsertPage -> ImageUtil.Side.LEFT
-            viewer !is L2RPagerViewer && page !is InsertPage -> ImageUtil.Side.RIGHT
-            else -> error("We should choose a side!")
-        }
+    /**
+     * Clean up status when view is recycled.
+     */
+    fun onViewRecycled() {
+        translationJob?.cancel()
+        translationJob = null
+        this.item = null
+        imageView.clear()
+        removeErrorLayout()
+    }
 
-        if (viewer.config.dualPageInvert) {
-            side = when (side) {
-                ImageUtil.Side.RIGHT -> ImageUtil.Side.LEFT
-                ImageUtil.Side.LEFT -> ImageUtil.Side.RIGHT
+    /**
+     * Called when a page is ready to be shown. Usually after data has been loaded or layout changed.
+     */
+    fun onPageSelected() {
+        if (translationsView == null && page.translation != null) {
+            translationsView = PagerTranslationsView(context).apply {
+                val fontPref = readerPreferences.translationFont().get()
+                setFont(TranslationFont.fromPref(fontPref).getAssetPath())
+                setPageTranslation(page.translation!!)
             }
+            addView(translationsView, LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            imageView.setOnImageEventListener(
+                object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
+                    override fun onImageLoadError(e: Exception?) {
+                        super.onImageLoadError(e)
+                    }
+
+                    override fun onReady() {
+                        super.onReady()
+                        updateTranslationCoords(imageView)
+                    }
+                },
+            )
+            imageView.setOnStateChangeListener(
+                object : SubsamplingScaleImageView.OnStateChangeListener {
+                    override fun onCenterChanged(newCenter: PointF?, origin: Int) {
+                        updateTranslationCoords(imageView)
+                    }
+
+                    override fun onScaleChanged(newScale: Float, origin: Int) {
+                        updateTranslationCoords(imageView)
+                    }
+                },
+            )
         }
-
-        return ImageUtil.splitInHalf(imageSource, side)
     }
 
-    private fun onPageSplit(page: ReaderPage) {
-        val newPage = InsertPage(page)
-        viewer.onPageSplit(page, newPage)
-    }
-
-    /**
-     * Called when the page has an error.
-     */
-    private fun setError() {
-        progressIndicator?.hide()
-        showErrorLayout()
-        // TachiyomiAT
-        translationsView?.hide()
-    }
-
-    override fun onImageLoaded() {
-        super.onImageLoaded()
-        progressIndicator?.hide()
-        // TachiyomiAT
-        updateTranslationCoords(pageView as SubsamplingScaleImageView)
-        // TachiyomiAT
-        translationsView?.show()
-    }
-
-    /**
-     * Called when an image fails to decode.
-     */
-    override fun onImageLoadError() {
-        super.onImageLoadError()
-        setError()
-        // TachiyomiAT
-        translationsView?.hide()
-    }
-
-    /**
-     * Called when an image is zoomed in/out.
-     */
-    override fun onScaleChanged(newScale: Float) {
-        super.onScaleChanged(newScale)
-        viewer.activity.hideMenu()
-        // TachiyomiAT
-        updateTranslationCoords(pageView as SubsamplingScaleImageView)
-    }
-
-    // TachiyomiAT
-    override fun onCenterChanged(newCenter: PointF?) {
-        super.onCenterChanged(newCenter)
-        updateTranslationCoords(pageView as SubsamplingScaleImageView)
-    }
-
-    // TachiyomiAT
-    private fun addTranslationsView() {
-        if (page.translation == null) return
-        removeView(translationsView)
-        translationsView = PagerTranslationsView(context, translation = page.translation!!, font = font)
-        if (!showTranslations) translationsView?.hide()
-        addView(translationsView, MATCH_PARENT, MATCH_PARENT)
-    }
-
-    // TachiyomiAT
+    @SuppressLint("ClickableViewAccessibility")
     private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
         if (page.translation == null) return
         val coords = vi.sourceToViewCoord(0f, 0f)
@@ -348,9 +170,8 @@ class PagerPageHolder(
         val imageUrl = page.imageUrl
         errorLayout?.actionOpenInWebView?.isVisible = imageUrl != null
         if (imageUrl != null) {
-            if (imageUrl.startsWith("http", true)) {
-                errorLayout?.actionOpenInWebView?.viewer = viewer
-                errorLayout?.actionOpenInWebView?.setOnClickListener {
+            if (imageUrl.startsWith(\"http\", true)) {
+                errorLayout?.actionOpenInWebView?.viewer = viewer\n                errorLayout?.actionOpenInWebView?.setOnClickListener {
                     val intent = WebViewActivity.newIntent(context, imageUrl)
                     context.startActivity(intent)
                 }
