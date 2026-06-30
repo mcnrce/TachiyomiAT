@@ -95,6 +95,7 @@ class ChapterTranslator(
         val pending = queueState.value.filter { it.status != Translation.State.TRANSLATED }
         pending.forEach { if (it.status != Translation.State.QUEUE) it.status = Translation.State.QUEUE }
         isPaused = false
+       
         launchTranslatorJob()
         return pending.isNotEmpty()
     }
@@ -138,6 +139,7 @@ class ChapterTranslator(
                     activeTranslationsErroredFlow.first()
                 }
             }.distinctUntilChanged()
+    
             supervisorScope {
                 val translationJobs = mutableMapOf<Translation, Job>()
 
@@ -149,6 +151,7 @@ class ChapterTranslator(
                     translationJobs.keys.retainAll(activeTranslations)
 
                     val translationsToStart = activeTranslations.filter { it !in translationJobs }
+        
                     translationsToStart.forEach { translation ->
                         translationJobs[translation] = launchTranslationJob(translation)
                     }
@@ -160,16 +163,12 @@ class ChapterTranslator(
     private fun CoroutineScope.launchTranslationJob(translation: Translation) = launchIO {
         try {
             translateChapter(translation)
+            
+            // تم إزالة البقاء الإجباري في الطابور لمنع التكدس
             if (translation.status == Translation.State.TRANSLATED) {
-                // إذا كانت ترجمة فورية (لديها pageStreams) → لا نحذفها من الـ queue فوراً
-                // بل ننتظر صفحات جديدة قد تأتي لاحقاً
-                if (translation.isRealtimeMode) {
-                    // أبقِ في الـ queue بحالة QUEUE لاستقبال صفحات جديدة
-                    translation.status = Translation.State.QUEUE
-                } else {
-                    removeFromQueue(translation)
-                }
+                removeFromQueue(translation)
             }
+            
             if (areAllTranslationsFinished()) {
                 stop()
             }
@@ -200,7 +199,6 @@ class ChapterTranslator(
         addToQueue(translation)
     }
 
-    // للترجمة الفورية — تمرير الصفحات مباشرة من الكاش (online أو downloaded)
     fun queueChapterWithPages(
         manga: Manga,
         chapter: Chapter,
@@ -215,7 +213,6 @@ class ChapterTranslator(
             return
         }
 
-        // اقرأ الصفحات المترجمة مسبقاً من الملف إن وجد
         val alreadyTranslated = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
             ?.let { file ->
                 try {
@@ -223,14 +220,17 @@ class ChapterTranslator(
                 } catch (e: Throwable) { emptyMap() }
             } ?: emptyMap()
 
-        // تصفية الصفحات التي لم تُترجم بعد فقط
         val pendingStreams = pageStreams.filter { (fileName, _) -> !alreadyTranslated.containsKey(fileName) }
         if (pendingStreams.isEmpty()) return
 
         val existing = queueState.value.find { it.chapter.id == chapter.id }
         if (existing != null) {
-            // أضف الصفحات الجديدة للـ Translation الموجود في الـ queue
             existing.addPageStreams(pendingStreams)
+            // تحديث الحالة إذا كانت المهمة قد توقفت لكي تعود للعمل
+            if (existing.status == Translation.State.TRANSLATED || existing.status == Translation.State.ERROR) {
+                existing.status = Translation.State.QUEUE
+                if (!isRunning) start()
+            }
         } else {
             val translation = Translation(
                 source, manga, chapter, fromLang, toLang,
@@ -259,27 +259,26 @@ class ChapterTranslator(
             val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
             val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
 
-            // في وضع الترجمة الفورية نبقى في loop حتى لا تأتي صفحات جديدة
-            val maxWaitCycles = if (translation.isRealtimeMode) 60 else 1 // 60 × 500ms = 30 ثانية
+            // تقليل دورات الانتظار لتجنب تعليق الطابور (6 دورات = 3 ثواني)
+            val maxWaitCycles = if (translation.isRealtimeMode) 6 else 1 
             var emptyCycles = 0
 
             while (true) {
                 currentCoroutineContext().ensureActive()
 
-                // اقرأ الصفحات المنتظرة
                 val streamsSnapshot = translation.takePageStreams()
 
                 if (streamsSnapshot.isEmpty()) {
                     if (!translation.isRealtimeMode) break
-                    // انتظر قليلاً قبل التحقق مجدداً
+                    
                     emptyCycles++
-                    if (emptyCycles >= maxWaitCycles) break
+                    if (emptyCycles >= maxWaitCycles) break // الخروج وإخلاء الطابور إذا لم تصل صفحات جديدة
+                    
                     kotlinx.coroutines.delay(500)
                     continue
                 }
                 emptyCycles = 0
 
-                // ابدأ بالصفحات المترجمة مسبقاً من الملف
                 val existingInFile = provider.findTranslationFile(
                     translation.chapter.name, translation.chapter.scanlator,
                     translation.manga.title, translation.source,
@@ -291,7 +290,6 @@ class ChapterTranslator(
                 val pages = existingInFile.toMutableMap()
                 val tmpFile = translationMangaDir.createFile("tmp")!!
 
-                // فلتر الصفحات غير المترجمة فقط
                 val pendingStreams = streamsSnapshot.filter { (fileName, _) -> !pages.containsKey(fileName) }
 
                 if (pendingStreams.isNotEmpty()) {
@@ -320,15 +318,15 @@ class ChapterTranslator(
                             if (pageTranslation.blocks.isNotEmpty()) pages[fileName] = pageTranslation
                         }
                     }
+    
                     tmpFile.delete()
 
-                    // ترجمة النصوص فقط للصفحات الجديدة
                     val newPages = pages.filterKeys { key -> !existingInFile.containsKey(key) }
                     if (newPages.isNotEmpty()) {
                         withContext(Dispatchers.IO) {
                             textTranslator.translate(pages)
                         }
-                        // أصدر حدث لكل صفحة جديدة فوراً
+                        
                         newPages.keys.forEach { fileName ->
                             pages[fileName]?.let { pageTranslation ->
                                 translation.emitPageTranslated(fileName, pageTranslation)
@@ -336,7 +334,6 @@ class ChapterTranslator(
                         }
                     }
 
-                    // احفظ الملف مع كل الصفحات
                     val existingFile = provider.findTranslationFile(
                         translation.chapter.name, translation.chapter.scanlator,
                         translation.manga.title, translation.source,
@@ -376,7 +373,6 @@ class ChapterTranslator(
         }
         translation.blocks = smartMergeBlocks(translation.blocks, width.toFloat(), height.toFloat())
 
-        // قائمة الكلمات المفلترة من إعدادات المستخدم
         val filteredWords = translationPreferences.translationFilteredWords().get()
             .split(",")
             .map { it.trim().lowercase() }
@@ -386,14 +382,12 @@ class ChapterTranslator(
             val blockText = block.text.trim()
             val letters = blockText.filter { it.isLetter() }
 
-            // احذف إذا كانت جميع الأحرف إنجليزية وعدد الأحرف الفريدة أقل من 3
             val isAllEnglish = letters.isNotEmpty() && letters.all { it in 'A'..'Z' || it in 'a'..'z' }
             if (isAllEnglish) {
                 val uniqueLetters = letters.lowercase().toSet().size
                 if (uniqueLetters < 3) return@filter false
             }
 
-            // احذف إذا طابق أي كلمة من قائمة المستخدم (مطابقة كاملة)
             if (filteredWords.isNotEmpty()) {
                 val blockLower = blockText.lowercase()
                 if (filteredWords.any { word -> blockLower == word }) return@filter false
@@ -437,26 +431,20 @@ class ChapterTranslator(
             if (!merged) i++
         }
 
-        // ... داخل دالة smartMergeBlocks ...
-
         val expandedBlocks = initialBlocks.map { block ->
             val cleanedText = block.text.replace("\n", " ").trim()
             val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
 
-            // 1. حساب معامل التكبير الأساسي بناءً على طول النص المترجم مقارنة بالأصل
             val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
                 .coerceIn(1.0f, 1.25f)
             val finalScale = kotlin.math.sqrt(textRatio.toDouble()).toFloat()
 
-            // 2. التكبير المبدئي المتناسق للعرض والارتفاع
             var newWidth = block.width * finalScale
             var newHeight = block.height * finalScale
 
-            // 3. التوسيع العمودي الإجباري والنهائي بنسبة 1.15 لجميع النصوص الأفقية المترجمة
             val verticalBonus = 1.3f
             newHeight *= verticalBonus
 
-            // 4. إعادة حساب المركز (Center) لكي تتوسع الكتلة عمودياً وأفقياً بالتساوي من كل الجهات
             val newX = block.x - (newWidth - block.width) / 2f
             val newY = block.y - (newHeight - block.height) / 2f
 
@@ -469,8 +457,6 @@ class ChapterTranslator(
                 y = newY.coerceIn(0f, imgHeight - newHeight.coerceAtMost(imgHeight)),
             )
         }.toMutableList()
-
-// ... يتبع كود حل التصادمات (Collisions) كما هو دون تغيير ...
 
         val iterations = 4
         for (step in 0 until iterations) {
@@ -724,14 +710,19 @@ class ChapterTranslator(
             val reader = chapterPath.archiveReader(context)
             return reader.useEntries { entries ->
                 entries.filter { it.isFile && ImageUtil.isImage(it.name) { reader.getInputStream(it.name)!! } }
-                    .sortedWith { f1, f2 -> f1.name.compareToCaseInsensitiveNaturalOrder(f2.name) }.map { entry ->
-                        Pair(entry.name) { reader.getInputStream(entry.name)!! }
+                    .sortedWith { f1, f2 -> f1.name.compareToCaseInsensitiveNaturalOrder(f2.name) }
+                    // تم التعديل هنا لتوحيد صيغة الأسماء مع ReaderPage.index
+                    .mapIndexed { index, entry ->
+                        Pair(String.format("%03d.jpg", index)) { reader.getInputStream(entry.name)!! }
                     }.toList()
             }
         } else {
-            return chapterPath.listFiles()!!.filter { ImageUtil.isImage(it.name) }.map { entry ->
-                Pair(entry.name!!) { entry.openInputStream() }
-            }.toList()
+            return chapterPath.listFiles()!!.filter { ImageUtil.isImage(it.name) }
+                .sortedWith { f1, f2 -> f1.name!!.compareToCaseInsensitiveNaturalOrder(f2.name!!) }
+                // تم التعديل هنا أيضاً
+                .mapIndexed { index, entry ->
+                    Pair(String.format("%03d.jpg", index)) { entry.openInputStream() }
+                }.toList()
         }
     }
 
@@ -757,9 +748,7 @@ class ChapterTranslator(
         _queueState.update { queue ->
             val translations = queue.filter { predicate(it) }
             translations.forEach { translation ->
-                if (translation.status == Translation.State.TRANSLATING ||
-                    translation.status == Translation.State.QUEUE
-                ) {
+                if (translation.status == Translation.State.TRANSLATING || translation.status == Translation.State.QUEUE) {
                     translation.status = Translation.State.NOT_TRANSLATED
                 }
             }
