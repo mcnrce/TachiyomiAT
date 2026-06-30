@@ -1,129 +1,126 @@
 package eu.kanade.presentation.reader.settings
 
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderSettingsScreenModel
-import eu.kanade.translation.TranslationManager
-import eu.kanade.translation.recognizer.TextRecognizerLanguage
-import tachiyomi.domain.translation.MangaTranslationPreferences
-import tachiyomi.i18n.at.ATMR
-import tachiyomi.presentation.core.components.HeadingItem
+import tachiyomi.i18n.MR
+import tachiyomi.presentation.core.components.CheckboxItem
 import tachiyomi.presentation.core.components.SettingsChipRow
-import tachiyomi.presentation.core.components.SwitchPreference
+import tachiyomi.presentation.core.components.SliderItem
+import tachiyomi.presentation.core.i18n.pluralStringResource
 import tachiyomi.presentation.core.i18n.stringResource
-import uy.kohesive.injekt.Injekt
-import uy.kohesive.injekt.api.get
+import tachiyomi.presentation.core.util.collectAsState
 
-/**
- * تبويب "الترجمة" في إعدادات القارئ — خاص بالمانجا الحالية فقط.
- *
- * منطق الأولوية (مُطبَّق في ChapterTranslator وليس هنا، لكن هذه الواجهة تتحكم فيه):
- *  - hasOverride == false → استخدم إعداد الترجمة الفورية العام (translationPreferences.realtimeTranslation)
- *  - hasOverride == true  → استخدم enabled/sourceLanguage الخاصين بهذه المانجا فقط، بغض النظر عن العام
- */
+private val themes = listOf(
+    MR.strings.black_background to 1,
+    MR.strings.gray_background to 2,
+    MR.strings.white_background to 0,
+    MR.strings.automatic_background to 3,
+)
+
+private val flashColors = listOf(
+    MR.strings.pref_flash_style_black to ReaderPreferences.FlashColor.BLACK,
+    MR.strings.pref_flash_style_white to ReaderPreferences.FlashColor.WHITE,
+    MR.strings.pref_flash_style_white_black to ReaderPreferences.FlashColor.WHITE_BLACK,
+)
+
 @Composable
-internal fun ColumnScope.TranslationSettingsPage(
-    screenModel: ReaderSettingsScreenModel,
-    mangaTranslationPreferences: MangaTranslationPreferences = remember { Injekt.get() },
-    translationManager: TranslationManager = remember { Injekt.get() },
-) {
-    val manga by screenModel.mangaFlow.collectAsState()
-    val mangaId = manga?.id ?: return
+internal fun ColumnScope.GeneralPage(screenModel: ReaderSettingsScreenModel) {
+    val readerTheme by screenModel.preferences.readerTheme().collectAsState()
 
-    HeadingItem(ATMR.strings.pref_category_translations)
+    val flashPageState by screenModel.preferences.flashOnPageChange().collectAsState()
 
-    val hasOverridePref = remember(mangaId) { mangaTranslationPreferences.hasOverride(mangaId) }
-    val hasOverride by hasOverridePref.collectAsState()
+    val flashMillisPref = screenModel.preferences.flashDurationMillis()
+    val flashMillis by flashMillisPref.collectAsState()
 
-    // مفتاح تفعيل وضع "إعدادات خاصة لهذه المانجا"
-    SwitchPreference(
-        preference = hasOverridePref,
-        title = stringResource(ATMR.strings.pref_translation_manga_override),
-        subtitle = stringResource(ATMR.strings.pref_translation_manga_override_subtitle),
+    val flashIntervalPref = screenModel.preferences.flashPageInterval()
+    val flashInterval by flashIntervalPref.collectAsState()
+
+    val flashColorPref = screenModel.preferences.flashColor()
+    val flashColor by flashColorPref.collectAsState()
+
+    SettingsChipRow(MR.strings.pref_reader_theme) {
+        themes.map { (labelRes, value) ->
+            FilterChip(
+                selected = readerTheme == value,
+                onClick = { screenModel.preferences.readerTheme().set(value) },
+                label = { Text(stringResource(labelRes)) },
+            )
+        }
+    }
+
+    CheckboxItem(
+        label = stringResource(MR.strings.pref_show_page_number),
+        pref = screenModel.preferences.showPageNumber(),
     )
 
-    if (hasOverride) {
-        val enabledPref = remember(mangaId) { mangaTranslationPreferences.enabled(mangaId) }
+    CheckboxItem(
+        label = stringResource(MR.strings.pref_fullscreen),
+        pref = screenModel.preferences.fullscreen(),
+    )
 
-        // التبديل بين تفعيل/تعطيل الترجمة الفورية لهذه المانجا تحديداً
-        SwitchPreference(
-            preference = enabledPref,
-            title = stringResource(ATMR.strings.pref_translation_manga_enabled),
+    if (screenModel.hasDisplayCutout && screenModel.preferences.fullscreen().get()) {
+        CheckboxItem(
+            label = stringResource(MR.strings.pref_cutout_short),
+            pref = screenModel.preferences.cutoutShort(),
         )
+    }
 
-        val sourceLangPref = remember(mangaId) { mangaTranslationPreferences.sourceLanguage(mangaId) }
-        val sourceLangRaw by sourceLangPref.collectAsState()
-        val sourceLang = remember(sourceLangRaw) {
-            TextRecognizerLanguage.entries.firstOrNull { it.name == sourceLangRaw }
-                ?: TextRecognizerLanguage.CHINESE
-        }
+    CheckboxItem(
+        label = stringResource(MR.strings.pref_keep_screen_on),
+        pref = screenModel.preferences.keepScreenOn(),
+    )
 
-        SettingsChipRow(ATMR.strings.pref_translate_from) {
-            TextRecognizerLanguage.entries.forEach { lang ->
+    CheckboxItem(
+        label = stringResource(MR.strings.pref_read_with_long_tap),
+        pref = screenModel.preferences.readWithLongTap(),
+    )
+
+    CheckboxItem(
+        label = stringResource(MR.strings.pref_always_show_chapter_transition),
+        pref = screenModel.preferences.alwaysShowChapterTransition(),
+    )
+
+    CheckboxItem(
+        label = stringResource(MR.strings.pref_page_transitions),
+        pref = screenModel.preferences.pageTransitions(),
+    )
+
+    CheckboxItem(
+        label = stringResource(MR.strings.pref_flash_page),
+        pref = screenModel.preferences.flashOnPageChange(),
+    )
+    if (flashPageState) {
+        SliderItem(
+            value = flashMillis / ReaderPreferences.MILLI_CONVERSION,
+            label = stringResource(MR.strings.pref_flash_duration),
+            valueText = stringResource(MR.strings.pref_flash_duration_summary, flashMillis),
+            onChange = { flashMillisPref.set(it * ReaderPreferences.MILLI_CONVERSION) },
+            min = 1,
+            max = 15,
+        )
+        SliderItem(
+            value = flashInterval,
+            label = stringResource(MR.strings.pref_flash_page_interval),
+            valueText = pluralStringResource(MR.plurals.pref_pages, flashInterval, flashInterval),
+            onChange = {
+                flashIntervalPref.set(it)
+            },
+            min = 1,
+            max = 10,
+        )
+        SettingsChipRow(MR.strings.pref_flash_with) {
+            flashColors.map { (labelRes, value) ->
                 FilterChip(
-                    selected = lang == sourceLang,
-                    onClick = { sourceLangPref.set(lang.name) },
-                    label = { Text(lang.label) },
+                    selected = flashColor == value,
+                    onClick = { flashColorPref.set(value) },
+                    label = { Text(stringResource(labelRes)) },
                 )
             }
         }
-    }
-
-    var showClearDialog by remember { mutableStateOf(false) }
-
-    OutlinedButton(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 8.dp),
-        onClick = { showClearDialog = true },
-    ) {
-        Text(stringResource(ATMR.strings.pref_translation_clear))
-    }
-
-    if (showClearDialog) {
-        val source = manga?.source
-        AlertDialog(
-            onDismissRequest = { showClearDialog = false },
-            title = { Text(stringResource(ATMR.strings.pref_translation_clear)) },
-            text = { Text(stringResource(ATMR.strings.pref_translation_clear_confirm)) },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        manga?.let { m ->
-                            val src = translationManager.let { tm ->
-                                // نحتاج HttpSource الفعلي للحذف؛ نمرره عبر deleteManga في TranslationManager
-                                null
-                            }
-                        }
-                        showClearDialog = false
-                    },
-                ) {
-                    Text(
-                        stringResource(ATMR.strings.action_clear),
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearDialog = false }) {
-                    Text(stringResource(ATMR.strings.action_cancel))
-                }
-            },
-        )
     }
 }
