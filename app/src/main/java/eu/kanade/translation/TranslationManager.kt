@@ -52,14 +52,20 @@ class TranslationManager(
         get() = translator.queueState
 
     init {
-        // استمع لكل Translation يدخل الـ queue وأعد إصدار أحداثه في الـ global flow
-        queueState.onEach { queue ->
-            queue.forEach { translation ->
-                translation.pageTranslatedFlow.onEach { (fileName, pageTranslation) ->
-                    _globalPageTranslatedFlow.emit(Triple(translation.chapter.id, fileName, pageTranslation))
-                }.launchIn(scope)
+        // إصلاح تسريب الذاكرة: دمج التدفقات بشكل تفاعلي آمن تلقائي الإلغاء عند تحديث الطابور
+        queueState
+            .flatMapLatest { queue ->
+                val flows = queue.map { translation ->
+                    translation.pageTranslatedFlow.map { (fileName, pageTranslation) ->
+                        Triple(translation.chapter.id, fileName, pageTranslation)
+                    }
+                }
+                flows.merge()
             }
-        }.launchIn(scope)
+            .onEach { event ->
+                _globalPageTranslatedFlow.emit(event)
+            }
+            .launchIn(scope)
     }
 
     fun translatorStart() = translator.start()
@@ -72,12 +78,10 @@ class TranslationManager(
 
     fun pauseTranslation() {
         translator.pause()
-        translator.stop()
     }
 
     fun clearQueue() {
         translator.clearQueue()
-        translator.stop()
     }
 
     fun getQueuedTranslationOrNull(chapterId: Long): Translation? {
@@ -93,7 +97,7 @@ class TranslationManager(
         startTranslation()
     }
 
-    // للترجمة الفورية — تمرير الصفحات مباشرة من الكاش
+    // للترجمة الفورية — تمرير الصفحات مباشرة من الكاش مع تفعيل الأولوية القصوى
     fun queueChapterWithPages(
         manga: Manga,
         chapter: Chapter,
