@@ -37,6 +37,7 @@ import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.lang.withUIContext
 import tachiyomi.core.common.util.system.ImageUtil
 import tachiyomi.core.common.util.system.logcat
+import tachiyomi.domain.translation.MangaTranslationPreferences
 import tachiyomi.domain.translation.TranslationPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -48,10 +49,22 @@ class WebtoonPageHolder(
     private val frame: ReaderPageImageView,
     viewer: WebtoonViewer,
     translationPreferences: TranslationPreferences = Injekt.get(),
+    mangaTranslationPreferences: MangaTranslationPreferences = Injekt.get(),
     private val font: TranslationFont = TranslationFont.fromPref(translationPreferences.translationFont()),
     readerPreferences: ReaderPreferences = Injekt.get(),
     private val translationManager: TranslationManager = Injekt.get(),
-    private val realtimeTranslation: Boolean = translationPreferences.realtimeTranslation().get(),
+    // TachiyomiAT: نفس منطق الأولوية المستخدم في PagerPageHolder تماماً
+    private val realtimeTranslation: Boolean = run {
+        val mangaId = viewer.activity.viewModel.manga?.id
+        if (mangaId == null) {
+            translationPreferences.realtimeTranslation().get()
+        } else {
+            mangaTranslationPreferences.resolveRealtimeEnabled(
+                mangaId = mangaId,
+                globalRealtimeEnabled = translationPreferences.realtimeTranslation().get(),
+            )
+        }
+    },
 ) : WebtoonBaseHolder(frame, viewer) {
 
     private var showTranslations = true
