@@ -9,6 +9,7 @@ import okhttp3.Request
 import org.json.JSONArray
 import tachiyomi.core.common.util.system.logcat
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 
 @Suppress("PropertyName", "MaxLineLength", "FunctionName")
 class GoogleTranslator(
@@ -16,17 +17,72 @@ class GoogleTranslator(
     override val toLang: TextTranslatorLanguage,
 ) : TextTranslator {
     private val client1 = "gtx"
-    private val okHttpClient = OkHttpClient()
+    private val okHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
     private val urlPattern = Regex("(?i)(https?://\\S+|www\\.\\S+|\\S+\\.(com|net|org|io|me|cc|tv|info))")
-
-    // تم إصلاح الخطأ هنا باستخدام الـ Raw String لتجنب مشاكل الـ Escape Sequence
     private val symbolsFilterPattern = Regex("""[_~•°^@#$&|\\-]""")
-
-    // المعيار الآمن: فاصل يجبر جوجل على إنهاء الجملة ولا يختفي في الترجمة
     private val SAFE_SEPARATOR = " . "
 
+    // يكتشف الكلمات اللاتينية/الإنجليزية المتبقية في النص المترجم
+    private val untranslatedWordPattern = Regex("""[a-zA-Z]{2,}""")
+
+    // لغات لا تستخدم الأحرف اللاتينية — نُفحّص فيها الكلمات غير المترجمة
+    private val nonLatinLanguages = setOf(
+        TextTranslatorLanguage.ARABIC,
+        TextTranslatorLanguage.JAPANESE,
+        TextTranslatorLanguage.CHINESESIM,
+        TextTranslatorLanguage.CHINESETRAD,
+        TextTranslatorLanguage.KOREAN,
+        TextTranslatorLanguage.RUSSIAN,
+        TextTranslatorLanguage.GREEK_MODERN,
+        TextTranslatorLanguage.HEBREW,
+        TextTranslatorLanguage.HINDI,
+        TextTranslatorLanguage.THAI,
+        TextTranslatorLanguage.PERSIAN,
+        TextTranslatorLanguage.URDU,
+        TextTranslatorLanguage.BENGALI,
+        TextTranslatorLanguage.TAMIL,
+        TextTranslatorLanguage.TELUGU,
+        TextTranslatorLanguage.MALAYALAM,
+        TextTranslatorLanguage.KANNADA,
+        TextTranslatorLanguage.GUJARATI,
+        TextTranslatorLanguage.PANJABI_PUNJABI,
+        TextTranslatorLanguage.MARATHI,
+        TextTranslatorLanguage.ARMENIAN,
+        TextTranslatorLanguage.GEORGIAN,
+        TextTranslatorLanguage.UKRAINIAN,
+        TextTranslatorLanguage.BELARUSIAN,
+        TextTranslatorLanguage.BULGARIAN,
+        TextTranslatorLanguage.SERBIAN,
+        TextTranslatorLanguage.MACEDONIAN,
+        TextTranslatorLanguage.MONGOLIAN,
+        TextTranslatorLanguage.KAZAKH,
+        TextTranslatorLanguage.KIRGHIZ_KYRGYZ,
+        TextTranslatorLanguage.TAJIK,
+        TextTranslatorLanguage.TIBETAN,
+        TextTranslatorLanguage.LAO,
+        TextTranslatorLanguage.CENTRAL_KHMER,
+        TextTranslatorLanguage.BURMESE,
+        TextTranslatorLanguage.SINHALA_SINHALESE,
+        TextTranslatorLanguage.AMHARIC,
+        TextTranslatorLanguage.KURDISH,
+        TextTranslatorLanguage.PUSHTO_PASHTO,
+        TextTranslatorLanguage.UIGHUR_UYGHUR,
+        TextTranslatorLanguage.SINDHI,
+        TextTranslatorLanguage.YIDDISH,
+        TextTranslatorLanguage.DIVEHI_DHIVEHI_MALDIVIAN,
+        TextTranslatorLanguage.NEPALI,
+        TextTranslatorLanguage.DZONGKHA,
+    )
+
+    // هل لغة الترجمة الحالية لا تستخدم لاتيني؟
+    private val shouldFixUntranslated = nonLatinLanguages.contains(toLang)
+
     override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
-        // --- إعداد منطق إصلاح الاتجاه (RTL) ---
         val rtlLanguages = setOf(
             TextTranslatorLanguage.ARABIC,
             TextTranslatorLanguage.PERSIAN,
@@ -41,7 +97,7 @@ class GoogleTranslator(
         val isRTL = rtlLanguages.contains(toLang)
         val rtlMarker = if (isRTL) "\u200F" else ""
 
-        // 1. تجميع كل البلوكات الصالحة من كل الصفحات
+        // 1. تجميع البلوكات الصالحة
         val allValidBlocks = mutableListOf<TranslationBlock>()
         pages.forEach { (_, page) ->
             page.blocks.forEach { block ->
@@ -60,13 +116,12 @@ class GoogleTranslator(
 
         if (allValidBlocks.isEmpty()) return
 
-        // 2. تحزيم البلوكات (Batching) بناءً على طول النص بعد تطهيره من الرموز
+        // 2. التحزيم
         val batches = mutableListOf<MutableList<TranslationBlock>>()
         var currentBatch = mutableListOf<TranslationBlock>()
         var currentLength = 0
 
         for (block in allValidBlocks) {
-            // تنظيف النص المستخرج واستبدال الرموز غير المرغوبة بفراغات مع الحفاظ على الرموز الرياضية
             val cleanedBlockText = cleanSymbols(block.text)
             val textToAdd = cleanedBlockText + SAFE_SEPARATOR
 
@@ -80,7 +135,7 @@ class GoogleTranslator(
         }
         if (currentBatch.isNotEmpty()) batches.add(currentBatch)
 
-        // 3. إرسال الحزم ومعالجة الرد
+        // 3. الترجمة + إصلاح الكلمات غير المترجمة
         batches.forEach { batch ->
             val mergedText = batch.joinToString("\n") {
                 cleanSymbols(it.text) + SAFE_SEPARATOR
@@ -89,6 +144,7 @@ class GoogleTranslator(
             val translatedMergedText = try {
                 translateText(toLang.code, mergedText)
             } catch (e: Exception) {
+                logcat { "Translation failed: ${e.message}" }
                 ""
             }
 
@@ -99,12 +155,14 @@ class GoogleTranslator(
 
                 batch.forEachIndexed { index, block ->
                     if (index < translatedLines.size) {
-                        val cleanText = translatedLines[index]
+                        var cleanText = translatedLines[index]
                             .removeSuffix(".")
                             .removeSuffix(" .")
                             .trim()
 
-                        // تطبيق رمز RTL في بداية النص المترجم للغات المختارة
+                        // === إصلاح الكلمات غير المترجمة (فقط للغات غير اللاتينية) ===
+                        cleanText = fixUntranslatedWords(cleanText, toLang.code)
+
                         block.translation = rtlMarker + cleanText
                     }
                 }
@@ -113,13 +171,47 @@ class GoogleTranslator(
     }
 
     /**
-     * دالة مساعدة لتنظيف النصوص من الرموز والزخارف المستهدفة،
-     * مع استبدالها بمسافات لعدم دمج الكلمات المنفصلة ببعضها بشكل خاطئ.
+     * إذا وجدت كلمات لاتينية في النص المترجم، نستخرجها ونترجمها بمفردها
+     * ثم نستبدلها في النص. يُطبّق فقط عندما تكون لغة الترجمة غير لاتينية.
      */
+    private suspend fun fixUntranslatedWords(translatedText: String, langCode: String): String {
+        // إذا كانت لغة الترجمة تستخدم لاتيني، لا نُفحّص
+        if (!shouldFixUntranslated) return translatedText
+
+        // البحث عن الكلمات اللاتينية المتبقية (2 حروف أو أكثر)
+        val untranslatedWords = untranslatedWordPattern.findAll(translatedText)
+            .map { it.value }
+            .distinct()
+            .toList()
+
+        if (untranslatedWords.isEmpty()) return translatedText
+
+        var fixedText = translatedText
+
+        // ترجمة كل كلمة غير مترجمة بمفردها
+        for (word in untranslatedWords) {
+            try {
+                val singleTranslation = translateText(langCode, word)
+                    .trim()
+                    .removeSuffix(".")
+                    .removeSuffix(" .")
+
+                // إذا ترجمت بنجاح ولم تبقَ لاتينية
+                if (singleTranslation.isNotBlank() && !untranslatedWordPattern.containsMatchIn(singleTranslation)) {
+                    fixedText = fixedText.replace(word, singleTranslation)
+                }
+            } catch (e: Exception) {
+                logcat { "Failed to translate word '$word': ${e.message}" }
+            }
+        }
+
+        return fixedText
+    }
+
     private fun cleanSymbols(rawText: String): String {
         return rawText.replace("\n", " ")
             .replace(symbolsFilterPattern, " ")
-            .replace(Regex("""\s+"""), " ") // دمج المسافات الزائدة الناتجة عن الحذف في مسافة واحدة
+            .replace(Regex("""\s+"""), " ")
             .trim()
     }
 
