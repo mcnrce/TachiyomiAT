@@ -36,31 +36,19 @@ class TranslationManager(
     private val sourceManager: SourceManager = Injekt.get(),
 ) {
 
-    val translator = ChapterTranslator(context)
+    val translator = ChapterTranslator(context, provider)
     val queueState = translator.queueState
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val _pageTranslatedFlow = MutableSharedFlow<Pair<String, PageTranslation>>(extraBufferCapacity = 64)
+    val pageTranslatedFlow = _pageTranslatedFlow.asSharedFlow()
 
-    // الدالة الجديدة لتهيئة وإغلاق الجلسة فور خروج المستخدم من القارئ
-    fun clearRealtimeSession(chapter: Chapter, manga: Manga, source: Source) {
-        launchIO {
-            // 1. استخراج الجلسة الحالية لمعرفة إن كان هناك ترجمات جديدة تم إنتاجها في الوقت الحقيقي
-            val currentTranslation = queueState.value.firstOrNull { it.chapter.id == chapter.id }
-            
-            if (currentTranslation != null && currentTranslation.existingPages.isNotEmpty()) {
-                // 2. الحفظ النهائي والدائم في نفس ملف الـ JSON الموحد في الذاكرة الدائمة
-                val chapterDir = provider.getChapterDir(chapter.name, manga.title, source)
-                if (chapterDir != null) {
-                    val jsonFile = chapterDir.createFile("translation.json")
-                    jsonFile?.openOutputStream()?.use { outputStream ->
-                        Json.encodeToStream(currentTranslation.existingPages, outputStream)
-                    }
-                }
+    init {
+        translator.queueState
+            .flatMapLatest { translations ->
+                translations.map { it.pageTranslatedFlow }.merge()
             }
-            
-            // 3. مسح الفصل من الـ Queue فوراً وتعديل حالته لمنع حدوث الـ Timeout أو العلوق
-            translator.forceRemoveRealtimeTranslation(chapter.id)
-        }
+            .onEach { _pageTranslatedFlow.emit(it) }
+            .launchIn(CoroutineScope(SupervisorJob() + Dispatchers.IO))
     }
 
     fun deleteManga(manga: Manga, source: Source, removeQueued: Boolean = true) {
@@ -100,8 +88,7 @@ class TranslationManager(
             translations
                 .map { translation ->
                     translation.statusFlow.drop(1).map { translation }
-                }
-                .merge()
+                }\n                .merge()
         }
         .onStart {
             emitAll(
