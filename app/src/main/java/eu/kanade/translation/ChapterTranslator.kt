@@ -25,23 +25,24 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.combine
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.distinctUntilChanged
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.filter
+import kotlinx.coroutines.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.transformLatest
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
 import kotlinx.serialization.json.encodeToStream
 import logcat.LogPriority
-import mihon.core.archive.archiveReader
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.system.ImageUtil
 import tachiyomi.core.common.util.system.logcat
@@ -55,8 +56,10 @@ import uy.kohesive.injekt.api.get
 import java.io.InputStream
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 class ChapterTranslator(
@@ -84,9 +87,7 @@ class ChapterTranslator(
     private var textTranslator: TextTranslator
 
     companion object {
-        // الحد الأقصى للارتفاع — المشكلة دائماً عمودية، لا تقطيع أفقي
         private const val MAX_OCR_HEIGHT = 1920
-        // نسبة التداخل بين الـ tiles العمودية لتجنب قطع الفقاعات على الحدود
         private const val TILE_OVERLAP = 0.1f
     }
 
@@ -125,6 +126,21 @@ class ChapterTranslator(
     fun clearQueue() {
         cancelTranslatorJob()
         internalClearQueue()
+    }
+
+    /**
+     * لتفريغ مخلفات الفصل وتنظيف الكاش عند الخروج من القارئ لتهيئته للفصل القادم.
+     */
+    fun forceRemoveRealtimeTranslation(chapterId: Long) {
+        _queueState.update { queue ->
+            val toCancel = queue.filter { it.chapter.id == chapterId && it.isRealtimeMode }
+            toCancel.forEach { translation ->
+                translation.status = Translation.State.NOT_TRANSLATED
+                translation.takePageStreams() // إفراغ مجاري البث
+                translation.existingPages.clear() // مسح الكاش المحلي
+            }
+            queue - toCancel
+        }
     }
 
     private fun launchTranslatorJob() {
@@ -195,6 +211,51 @@ class ChapterTranslator(
         addToQueue(translation)
     }
 
+    fun addToQueue(translation: Translation) {
+        _queueState.update { queue ->
+            if (queue.any { it.chapter.id == translation.chapter.id }) queue
+            else queue + translation
+        }
+        start()
+    }
+
+    private fun areAllTranslationsFinished(): Boolean {
+        return queueState.value.all { it.status == Translation.State.TRANSLATED || it.status == Translation.State.ERROR }
+    }
+
+    fun removeFromQueue(translation: Translation) {
+        _queueState.update { queue ->
+            if (translation.status == Translation.State.TRANSLATING ||
+                translation.status == Translation.State.QUEUE
+            ) {
+                translation.status = Translation.State.NOT_TRANSLATED
+            }
+            queue - translation
+        }
+    }
+
+    private inline fun removeFromQueueIf(predicate: (Translation) -> Boolean) {
+        _queueState.update { queue ->
+            val translations = queue.filter { predicate(it) }
+            translations.forEach { translation ->
+                if (translation.status == Translation.State.TRANSLATING ||
+                    translation.status == Translation.State.QUEUE
+                ) {
+                    translation.status = Translation.State.NOT_TRANSLATED
+                }
+            }
+            queue - translations
+        }
+    }
+
+    fun removeFromQueue(chapter: Chapter) {
+        removeFromQueueIf { it.chapter.id == chapter.id }
+    }
+
+    fun removeFromQueue(manga: Manga) {
+        removeFromQueueIf { it.manga.id == manga.id }
+    }
+
     private suspend fun translateChapter(translation: Translation) {
         try {
             if (translation.fromLang != textRecognizer.language) {
@@ -206,53 +267,127 @@ class ChapterTranslator(
                 textTranslator = TextTranslators.fromPref(translationPreferences.translationEngine())
                     .build(translationPreferences, translation.fromLang, translation.toLang)
             }
+
             val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
             val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
-            val chapterPath = downloadProvider.findChapterDir(
-                translation.chapter.name,
-                translation.chapter.scanlator,
-                translation.manga.title,
-                translation.source,
-            )!!
 
-            val pages = mutableMapOf<String, PageTranslation>()
-            val tmpFile = translationMangaDir.createFile("tmp")!!
-            val streams = getChapterPages(chapterPath)
-
-            withContext(Dispatchers.IO) {
-                for ((fileName, streamFn) in streams) {
-                    coroutineContext.ensureActive()
-                    streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
-
-                    val pageTranslation = recognizePage(tmpFile)
-
-                    if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
-                        pages[fileName] = pageTranslation
+            // التحقق أولاً وقبل كل شيء من وجود ملف الـ JSON القديم وتحميل الكاش منه فوراً
+            val existingJsonFile = translationMangaDir.findFile(saveFile)
+            if (existingJsonFile != null && existingJsonFile.exists()) {
+                try {
+                    existingJsonFile.openInputStream().use { stream ->
+                        val loadedPages: Map<String, PageTranslation> = Json.decodeFromStream(stream)
+                        translation.existingPages.putAll(loadedPages)
+                        // بث الصفحات المخزنة تلقائياً إلى الواجهة لتعرض للمستخدم فوراً
+                        loadedPages.forEach { (fileName, pageTrans) ->
+                            translation.emitPageTranslated(fileName, pageTrans)
+                        }
                     }
+                } catch (e: Exception) {
+                    logcat(LogPriority.ERROR, e) { "فشل في قراءة ملف JSON الترجمة القديم، سيتم معالجته مجدداً" }
                 }
             }
-            tmpFile.delete()
-            withContext(Dispatchers.IO) { textTranslator.translate(pages) }
-            Json.encodeToStream(pages, translationMangaDir.createFile(saveFile)!!.openOutputStream())
-            translation.status = Translation.State.TRANSLATED
+
+            translation.status = Translation.State.TRANSLATING
+
+            while (translation.status == Translation.State.TRANSLATING) {
+                ensureActive()
+
+                val pendingPages = translation.takePageStreams()
+                if (pendingPages.isEmpty()) {
+                    if (translation.isRealtimeMode) {
+                        delay(200)
+                        continue
+                    } else {
+                        // المسار العادي لقراءة مجلد الفصول محلياً
+                        val chapterPath = downloadProvider.findChapterDir(
+                            translation.chapter.name,
+                            translation.chapter.scanlator,
+                            translation.manga.title,
+                            translation.source,
+                        )
+                        if (chapterPath != null) {
+                            val streams = getChapterPages(chapterPath)
+                            val localPages = mutableMapOf<String, PageTranslation>()
+                            val tmpFile = translationMangaDir.createFile("tmp")!!
+
+                            withContext(Dispatchers.IO) {
+                                for ((fileName, streamFn) in streams) {
+                                    coroutineContext.ensureActive()
+                                    if (translation.status != Translation.State.TRANSLATING) break
+
+                                    // عدم إعادة معالجة الصورة إذا كانت موجودة ومحملة مسبقاً من الـ JSON
+                                    if (translation.existingPages.containsKey(fileName)) continue
+
+                                    streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
+                                    val pageTranslation = recognizePage(tmpFile)
+                                    if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
+                                        localPages[fileName] = pageTranslation
+                                    }
+                                }
+                            }
+                            tmpFile.delete()
+                            withContext(Dispatchers.IO) { textTranslator.translate(localPages) }
+                            translation.existingPages.putAll(localPages)
+                        }
+
+                        val finalFile = translationMangaDir.createFile(saveFile)!!
+                        Json.encodeToStream(translation.existingPages, finalFile.openOutputStream())
+                        translation.status = Translation.State.TRANSLATED
+                        break
+                    }
+                }
+
+                // معالجة تدفق الصفحات في الوقت الحقيقي
+                val tmpFile = translationMangaDir.createFile("tmp_rt")!!
+                for ((fileName, streamFn) in pendingPages) {
+                    ensureActive()
+                    if (translation.status != Translation.State.TRANSLATING) break
+
+                    // تحقق الوقت الحقيقي: إذا كانت موجودة مسبقاً، نقوم ببثها فوراً وتخطي المعالجة المتكررة
+                    if (translation.existingPages.containsKey(fileName)) {
+                        translation.emitPageTranslated(fileName, translation.existingPages[fileName]!!)
+                        continue
+                    }
+
+                    try {
+                        streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
+                        val pageTranslation = recognizePage(tmpFile)
+                        if (pageTranslation != null) {
+                            val singlePageMap = mutableMapOf(fileName to pageTranslation)
+                            withContext(Dispatchers.IO) { textTranslator.translate(singlePageMap) }
+
+                            translation.existingPages[fileName] = pageTranslation
+                            translation.emitPageTranslated(fileName, pageTranslation)
+
+                            // تحديث ملف الـ JSON دورياً لحفظ الترجمات الفورية المستقرة أولاً بأول
+                            val finalFile = translationMangaDir.createFile(saveFile)!!
+                            Json.encodeToStream(translation.existingPages, finalFile.openOutputStream())
+                        }
+                    } catch (e: Exception) {
+                        logcat(LogPriority.ERROR, e) { "خطأ في معالجة الصفحة في الوقت الحقيقي: $fileName" }
+                    }
+                }
+                tmpFile.delete()
+            }
         } catch (error: Throwable) {
             translation.status = Translation.State.ERROR
             logcat(LogPriority.ERROR, error)
         }
     }
 
+    private fun getChapterPages(chapterPath: UniFile): List<Pair<String, () -> InputStream>> {
+        return chapterPath.listFiles()
+            ?.filter { !it.isDirectory && ImageUtil.isImage(it.name) { it.openInputStream() } }
+            ?.sortedWith { f1, f2 -> f1.name.compareToCaseInsensitiveNaturalOrder(f2.name) }
+            ?.map { file -> file.name to { file.openInputStream() } } ?: emptyList()
+    }
+
     // ─── Image Tiling ──────────────────────────────────────────────────────────
 
-    /**
-     * المدخل الرئيسي لـ OCR.
-     * يقرأ ارتفاع الصورة بدون تحميلها في RAM.
-     * المشكلة دائماً عمودية (صور طويلة) — لا يوجد تقطيع أفقي.
-     * إذا لم يجد OCR أي فقاعات → يعيد null مباشرة (early-exit).
-     */
     private fun recognizePage(tmpFile: UniFile): PageTranslation? {
         val filePath = tmpFile.filePath ?: return null
 
-        // قراءة الأبعاد فقط — صفر RAM
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(filePath, opts)
         val origW = opts.outWidth
@@ -260,7 +395,6 @@ class ChapterTranslator(
         if (origW <= 0 || origH <= 0) return null
 
         return if (origH <= MAX_OCR_HEIGHT) {
-            // الارتفاع مناسب — تحميل كامل ومعالجة مباشرة
             val bitmap = BitmapFactory.decodeFile(filePath) ?: return null
             try {
                 recognizeSingleBitmap(bitmap, origW, origH)
@@ -268,21 +402,15 @@ class ChapterTranslator(
                 bitmap.recycle()
             }
         } else {
-            // الصورة طويلة عمودياً — تقطيع عمودي فقط بـ BitmapRegionDecoder
             recognizeWithVerticalTiling(filePath, origW, origH)
         }
     }
 
-    /**
-     * OCR على صورة واحدة.
-     * تعيد null إذا لم تجد أي فقاعات (early-exit).
-     */
     private fun recognizeSingleBitmap(bitmap: Bitmap, origW: Int, origH: Int): PageTranslation? {
         val image = InputImage.fromBitmap(bitmap, 0)
         val result = textRecognizer.recognize(image)
         val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
 
-        // early-exit: لا فقاعات → لا داعي لأي معالجة
         if (blocks.isEmpty()) return null
 
         val enhancedW = origW * TextRecognizer.SCALE_FACTOR
@@ -300,49 +428,34 @@ class ChapterTranslator(
         return pageTranslation
     }
 
-    /**
-     * تقطيع عمودي فقط باستخدام BitmapRegionDecoder.
-     * كل tile يُحمَّل من الديسك مباشرة — لا تُحمَّل الصورة كاملة أبداً.
-     *
-     * مثال: 1104×10000
-     *   tileH=1920, overlap=192px, step=1728px → 6 tiles
-     *   ذاكرة كل tile: ~8MB بدل ~42MB للصورة كاملة
-     *
-     * تعيد null إذا لم تجد أي فقاعات في كامل الصورة (early-exit).
-     */
     private fun recognizeWithVerticalTiling(filePath: String, origW: Int, origH: Int): PageTranslation? {
         val allBlocks = mutableListOf<TranslationBlock>()
 
-        val tileH    = MAX_OCR_HEIGHT
+        val tileH = MAX_OCR_HEIGHT
         val overlapY = (tileH * TILE_OVERLAP).toInt()
-        val stepY    = tileH - overlapY
+        val stepY = tileH - overlapY
         val numTiles = ceil((origH - overlapY).toFloat() / stepY).toInt()
 
-        val decoder = android.graphics.BitmapRegionDecoder.newInstance(filePath, false)
-            ?: return null
+        val decoder = android.graphics.BitmapRegionDecoder.newInstance(filePath, false) ?: return null
 
         try {
             for (row in 0 until numTiles) {
-                val tileTop    = (row * stepY).coerceAtMost(origH - tileH).coerceAtLeast(0)
+                val tileTop = (row * stepY).coerceAtMost(origH - tileH).coerceAtLeast(0)
                 val tileBottom = (tileTop + tileH).coerceAtMost(origH)
                 val isLastTile = row == numTiles - 1
 
-                val region     = Rect(0, tileTop, origW, tileBottom)
+                val region = Rect(0, tileTop, origW, tileBottom)
                 val tileBitmap = decoder.decodeRegion(region, null) ?: continue
 
                 try {
-                    val image      = InputImage.fromBitmap(tileBitmap, 0)
-                    val result     = textRecognizer.recognize(image)
-                    val tileBlocks = result.textBlocks
-                        .filter { it.boundingBox != null && it.text.length > 1 }
+                    val image = InputImage.fromBitmap(tileBitmap, 0)
+                    val result = textRecognizer.recognize(image)
+                    val tileBlocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
 
                     for (block in tileBlocks) {
                         val bounds = block.boundingBox!!
-
-                        // تجاهل الكتل في منطقة الـ overlap إلا في آخر tile
-                        // (الكتلة ستظهر في الـ tile التالي بإحداثيات صحيحة)
                         val tileActualH = tileBottom - tileTop
-                        val inOverlapY  = !isLastTile && bounds.top > tileActualH - overlapY
+                        val inOverlapY = !isLastTile && bounds.top > tileActualH - overlapY
                         if (inOverlapY) continue
 
                         val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()
@@ -350,14 +463,14 @@ class ChapterTranslator(
 
                         allBlocks.add(
                             TranslationBlock(
-                                text      = block.text,
-                                width     = bounds.width().toFloat(),
-                                height    = bounds.height().toFloat(),
-                                symWidth  = symBounds?.width()?.toFloat() ?: 12f,
+                                text = block.text,
+                                width = bounds.width().toFloat(),
+                                height = bounds.height().toFloat(),
+                                symWidth = symBounds?.width()?.toFloat() ?: 12f,
                                 symHeight = symBounds?.height()?.toFloat() ?: 12f,
-                                angle     = block.lines.firstOrNull()?.angle ?: 0f,
-                                x         = bounds.left.toFloat(),           // العرض كامل دائماً
-                                y         = (tileTop + bounds.top).toFloat(), // إحداثي مطلق
+                                angle = block.lines.firstOrNull()?.angle ?: 0f,
+                                x = bounds.left.toFloat(),
+                                y = (tileTop + bounds.top).toFloat(),
                             ),
                         )
                     }
@@ -369,7 +482,6 @@ class ChapterTranslator(
             decoder.recycle()
         }
 
-        // early-exit: لا فقاعات في كامل الصورة
         if (allBlocks.isEmpty()) return null
 
         val pageTranslation = PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
@@ -436,7 +548,6 @@ class ChapterTranslator(
             if (!merged) i++
         }
 
-        // ─── توسيع الكتل لاستيعاب النص المترجم ───────────────────
         val expandedBlocks = initialBlocks.map { block ->
             val cleanedText = block.text.replace("\n", " ").trim()
             val cleanedTranslation = block.translation?.replace("\n", " ")?.trim() ?: ""
@@ -446,7 +557,7 @@ class ChapterTranslator(
             val finalScale = sqrt(textRatio.toDouble()).toFloat()
 
             var newWidth = block.width * finalScale
-            var newHeight = block.height * finalScale * 1.3f  // توسيع عمودي
+            var newHeight = block.height * finalScale * 1.3f
 
             val newX = block.x - (newWidth - block.width) / 2f
             val newY = block.y - (newHeight - block.height) / 2f
@@ -461,59 +572,73 @@ class ChapterTranslator(
             )
         }.toMutableList()
 
-        // ─── Collision Resolution (مُصلَح) ────────────────────────
         resolveCollisions(expandedBlocks, imgWidth, imgHeight)
 
         return expandedBlocks
     }
 
+    private fun shouldMergeTextBlock(
+        a: TranslationBlock,
+        b: TranslationBlock,
+        xThreshold: Float,
+        yThresholdFactor: Float,
+    ): Boolean {
+        val xDist = abs(a.x - b.x)
+        val yDist = abs(a.y - b.y)
+        return xDist < xThreshold * max(a.symWidth, b.symWidth) &&
+            yDist < yThresholdFactor * max(a.symHeight, b.symHeight)
+    }
+
+    private fun mergeTextBlock(a: TranslationBlock, b: TranslationBlock, isWebtoon: Boolean): TranslationBlock {
+        val minX = min(a.x, b.x)
+        val maxX = max(a.x + a.width, b.x + b.width)
+        val minY = min(a.y, b.y)
+        val maxY = max(a.y + a.height, b.y + b.height)
+
+        val mergedText = if (a.y <= b.y) "${a.text}\n${b.text}" else "${b.text}\n${a.text}"
+        return a.copy(
+            text = mergedText,
+            x = minX,
+            y = minY,
+            width = maxX - minX,
+            height = maxY - minY,
+        )
+    }
+
     // ─── Collision Resolution ──────────────────────────────────────────────────
 
-    /**
-     * خوارزمية حل التصادمات المُصلَحة:
-     * ١. تصحيح bug moveUpAmt (كان يساوي moveDownAmt)
-     * ٢. الاتجاهات تأخذ بعين الاعتبار زاوية الكتلة
-     * ٣. الكتل المائلة تتحرك بمحاذاة محورها
-     * ٤. إذا كانت كل الاتجاهات مسدودة نصغّر ثم نحاول مجدداً
-     */
-    private fun resolveCollisions(
-        blocks: MutableList<TranslationBlock>,
-        imgWidth: Float,
-        imgHeight: Float,
-    ) {
-        val iterations = 6  // زيادة من 4 إلى 6
-
+    private fun resolveCollisions(blocks: MutableList<TranslationBlock>, imgWidth: Float, imgHeight: Float) {
+        val iterations = 6
         for (step in 0 until iterations) {
             var collisionsResolved = 0
-
             for (idx in blocks.indices) {
                 for (jdx in idx + 1 until blocks.size) {
                     val a = blocks[idx]
                     val b = blocks[jdx]
                     if (!isOverlapping(a, b)) continue
-
                     collisionsResolved++
 
-                    // الكتلة الأصغر مساحةً هي التي تتحرك
                     val aArea = a.width * a.height
                     val bArea = b.width * b.height
                     val movingIdx = if (aArea <= bArea) idx else jdx
                     val staticBlock = if (movingIdx == idx) b else a
                     var movingBlock = blocks[movingIdx]
 
-                    // ─── حساب مقدار الإزاحة الصحيح لكل اتجاه ───
                     val overlapRight = (staticBlock.x + staticBlock.width) - movingBlock.x
-                    val overlapLeft  = (movingBlock.x + movingBlock.width) - staticBlock.x
-                    val overlapDown  = (staticBlock.y + staticBlock.height) - movingBlock.y
-                    val overlapUp    = (movingBlock.y + movingBlock.height) - staticBlock.y  // ← BUG FIX
+                    val overlapLeft = (movingBlock.x + movingBlock.width) - staticBlock.x
+                    val overlapDown = (staticBlock.y + staticBlock.height) - movingBlock.y
+                    val overlapUp = (movingBlock.y + movingBlock.height) - staticBlock.x
 
-                    // ─── اتجاهات مرتبة من الأقل إزاحة للأكثر ───
                     val isAngled = abs(movingBlock.angle) > 20f && abs(movingBlock.angle) < 160f
                     val directions = buildDirections(
-                        overlapLeft, overlapRight, overlapUp, overlapDown, isAngled, movingBlock.angle
+                        overlapLeft,
+                        overlapRight,
+                        overlapUp,
+                        overlapDown,
+                        isAngled,
+                        movingBlock.angle,
                     )
 
-                    // ─── اختبار كل اتجاه ───
                     var bestX = movingBlock.x
                     var bestY = movingBlock.y
                     var bestCollisions = Int.MAX_VALUE
@@ -524,16 +649,12 @@ class ChapterTranslator(
                         val testX = (movingBlock.x + dx).coerceIn(0f, imgWidth - movingBlock.width)
                         val testY = (movingBlock.y + dy).coerceIn(0f, imgHeight - movingBlock.height)
                         val tested = movingBlock.copy(x = testX, y = testY)
-
                         var nextCollisions = 0
                         for (k in blocks.indices) {
                             if (k != movingIdx && isOverlapping(tested, blocks[k])) nextCollisions++
                         }
-
                         val dist = abs(dx) + abs(dy)
-                        if (nextCollisions < bestCollisions ||
-                            (nextCollisions == bestCollisions && dist < bestDist)
-                        ) {
+                        if (nextCollisions < bestCollisions || (nextCollisions == bestCollisions && dist < bestDist)) {
                             bestCollisions = nextCollisions
                             bestDist = dist
                             bestX = testX
@@ -542,7 +663,6 @@ class ChapterTranslator(
                         }
                     }
 
-                    // ─── إذا كل الاتجاهات تسبب تصادمات: نصغّر ───
                     if (!foundValid || bestCollisions >= countCollisions(movingBlock, blocks, movingIdx)) {
                         val shrinkFactor = 0.88f
                         val newW = movingBlock.width * shrinkFactor
@@ -553,14 +673,19 @@ class ChapterTranslator(
                             x = movingBlock.x + (movingBlock.width - newW) / 2f,
                             y = movingBlock.y + (movingBlock.height - newH) / 2f,
                         )
-                        // أعد المحاولة بعد التصغير
                         val overlapRight2 = (staticBlock.x + staticBlock.width) - movingBlock.x
-                        val overlapLeft2  = (movingBlock.x + movingBlock.width) - staticBlock.x
-                        val overlapDown2  = (staticBlock.y + staticBlock.height) - movingBlock.y
-                        val overlapUp2    = (movingBlock.y + movingBlock.height) - staticBlock.y
+                        val overlapLeft2 = (movingBlock.x + movingBlock.width) - staticBlock.x
+                        val overlapDown2 = (staticBlock.y + staticBlock.height) - movingBlock.y
+                        val overlapUp2 = (movingBlock.y + movingBlock.height) - staticBlock.y
                         val dirs2 = buildDirections(
-                            overlapLeft2, overlapRight2, overlapUp2, overlapDown2, isAngled, movingBlock.angle
+                            overlapLeft2,
+                            overlapRight2,
+                            overlapUp2,
+                            overlapDown2,
+                            isAngled,
+                            movingBlock.angle,
                         )
+
                         for ((dx, dy) in dirs2) {
                             val testX = (movingBlock.x + dx).coerceIn(0f, imgWidth - movingBlock.width)
                             val testY = (movingBlock.y + dy).coerceIn(0f, imgHeight - movingBlock.height)
@@ -582,237 +707,51 @@ class ChapterTranslator(
                     blocks[movingIdx] = movingBlock.copy(x = bestX, y = bestY)
                 }
             }
-
             if (collisionsResolved == 0) break
         }
     }
 
-    /**
-     * بناء قائمة الاتجاهات مع مراعاة زاوية الكتلة.
-     * الاتجاهات مرتبة من الأقل إزاحة للأكثر.
-     */
-    private fun buildDirections(
-        overlapLeft: Float,
-        overlapRight: Float,
-        overlapUp: Float,
-        overlapDown: Float,
-        isAngled: Boolean,
-        angle: Float,
-    ): List<Pair<Float, Float>> {
-        val baseDirections = listOf(
-            Pair(-overlapLeft,  0f),           // يسار
-            Pair( overlapRight, 0f),            // يمين
-            Pair(0f,           -overlapUp),     // أعلى   ← مُصلَح
-            Pair(0f,            overlapDown),   // أسفل
-            Pair(-overlapLeft, -overlapUp),     // يسار-أعلى
-            Pair( overlapRight, -overlapUp),    // يمين-أعلى
-            Pair(-overlapLeft,  overlapDown),   // يسار-أسفل
-            Pair( overlapRight, overlapDown),   // يمين-أسفل
-        )
-
-        return if (isAngled) {
-            // للكتل المائلة: أضف اتجاهات موازية للمحور الرئيسي
-            val rad = Math.toRadians(angle.toDouble())
-            val axisX = Math.cos(rad).toFloat()
-            val axisY = Math.sin(rad).toFloat()
-            val magnitude = max(overlapLeft, overlapRight)
-
-            val angledDirs = listOf(
-                Pair( axisX * magnitude,  axisY * magnitude),
-                Pair(-axisX * magnitude, -axisY * magnitude),
-            )
-            (angledDirs + baseDirections).sortedBy { abs(it.first) + abs(it.second) }
-        } else {
-            baseDirections.sortedBy { abs(it.first) + abs(it.second) }
-        }
+    private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
+        return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y
     }
 
-    private fun countCollisions(block: TranslationBlock, blocks: List<TranslationBlock>, selfIdx: Int): Int {
+    private fun countCollisions(block: TranslationBlock, blocks: List<TranslationBlock>, ignoreIdx: Int): Int {
         var count = 0
-        for (k in blocks.indices) {
-            if (k != selfIdx && isOverlapping(block, blocks[k])) count++
+        for (i in blocks.indices) {
+            if (i != ignoreIdx && isOverlapping(block, blocks[i])) count++
         }
         return count
     }
 
-    private fun isOverlapping(a: TranslationBlock, b: TranslationBlock): Boolean {
-        return a.x < b.x + b.width &&
-            a.x + a.width > b.x &&
-            a.y < b.y + b.height &&
-            a.y + a.height > b.y
-    }
-
-    // ─── Merge Logic ───────────────────────────────────────────────────────────
-
-    private fun shouldMergeTextBlock(
-        r1: TranslationBlock,
-        r2: TranslationBlock,
-        xThreshold: Float,
-        yThresholdFactor: Float,
-    ): Boolean {
-        val angleDiff = abs(r1.angle - r2.angle)
-        val angleSimilar = angleDiff < 15 || abs(angleDiff - 180) < 15
-        if (!angleSimilar) return false
-
-        val isVertical = abs(r1.angle) in 70.0..110.0
-
-        val r1Right = r1.x + r1.width
-        val r1Bottom = r1.y + r1.height
-        val r2Right = r2.x + r2.width
-        val r2Bottom = r2.y + r2.height
-
-        val sH = max(r1.symHeight, max(r2.symHeight, 12f))
-        val sW = max(r1.symWidth, max(r2.symWidth, 12f))
-
-        val maxAllowedGapX = sW * 1.2f
-        val maxAllowedGapY = sH * 1.2f
-
-        val yOverlap = max(0f, min(r1Bottom, r2Bottom) - max(r1.y, r2.y))
-        val xOverlap = max(0f, min(r1Right, r2Right) - max(r1.x, r2.x))
-
-        val minHeight = min(r1.height, r2.height)
-        val isFullVerticalCover = yOverlap >= (minHeight * 0.75f)
-
-        val minWidth = min(r1.width, r2.width)
-        val isFullHorizontalCover = xOverlap >= (minWidth * 0.95f)
-        val isInCross = isFullHorizontalCover || isFullVerticalCover
-        if (!isInCross) return false
-
-        if (isVertical) {
-            val sideGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
-            if (sideGap > maxAllowedGapX) return false
-            if (isFullVerticalCover && sideGap <= 0f) return true
-
-            val vertGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
-            if (vertGap > maxAllowedGapY) return false
-
-            val isTouchingOrClose = sideGap <= (sW * 1.2f) && vertGap <= (sH * 1.2f)
-            if (!isTouchingOrClose) return false
-
-            val dy = abs(r1.y - r2.y)
-            val dx = abs(r1.x - r2.x)
-            val isOriginsClose = dy < (sH * 1.2f) && dx < (sW * 1.2f)
-            val isSideBySide = sideGap < (sW * 1.2f) && dy < (sH * 1.2f)
-            val alignedVertically = yOverlap > (sH * 0.15f)
-            val closeHorizontally = sideGap < (sW * 1.2f)
-            return isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
+    private fun buildDirections(
+        left: Float,
+        right: Float,
+        up: Float,
+        down: Float,
+        isAngled: Boolean,
+        angle: Float,
+    ): List<Pair<Float, Float>> {
+        val list = mutableListOf<Pair<Float, Float>>()
+        if (!isAngled) {
+            list.add(Pair(-left, 0f))
+            list.add(Pair(right, 0f))
+            list.add(Pair(0f, -up))
+            list.add(Pair(0f, down))
         } else {
-            val vGap = max(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
-            if (vGap > maxAllowedGapY) return false
-            if (isFullHorizontalCover && vGap <= maxAllowedGapY) return true
-
-            val sideGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
-            if (sideGap > maxAllowedGapX) return false
-
-            val hasHighSideOverlap = xOverlap > (minWidth * 0.70f)
-            val centerR1X = r1.x + r1.width / 2f
-            val centerR2X = r2.x + r2.width / 2f
-            val centersAligned = abs(centerR1X - centerR2X) < max(r1.width, r2.width) * 0.35f
-            val isTouching = vGap <= maxAllowedGapY
-            return (hasHighSideOverlap || centersAligned) && isTouching
+            val rad = Math.toRadians(angle.toDouble())
+            val cos = cos(rad).toFloat()
+            val sin = sin(rad).toFloat()
+            list.add(Pair(-left * cos, -left * sin))
+            list.add(Pair(right * cos, right * sin))
+            list.add(Pair(-up * sin, up * cos))
+            list.add(Pair(down * sin, -down * cos))
         }
-    }
-
-    private fun mergeTextBlock(a: TranslationBlock, b: TranslationBlock, isWebtoon: Boolean): TranslationBlock {
-        val minX = min(a.x, b.x)
-        val minY = min(a.y, b.y)
-        val maxX = max(a.x + a.width, b.x + b.width)
-        val maxY = max(a.y + a.height, b.y + b.height)
-
-        val isVertical = abs(a.angle) in 70.0..110.0
-        val ordered = if (isVertical) {
-            if (a.x > b.x) listOf(a, b) else listOf(b, a)
-        } else {
-            if (abs(a.y - b.y) > max(a.symHeight, b.symHeight) * 0.5f) {
-                if (a.y < b.y) listOf(a, b) else listOf(b, a)
-            } else {
-                if (isWebtoon) {
-                    if (a.x < b.x) listOf(a, b) else listOf(b, a)
-                } else {
-                    if (a.x > b.x) listOf(a, b) else listOf(b, a)
-                }
-            }
-        }
-
-        val totalLen = (a.text.length + b.text.length).coerceAtLeast(1)
-        return TranslationBlock(
-            text = ordered.joinToString(" ") { it.text.trim() },
-            translation = ordered.joinToString(" ") { it.translation.trim() }.trim(),
-            width = maxX - minX,
-            height = maxY - minY,
-            x = minX,
-            y = minY,
-            angle = if (a.text.length >= b.text.length) a.angle else b.angle,
-            symWidth = (a.symWidth * a.text.length + b.symWidth * b.text.length) / totalLen,
-            symHeight = (a.symHeight * a.text.length + b.symHeight * b.text.length) / totalLen,
-        )
-    }
-
-    // ─── Chapter Pages ─────────────────────────────────────────────────────────
-
-    private fun getChapterPages(chapterPath: UniFile): List<Pair<String, () -> InputStream>> {
-        if (chapterPath.isFile) {
-            val reader = chapterPath.archiveReader(context)
-            return reader.useEntries { entries ->
-                entries.filter { it.isFile && ImageUtil.isImage(it.name) { reader.getInputStream(it.name)!! } }
-                    .sortedWith { f1, f2 -> f1.name.compareToCaseInsensitiveNaturalOrder(f2.name) }
-                    .map { entry -> Pair(entry.name) { reader.getInputStream(entry.name)!! } }
-                    .toList()
-            }
-        } else {
-            return chapterPath.listFiles()!!
-                .filter { ImageUtil.isImage(it.name) }
-                .map { entry -> Pair(entry.name!!) { entry.openInputStream() } }
-                .toList()
-        }
-    }
-
-    // ─── Queue Management ──────────────────────────────────────────────────────
-
-    private fun areAllTranslationsFinished(): Boolean =
-        queueState.value.none { it.status.value <= Translation.State.TRANSLATING.value }
-
-    private fun addToQueue(translation: Translation) {
-        translation.status = Translation.State.QUEUE
-        _queueState.update { it + translation }
-    }
-
-    private fun removeFromQueue(translation: Translation) {
-        _queueState.update {
-            if (translation.status == Translation.State.TRANSLATING ||
-                translation.status == Translation.State.QUEUE
-            ) {
-                translation.status = Translation.State.NOT_TRANSLATED
-            }
-            it - translation
-        }
-    }
-
-    private inline fun removeFromQueueIf(predicate: (Translation) -> Boolean) {
-        _queueState.update { queue ->
-            val translations = queue.filter { predicate(it) }
-            translations.forEach { translation ->
-                if (translation.status == Translation.State.TRANSLATING ||
-                    translation.status == Translation.State.QUEUE
-                ) {
-                    translation.status = Translation.State.NOT_TRANSLATED
-                }
-            }
-            queue - translations
-        }
-    }
-
-    fun removeFromQueue(chapter: Chapter) {
-        removeFromQueueIf { it.chapter.id == chapter.id }
-    }
-
-    fun removeFromQueue(manga: Manga) {
-        removeFromQueueIf { it.manga.id == manga.id }
+        return list
     }
 
     private fun internalClearQueue() {
-        _queueState.update {
-            it.forEach { translation ->
+        _queueState.update { queue ->
+            queue.forEach { translation ->
                 if (translation.status == Translation.State.TRANSLATING ||
                     translation.status == Translation.State.QUEUE
                 ) {
