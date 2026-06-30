@@ -43,15 +43,10 @@ import uy.kohesive.injekt.api.get
 
 /**
  * Holder of the webtoon reader for a single page of a chapter.
- *
- * @param frame the root view for this holder.
- * @param viewer the webtoon viewer.
- * @constructor creates a new webtoon holder.
  */
 class WebtoonPageHolder(
     private val frame: ReaderPageImageView,
     viewer: WebtoonViewer,
-    // TachiyomiAT
     translationPreferences: TranslationPreferences = Injekt.get(),
     private val font: TranslationFont = TranslationFont.fromPref(translationPreferences.translationFont()),
     readerPreferences: ReaderPreferences = Injekt.get(),
@@ -59,43 +54,22 @@ class WebtoonPageHolder(
     private val realtimeTranslation: Boolean = translationPreferences.realtimeTranslation().get(),
 ) : WebtoonBaseHolder(frame, viewer) {
 
-    // TachiyomiAT
     private var showTranslations = true
     private var translationsView: WebtoonTranslationsView? = null
 
-    /**
-     * Loading progress bar to indicate the current progress.
-     */
     private val progressIndicator = createProgressIndicator()
-
-    /**
-     * Progress bar container. Needed to keep a minimum height size of the holder, otherwise the
-     * adapter would create more views to fill the screen, which is not wanted.
-     */
     private lateinit var progressContainer: ViewGroup
-
-    /**
-     * Error layout to show when the image fails to load.
-     */
     private var errorLayout: ReaderErrorBinding? = null
 
-    /**
-     * Getter to retrieve the height of the recycler view.
-     */
     private val parentHeight
         get() = viewer.recycler.height
 
-    /**
-     * Page of a chapter.
-     */
     private var page: ReaderPage? = null
-
     private val scope = MainScope()
 
-    /**
-     * Job for loading the page.
-     */
     private var loadJob: Job? = null
+    // متغير خاص لإدارة مراقبة الترجمة ومنع تسريب الذاكرة في الويب تون
+    private var translationCollectorJob: Job? = null
 
     init {
         refreshLayoutParams()
@@ -104,7 +78,6 @@ class WebtoonPageHolder(
         frame.onImageLoadError = { setError() }
         frame.onScaleChanged = { viewer.activity.hideMenu() }
 
-        // TachiyomiAT
         showTranslations = readerPreferences.showTranslations().get()
         readerPreferences.showTranslations().changes().onEach {
             showTranslations = it
@@ -116,23 +89,24 @@ class WebtoonPageHolder(
         }.launchIn(scope)
     }
 
-    /**
-     * Binds the given [page] with this view holder, subscribing to its state.
-     */
     fun bind(page: ReaderPage) {
         this.page = page
         loadJob?.cancel()
         loadJob = scope.launch { loadPageAndProcessStatus() }
         refreshLayoutParams()
 
-        // TachiyomiAT: مراقبة مستمرة للترجمة الفورية عبر global flow
+        observeRealtimeTranslation(page)
+    }
+
+    private fun observeRealtimeTranslation(boundPage: ReaderPage) {
+        translationCollectorJob?.cancel()
         if (realtimeTranslation) {
-            scope.launch {
-                val pageFileName = String.format("%03d.jpg", page.index)
-                val chapterId = page.chapter.chapter.id
-                translationManager.globalPageTranslatedFlow.collect { event ->
-                    if (event.first == chapterId && event.second == pageFileName && page.translation == null) {
-                        page.translation = event.third
+            translationCollectorJob = scope.launch {
+                val pageFileName = String.format("%03d.jpg", boundPage.index)
+                val chapterId = boundPage.chapter.chapter.id
+                translationManager.globalPageTranslatedFlow.collectLatest { event ->
+                    if (event.first == chapterId && event.second == pageFileName && boundPage.translation == null) {
+                        boundPage.translation = event.third
                         withUIContext { addTranslationsView() }
                     }
                 }
@@ -145,37 +119,29 @@ class WebtoonPageHolder(
             if (!viewer.isContinuous) {
                 bottomMargin = 15.dpToPx
             }
-
             val margin = Resources.getSystem().displayMetrics.widthPixels * (viewer.config.sidePadding / 100f)
             marginEnd = margin.toInt()
             marginStart = margin.toInt()
         }
     }
 
-    /**
-     * Called when the view is recycled and added to the view pool.
-     */
     override fun recycle() {
         loadJob?.cancel()
         loadJob = null
+        
+        // تنظيف مراقب الترجمة عند إعادة الاستخدام (Recycle)
+        translationCollectorJob?.cancel()
+        translationCollectorJob = null
 
         removeErrorLayout()
         frame.recycle()
         progressIndicator.setProgress(0)
         progressContainer.isVisible = true
 
-        // TachiyomiAT - تنظيف translationsView عند إعادة استخدام الـ holder
         frame.removeView(translationsView)
         translationsView = null
     }
 
-    /**
-     * Loads the page and processes changes to the page's status.
-     *
-     * Returns immediately if there is no page or the page has no PageLoader.
-     * Otherwise, this function does not return. It will continue to process status changes until
-     * the Job is cancelled.
-     */
     private suspend fun loadPageAndProcessStatus() {
         val page = page ?: return
         val loader = page.chapter.pageLoader ?: return
@@ -193,12 +159,9 @@ class WebtoonPageHolder(
                             progressIndicator.setProgress(value)
                         }
                     }
-
                     Page.State.READY -> {
                         setImage()
-                        // TachiyomiAT
                         addTranslationsView()
-                        // TachiyomiAT: ابدأ الترجمة الفورية إذا لم تكن الصفحة مترجمة
                         if (page.translation == null && realtimeTranslation) {
                             triggerRealtimeTranslation(page)
                         }
@@ -209,39 +172,26 @@ class WebtoonPageHolder(
         }
     }
 
-    /**
-     * Called when the page is queued.
-     */
     private fun setQueued() {
         progressContainer.isVisible = true
         progressIndicator.show()
         removeErrorLayout()
     }
 
-    /**
-     * Called when the page is loading.
-     */
     private fun setLoading() {
         progressContainer.isVisible = true
         progressIndicator.show()
         removeErrorLayout()
     }
 
-    /**
-     * Called when the page is downloading
-     */
     private fun setDownloading() {
         progressContainer.isVisible = true
         progressIndicator.show()
         removeErrorLayout()
     }
 
-    /**
-     * Called when the page is ready.
-     */
     private suspend fun setImage() {
         progressIndicator.setProgress(0)
-
         val streamFn = page?.stream ?: return
 
         try {
@@ -274,7 +224,6 @@ class WebtoonPageHolder(
         if (viewer.config.dualPageRotateToFit) {
             return rotateDualPage(imageSource)
         }
-
         if (viewer.config.dualPageSplit) {
             val isDoublePage = ImageUtil.isWideImage(imageSource)
             if (isDoublePage) {
@@ -282,7 +231,6 @@ class WebtoonPageHolder(
                 return ImageUtil.splitAndMerge(imageSource, upperSide)
             }
         }
-
         return imageSource
     }
 
@@ -296,27 +244,18 @@ class WebtoonPageHolder(
         }
     }
 
-    /**
-     * Called when the page has an error.
-     */
     private fun setError() {
         progressContainer.isVisible = false
         initErrorLayout()
-        // TachiyomiAT
         translationsView?.hide()
     }
 
-    /**
-     * Called when the image is decoded and going to be displayed.
-     */
     private fun onImageDecoded() {
         progressContainer.isVisible = false
         removeErrorLayout()
-        // TachiyomiAT
         translationsView?.show()
     }
 
-    // TachiyomiAT: تشغيل الترجمة الفورية عندما تكون الصورة جاهزة
     private fun triggerRealtimeTranslation(page: ReaderPage) {
         val stream = page.stream ?: return
         val manga = viewer.activity.viewModel.manga ?: return
@@ -325,7 +264,6 @@ class WebtoonPageHolder(
         translationManager.queueChapterWithPages(manga, domainChapter, listOf(Pair(fileName, stream)))
     }
 
-    // TachiyomiAT
     private fun addTranslationsView() {
         if (page?.translation == null) return
         frame.removeView(translationsView)
@@ -334,9 +272,6 @@ class WebtoonPageHolder(
         frame.addView(translationsView, MATCH_PARENT, MATCH_PARENT)
     }
 
-    /**
-     * Creates a new progress bar.
-     */
     private fun createProgressIndicator(): ReaderProgressIndicator {
         progressContainer = FrameLayout(context)
         frame.addView(progressContainer, MATCH_PARENT, parentHeight)
@@ -350,9 +285,6 @@ class WebtoonPageHolder(
         return progress
     }
 
-    /**
-     * Initializes a button to retry pages.
-     */
     private fun initErrorLayout(): ReaderErrorBinding {
         if (errorLayout == null) {
             errorLayout = ReaderErrorBinding.inflate(LayoutInflater.from(context), frame, true)
@@ -376,9 +308,6 @@ class WebtoonPageHolder(
         return errorLayout!!
     }
 
-    /**
-     * Removes the decode error layout from the holder, if found.
-     */
     private fun removeErrorLayout() {
         errorLayout?.let {
             frame.removeView(it.root)
