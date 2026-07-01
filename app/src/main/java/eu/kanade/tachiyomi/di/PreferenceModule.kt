@@ -17,6 +17,7 @@ import tachiyomi.domain.backup.service.BackupPreferences
 import tachiyomi.domain.download.service.DownloadPreferences
 import tachiyomi.domain.library.service.LibraryPreferences
 import tachiyomi.domain.storage.service.StoragePreferences
+import tachiyomi.domain.translation.MangaTranslationPreferences
 import tachiyomi.domain.translation.TranslationPreferences
 import uy.kohesive.injekt.api.InjektModule
 import uy.kohesive.injekt.api.InjektRegistrar
@@ -59,6 +60,10 @@ class PreferenceModule(val app: Application) : InjektModule {
         // TachiyomiAT
         addSingletonFactory {
             TranslationPreferences(get())
+        }
+        // TachiyomiAT: per-manga translation overrides
+        addSingletonFactory {
+            MangaTranslationPreferences(get())
         }
         addSingletonFactory {
             BackupPreferences(get())
