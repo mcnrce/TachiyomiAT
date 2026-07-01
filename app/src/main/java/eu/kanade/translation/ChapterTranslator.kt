@@ -262,13 +262,16 @@ class ChapterTranslator(
         start()
     }
 
+    // TachiyomiAT: خريطة لتتبع طلبات الإنهاء لكل translation فوري (chapterId → flag)
+    // بديل آمن لـ Translation.requestFinish() التي تحتاج تعديل Translation model
+    private val finishRequests = java.util.concurrent.ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicBoolean>()
+
     /**
      * يُستدعى عند الخروج من القارئ — ينهي وضع realtime لفصل معين فوراً
      * (يحفظ كل ما تُرجم حتى الآن، ثم يزيل الـ translation من الـ queue).
      */
     fun finishRealtimeChapter(chapterId: Long) {
-        val translation = queueState.value.find { it.chapter.id == chapterId && it.isRealtimeMode } ?: return
-        translation.requestFinish()
+        finishRequests[chapterId]?.set(true)
     }
 
     private fun validateEngineSupportsLanguage(): Boolean {
@@ -316,7 +319,7 @@ class ChapterTranslator(
 
             withContext(Dispatchers.IO) {
                 for ((fileName, streamFn) in streams) {
-                    coroutineContext.ensureActive()
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
                     streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
 
                     val pageTranslation = recognizePage(tmpFile)
@@ -351,14 +354,19 @@ class ChapterTranslator(
 
         val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
         val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
+        val chapterId = translation.chapter.id
+
+        // سجّل علم الإنهاء لهذا الفصل
+        val finishFlag = java.util.concurrent.atomic.AtomicBoolean(false)
+        if (chapterId != null) finishRequests[chapterId] = finishFlag
 
         var idleElapsed = 0L
 
         try {
             while (true) {
-                coroutineContext.ensureActive()
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
 
-                if (translation.isFinishRequested()) break
+                if (finishFlag.get()) break
 
                 val newStreams = translation.takePageStreams()
 
@@ -371,7 +379,7 @@ class ChapterTranslator(
                 idleElapsed = 0L
 
                 for ((fileName, streamFn) in newStreams) {
-                    coroutineContext.ensureActive()
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
 
                     if (translation.existingPages.containsKey(fileName)) {
                         translation.emitPageTranslated(fileName, translation.existingPages[fileName]!!)
@@ -394,7 +402,6 @@ class ChapterTranslator(
                             translation.existingPages[fileName] = pageTranslation
                             translation.emitPageTranslated(fileName, pageTranslation)
 
-                            // حفظ تراكمي فوري — نفس ملف JSON الذي تستخدمه الترجمة العادية
                             persistRealtimeProgress(translationMangaDir, saveFile, translation)
                         }
                     } finally {
@@ -406,6 +413,7 @@ class ChapterTranslator(
             if (e is CancellationException) throw e
             logcat(LogPriority.ERROR, e)
         } finally {
+            if (chapterId != null) finishRequests.remove(chapterId)
             runCatching { persistRealtimeProgress(translationMangaDir, saveFile, translation) }
             translation.status = Translation.State.TRANSLATED
         }
