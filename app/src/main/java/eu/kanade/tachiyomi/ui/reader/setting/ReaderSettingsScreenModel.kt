@@ -15,7 +15,7 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
 class ReaderSettingsScreenModel(
-    readerState: StateFlow<ReaderViewModel.State>,
+    private val readerState: StateFlow<ReaderViewModel.State>,
     val hasDisplayCutout: Boolean,
     val onChangeReadingMode: (ReadingMode) -> Unit,
     val onChangeOrientation: (ReaderOrientation) -> Unit,
