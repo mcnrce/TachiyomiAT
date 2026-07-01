@@ -4,7 +4,7 @@
     <string name="pref_category_translations">Translations</string>
     <string name="pref_translation_summary">Automatic Translations</string>
     <string name="manga_translate">Translate</string>
-    <string name="error_mlkit_language_unsupported">MLKit doesn't support this language</string>
+    <string name="error_mlkit_language_unsupported">MLKit doesn\'t support this language</string>
     <string name="pref_show_translations">Show Translations</string>
     <string name="pref_translate_after_downloading">Translate After Downloading</string>
     <string name="pref_reader_font">Reader Font</string>
@@ -23,4 +23,17 @@
     <string name="pref_sub_translation_filtered_words">Words to ignore, separated by comma (e.g: sfx, ha, ah)</string>
     <string name="pref_realtime_translation">Real-time Translation</string>
     <string name="pref_sub_realtime_translation">Translate pages as you read, even without downloading</string>
+
+    <!-- TachiyomiAT: Per-manga translation settings (reader settings dialog) -->
+    <string name="pref_translation_manga_override">Custom translation settings for this manga</string>
+    <string name="pref_translation_manga_override_subtitle">Override global settings for this manga only</string>
+    <string name="pref_translation_manga_enabled">Enable real-time translation for this manga</string>
+    <string name="pref_translation_clear_manga">Clear translation (this chapter)</string>
+    <string name="pref_translation_clear_manga_confirm">Delete saved translation for the current chapter only?</string>
+    <string name="pref_translation_clear_all">Clear translation (whole manga)</string>
+    <string name="pref_translation_clear_all_confirm">Delete all saved translations for this manga? This cannot be undone.</string>
+    <string name="action_clear">Clear</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="translation_cleared">Translation cleared</string>
+
 </resources>
