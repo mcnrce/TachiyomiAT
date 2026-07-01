@@ -33,9 +33,9 @@ import uy.kohesive.injekt.api.get
 /**
  * تبويب "الترجمة" في إعدادات القارئ — خاص بالمانجا الحالية فقط.
  *
- * منطق الأولوية (مُطبَّق في ChapterTranslator وليس هنا، لكن هذه الواجهة تتحكم فيه):
- *  - hasOverride == false → استخدم إعداد الترجمة الفورية العام (translationPreferences.realtimeTranslation)
- *  - hasOverride == true  → استخدم enabled/sourceLanguage الخاصين بهذه المانجا فقط، بغض النظر عن العام
+ * منطق الأولوية:
+ *  - hasOverride == false → اتبع الإعداد العام (realtimeTranslation العام)
+ *  - hasOverride == true  → استخدم enabled/sourceLanguage الخاص بهذه المانجا فقط
  */
 @Composable
 internal fun ColumnScope.TranslationSettingsPage(
@@ -48,10 +48,11 @@ internal fun ColumnScope.TranslationSettingsPage(
 
     HeadingItem(ATMR.strings.pref_category_translations)
 
+    // ─── إعدادات الترجمة الخاصة بهذه المانجا ────────────────────
+
     val hasOverridePref = remember(mangaId) { mangaTranslationPreferences.hasOverride(mangaId) }
     val hasOverride by hasOverridePref.collectAsState()
 
-    // مفتاح تفعيل وضع "إعدادات خاصة لهذه المانجا"
     CheckboxItem(
         label = stringResource(ATMR.strings.pref_translation_manga_override),
         pref = hasOverridePref,
@@ -60,7 +61,6 @@ internal fun ColumnScope.TranslationSettingsPage(
     if (hasOverride) {
         val enabledPref = remember(mangaId) { mangaTranslationPreferences.enabled(mangaId) }
 
-        // التبديل بين تفعيل/تعطيل الترجمة الفورية لهذه المانجا تحديداً
         CheckboxItem(
             label = stringResource(ATMR.strings.pref_translation_manga_enabled),
             pref = enabledPref,
@@ -84,33 +84,51 @@ internal fun ColumnScope.TranslationSettingsPage(
         }
     }
 
-    var showClearDialog by remember { mutableStateOf(false) }
+    // ─── أزرار المسح ─────────────────────────────────────────────
 
+    var showClearChapterDialog by remember { mutableStateOf(false) }
+    var showClearAllDialog by remember { mutableStateOf(false) }
+
+    // مسح ترجمة الفصل الحالي فقط
     OutlinedButton(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 8.dp),
-        onClick = { showClearDialog = true },
+            .padding(top = 12.dp),
+        onClick = { showClearChapterDialog = true },
     ) {
-        Text(stringResource(ATMR.strings.pref_translation_clear))
+        Text(stringResource(ATMR.strings.pref_translation_clear_manga))
     }
 
-    if (showClearDialog) {
+    // مسح ترجمة كامل المانجا
+    OutlinedButton(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp, bottom = 8.dp),
+        onClick = { showClearAllDialog = true },
+    ) {
+        Text(
+            text = stringResource(ATMR.strings.pref_translation_clear_all),
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
+
+    // ─── Dialog: مسح الفصل الحالي ────────────────────────────────
+
+    if (showClearChapterDialog) {
         AlertDialog(
-            onDismissRequest = { showClearDialog = false },
-            title = { Text(stringResource(ATMR.strings.pref_translation_clear)) },
-            text = { Text(stringResource(ATMR.strings.pref_translation_clear_confirm)) },
+            onDismissRequest = { showClearChapterDialog = false },
+            title = { Text(stringResource(ATMR.strings.pref_translation_clear_manga)) },
+            text = { Text(stringResource(ATMR.strings.pref_translation_clear_manga_confirm)) },
             confirmButton = {
                 TextButton(
                     onClick = {
                         val currentManga = manga
                         val source = screenModel.getHttpSourceOrNull()
-                        if (currentManga != null && source != null) {
-                            translationManager.deleteManga(currentManga, source)
+                        val chapter = screenModel.currentChapter
+                        if (currentManga != null && source != null && chapter != null) {
+                            translationManager.deleteTranslation(chapter, currentManga, source)
                         }
-                        // إعادة الإعدادات الخاصة بهذه المانجا للوضع الافتراضي (اتباع العام)
-                        mangaTranslationPreferences.clear(mangaId)
-                        showClearDialog = false
+                        showClearChapterDialog = false
                     },
                 ) {
                     Text(
@@ -120,7 +138,40 @@ internal fun ColumnScope.TranslationSettingsPage(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showClearDialog = false }) {
+                TextButton(onClick = { showClearChapterDialog = false }) {
+                    Text(stringResource(ATMR.strings.action_cancel))
+                }
+            },
+        )
+    }
+
+    // ─── Dialog: مسح كامل المانجا ────────────────────────────────
+
+    if (showClearAllDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearAllDialog = false },
+            title = { Text(stringResource(ATMR.strings.pref_translation_clear_all)) },
+            text = { Text(stringResource(ATMR.strings.pref_translation_clear_all_confirm)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val currentManga = manga
+                        val source = screenModel.getHttpSourceOrNull()
+                        if (currentManga != null && source != null) {
+                            translationManager.deleteManga(currentManga, source)
+                        }
+                        mangaTranslationPreferences.clear(mangaId)
+                        showClearAllDialog = false
+                    },
+                ) {
+                    Text(
+                        stringResource(ATMR.strings.action_clear),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearAllDialog = false }) {
                     Text(stringResource(ATMR.strings.action_cancel))
                 }
             },
