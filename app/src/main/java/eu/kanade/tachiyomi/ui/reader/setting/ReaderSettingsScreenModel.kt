@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.ui.reader.setting
 
 import cafe.adriel.voyager.core.model.ScreenModel
 import eu.kanade.presentation.util.ioCoroutineScope
+import eu.kanade.tachiyomi.data.database.models.toDomainChapter
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.ui.reader.ReaderViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -31,6 +32,10 @@ class ReaderSettingsScreenModel(
         .map { it.manga }
         .distinctUntilChanged()
         .stateIn(ioCoroutineScope, SharingStarted.Lazily, null)
+
+    /** TachiyomiAT: الفصل الحالي المفتوح — لزر "مسح ترجمة هذا الفصل" */
+    val currentChapter: tachiyomi.domain.chapter.model.Chapter?
+        get() = readerState.value.currentChapter?.chapter?.toDomainChapter()
 
     /**
      * TachiyomiAT: يُستخدم من تبويب إعدادات الترجمة (زر "مسح الترجمة")
