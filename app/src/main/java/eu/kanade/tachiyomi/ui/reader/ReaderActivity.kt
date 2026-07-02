@@ -209,7 +209,7 @@ class ReaderActivity : BaseActivity() {
             .onEach(::setChapters)
             .launchIn(lifecycleScope)
 
-        viewModel.eventFlow
+                viewModel.eventFlow
             .onEach { event ->
                 when (event) {
                     ReaderViewModel.Event.ReloadViewerChapters -> {
@@ -233,6 +233,8 @@ class ReaderActivity : BaseActivity() {
                     is ReaderViewModel.Event.SetCoverResult -> {
                         onSetAsCoverResult(event.result)
                     }
+                    // 👇 هذا هو السطر الجديد المعدل الذي تم إضافته لإصلاح الخطأ
+                    else -> {}
                 }
             }
             .launchIn(lifecycleScope)
