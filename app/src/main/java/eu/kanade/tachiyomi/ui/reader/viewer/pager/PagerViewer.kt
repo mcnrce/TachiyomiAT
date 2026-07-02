@@ -373,6 +373,24 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     }
 
     /**
+     * TachiyomiAT: يُستدعى بعد تغيير إعدادات الترجمة الخاصة بالمانجا أو بعد مسح الترجمة.
+     *
+     * يصفّر [ReaderPage.translation] لكل صفحات الفصل الحالي ثم يُعيد إنشاء كل الـ holders
+     * عبر [refreshAdapter]، مما يجبرها على قراءة [MangaTranslationPreferences] من جديد
+     * بالقيم المحدّثة.
+     *
+     * @param clearExisting إذا true يمسح الترجمة المعروضة حالياً (بعد زر المسح).
+     *                      إذا false يُعيد فقط تهيئة الـ holders (بعد تغيير الإعداد).
+     */
+    fun refreshTranslation(clearExisting: Boolean = false) {
+        if (clearExisting) {
+            // امسح page.translation من كل صفحات الفصل الحالي في الذاكرة
+            adapter.items.filterIsInstance<ReaderPage>().forEach { it.translation = null }
+        }
+        refreshAdapter()
+    }
+
+    /**
      * Called from the containing activity when a key [event] is received. It should return true
      * if the event was handled, false otherwise.
      */
