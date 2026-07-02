@@ -874,6 +874,34 @@ class ReaderViewModel @JvmOverloads constructor(
         }
     }
 
+    // ─── TachiyomiAT: Translation Reload ──────────────────────────────────────
+
+    /**
+     * يُستدعى من [TranslationSettingsPage] بعد الضغط على "تأكيد" لتطبيق إعدادات
+     * الترجمة الجديدة الخاصة بالمانجا.
+     *
+     * يُرسل [Event.ReloadTranslation] للـ Activity التي تستدعي
+     * [PagerViewer.refreshTranslation] لإعادة إنشاء الـ holders بالإعداد المحدَّث.
+     */
+    fun reloadTranslation() {
+        viewModelScope.launchIO {
+            eventChannel.send(Event.ReloadTranslation(clearExisting = false))
+        }
+    }
+
+    /**
+     * يُستدعى من [TranslationSettingsPage] بعد مسح الترجمة من القرص.
+     * يصفّر [ReaderPage.translation] في الذاكرة ثم يُعيد إنشاء الـ holders
+     * لإخفاء الـ overlay الظاهر حالياً على الشاشة فوراً.
+     */
+    fun clearTranslationFromScreen() {
+        viewModelScope.launchIO {
+            eventChannel.send(Event.ReloadTranslation(clearExisting = true))
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+
     enum class SetAsCoverResult {
         Success,
         AddToLibraryFirst,
@@ -960,6 +988,8 @@ class ReaderViewModel @JvmOverloads constructor(
         data object PageChanged : Event
         data class SetOrientation(val orientation: Int) : Event
         data class SetCoverResult(val result: SetAsCoverResult) : Event
+        // TachiyomiAT
+        data class ReloadTranslation(val clearExisting: Boolean) : Event
 
         data class SavedImage(val result: SaveImageResult) : Event
         data class ShareImage(val uri: Uri, val page: ReaderPage) : Event
