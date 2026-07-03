@@ -28,6 +28,7 @@ import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.domain.chapter.model.Chapter
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.service.SourceManager
+import tachiyomi.domain.translation.MangaTranslationPreferences
 import tachiyomi.domain.translation.TranslationPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -37,12 +38,13 @@ class TranslationManager(
     private val provider: TranslationProvider = Injekt.get(),
     private val sourceManager: SourceManager = Injekt.get(),
     private val translationPreferences: TranslationPreferences = Injekt.get(),
+    private val mangaTranslationPreferences: MangaTranslationPreferences = Injekt.get(),
 ) {
     private val translator = ChapterTranslator(context, provider)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // Global flow — يُصدر (chapterId, fileName, PageTranslation) بعد كل صفحة تنتهي
-    private val _globalPageTranslatedFlow = MutableSharedFlow<Triple<Long, String, PageTranslation>>(extraBufferCapacity = 128)
+    private val _globalPageTranslatedFlow =
+        MutableSharedFlow<Triple<Long, String, PageTranslation>>(extraBufferCapacity = 128)
     val globalPageTranslatedFlow = _globalPageTranslatedFlow.asSharedFlow()
 
     val isRunning: Boolean
@@ -52,19 +54,15 @@ class TranslationManager(
         get() = translator.queueState
 
     init {
-        // إصلاح تسريب الذاكرة: دمج التدفقات بشكل تفاعلي آمن تلقائي الإلغاء عند تحديث الطابور
         queueState
             .flatMapLatest { queue ->
-                val flows = queue.map { translation ->
+                queue.map { translation ->
                     translation.pageTranslatedFlow.map { (fileName, pageTranslation) ->
                         Triple(translation.chapter.id, fileName, pageTranslation)
                     }
-                }
-                flows.merge()
+                }.merge()
             }
-            .onEach { event ->
-                _globalPageTranslatedFlow.emit(event)
-            }
+            .onEach { event -> _globalPageTranslatedFlow.emit(event) }
             .launchIn(scope)
     }
 
@@ -76,28 +74,21 @@ class TranslationManager(
         translator.start()
     }
 
-    fun pauseTranslation() {
-        translator.pause()
-    }
+    fun pauseTranslation() { translator.pause() }
 
-    fun clearQueue() {
-        translator.clearQueue()
-    }
+    fun clearQueue() { translator.clearQueue() }
 
-    fun getQueuedTranslationOrNull(chapterId: Long): Translation? {
-        return queueState.value.find { it.chapter.id == chapterId }
-    }
+    fun getQueuedTranslationOrNull(chapterId: Long): Translation? =
+        queueState.value.find { it.chapter.id == chapterId }
 
-    fun getQueuedTranslationForChapter(chapterId: Long): Translation? {
-        return queueState.value.find { it.chapter.id == chapterId }
-    }
+    fun getQueuedTranslationForChapter(chapterId: Long): Translation? =
+        queueState.value.find { it.chapter.id == chapterId }
 
     fun translateChapter(manga: Manga, chapters: Chapter) {
         translator.queueChapter(manga, chapters)
         startTranslation()
     }
 
-    // للترجمة الفورية — تمرير الصفحات مباشرة من الكاش مع تفعيل الأولوية القصوى
     fun queueChapterWithPages(
         manga: Manga,
         chapter: Chapter,
@@ -106,6 +97,12 @@ class TranslationManager(
         translator.queueChapterWithPages(manga, chapter, pageStreams)
     }
 
+    fun finishRealtimeChapter(chapterId: Long) {
+        translator.finishRealtimeChapter(chapterId)
+    }
+
+    // ─── Translation Status ───────────────────────────────────────────────────
+
     fun getChapterTranslationStatus(
         chapterId: Long,
         chapterName: String,
@@ -113,23 +110,33 @@ class TranslationManager(
         title: String,
         sourceId: Long,
     ): Translation.State {
-        val translation = getQueuedTranslationOrNull(chapterId)
-        if (translation != null) return translation.status
-        if (isChapterTranslated(chapterName, scanlator, title, sourceId)) return Translation.State.TRANSLATED
+        val queued = getQueuedTranslationOrNull(chapterId)
+        if (queued != null) return queued.status
+        if (isChapterTranslated(chapterId, chapterName, scanlator, title, sourceId)) {
+            return Translation.State.TRANSLATED
+        }
         return Translation.State.NOT_TRANSLATED
     }
 
+    /**
+     * مصدر الحقيقة الجديد:
+     * ١. العداد الجديد (isChapterFullyTranslated) — الأدق
+     * ٢. Fallback: file.exists() للفصول المترجمة قبل إضافة العداد
+     */
     fun isChapterTranslated(
+        chapterId: Long,
         chapterName: String,
         chapterScanlator: String?,
         mangaTitle: String,
         sourceId: Long,
     ): Boolean {
-        val source = sourceManager.get(sourceId)
-        if (source == null) return false
-        val file = provider.findTranslationFile(chapterName, chapterScanlator, mangaTitle, source)
-        return file?.exists() == true
+        if (mangaTranslationPreferences.isChapterFullyTranslated(chapterId)) return true
+        val source = sourceManager.get(sourceId) ?: return false
+        return provider.findTranslationFile(chapterName, chapterScanlator, mangaTitle, source)
+            ?.exists() == true
     }
+
+    // ─── Read Translation ─────────────────────────────────────────────────────
 
     fun getChapterTranslation(
         chapterName: String,
@@ -137,40 +144,42 @@ class TranslationManager(
         title: String,
         source: Source,
     ): Map<String, PageTranslation> {
-        try {
-            val file = provider.findTranslationFile(chapterName, scanlator, title, source) ?: return emptyMap()
-            return getChapterTranslation(file)
-        } catch (_: Exception) {}
-        return emptyMap()
+        return try {
+            val file = provider.findTranslationFile(chapterName, scanlator, title, source)
+                ?: return emptyMap()
+            getChapterTranslation(file)
+        } catch (_: Exception) {
+            emptyMap()
+        }
     }
 
     fun getChapterTranslation(file: UniFile): Map<String, PageTranslation> {
-        try {
-            return Json.decodeFromStream<Map<String, PageTranslation>>(file.openInputStream())
+        return try {
+            Json.decodeFromStream<Map<String, PageTranslation>>(file.openInputStream())
         } catch (e: Exception) {
             file.delete()
+            emptyMap()
         }
-        return emptyMap()
     }
+
+    // ─── Delete Translation ───────────────────────────────────────────────────
 
     fun deleteTranslation(chapter: Chapter, manga: Manga, source: Source) {
         launchIO {
             removeFromTranslationQueue(chapter)
-            val file = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
-            file?.delete()
+            provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
+                ?.delete()
+            // أعد العداد للصفر → أيقونة الترجمة ترجع لـ "غير مترجم" فوراً
+            mangaTranslationPreferences.clearChapterTranslation(chapter.id)
         }
     }
 
     fun deleteManga(manga: Manga, source: Source, removeQueued: Boolean = true) {
         launchIO {
-            if (removeQueued) {
-                translator.removeFromQueue(manga)
-            }
+            if (removeQueued) translator.removeFromQueue(manga)
             provider.findMangaDir(manga.title, source)?.delete()
             val sourceDir = provider.findSourceDir(source)
-            if (sourceDir?.listFiles()?.isEmpty() == true) {
-                sourceDir.delete()
-            }
+            if (sourceDir?.listFiles()?.isEmpty() == true) sourceDir.delete()
         }
     }
 
@@ -180,30 +189,25 @@ class TranslationManager(
 
     private fun removeFromTranslationQueue(chapter: Chapter) {
         val wasRunning = translator.isRunning
-        if (wasRunning) {
-            translator.pause()
-        }
+        if (wasRunning) translator.pause()
         translator.removeFromQueue(chapter)
         if (wasRunning) {
-            if (queueState.value.isEmpty()) {
-                translator.stop()
-            } else if (queueState.value.isNotEmpty()) {
-                translator.start()
-            }
+            if (queueState.value.isEmpty()) translator.stop()
+            else translator.start()
         }
     }
 
     fun statusFlow(): Flow<Translation> = queueState
         .flatMapLatest { translations ->
             translations
-                .map { translation ->
-                    translation.statusFlow.drop(1).map { translation }
-                }
+                .map { translation -> translation.statusFlow.drop(1).map { translation } }
                 .merge()
         }
         .onStart {
             emitAll(
-                queueState.value.filter { translation -> translation.status == Translation.State.TRANSLATING }.asFlow(),
+                queueState.value
+                    .filter { it.status == Translation.State.TRANSLATING }
+                    .asFlow(),
             )
         }
 }
