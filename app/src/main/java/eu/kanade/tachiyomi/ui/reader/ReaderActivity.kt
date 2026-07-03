@@ -72,6 +72,8 @@ import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderSettingsScreenModel
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderProgressIndicator
+import eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer
+import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonViewer
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.util.system.hasDisplayCutout
 import eu.kanade.tachiyomi.util.system.isNightMode
@@ -233,7 +235,16 @@ class ReaderActivity : BaseActivity() {
                     is ReaderViewModel.Event.SetCoverResult -> {
                         onSetAsCoverResult(event.result)
                     }
-                    // 👇 هذا هو السطر الجديد المعدل الذي تم إضافته لإصلاح الخطأ
+                    // TachiyomiAT: إعادة تحميل الترجمة بعد تغيير إعدادات المانجا أو مسحها.
+                    // تُعيد إنشاء الـ holders فتُعيد تطبيق منطق الأولوية:
+                    // العادية (JSON محفوظ) ← الفورية الخاصة بالمانجا ← الفورية العامة.
+                    is ReaderViewModel.Event.ReloadTranslation -> {
+                        when (val viewer = viewModel.state.value.viewer) {
+                            is PagerViewer -> viewer.refreshTranslation(event.clearExisting)
+                            is WebtoonViewer -> viewer.refreshTranslation(event.clearExisting)
+                            else -> {}
+                        }
+                    }
                     else -> {}
                 }
             }
@@ -353,6 +364,9 @@ class ReaderActivity : BaseActivity() {
                     hasDisplayCutout = hasCutout,
                     onChangeReadingMode = viewModel::setMangaReadingMode,
                     onChangeOrientation = viewModel::setMangaOrientationType,
+                    // TachiyomiAT: إعادة تحميل/مسح الترجمة من تبويب إعدادات الترجمة
+                    onReloadTranslation = viewModel::reloadTranslation,
+                    onClearTranslation = viewModel::clearTranslationFromScreen,
                 )
             }
 

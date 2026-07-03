@@ -19,6 +19,10 @@ class ReaderSettingsScreenModel(
     val hasDisplayCutout: Boolean,
     val onChangeReadingMode: (ReadingMode) -> Unit,
     val onChangeOrientation: (ReaderOrientation) -> Unit,
+    // TachiyomiAT: يُعاد إنشاء الـ holders لتطبيق إعدادات الترجمة الجديدة الخاصة بالمانجا.
+    val onReloadTranslation: () -> Unit = {},
+    // TachiyomiAT: يُصفَّر الـ overlay المعروض ثم يُعاد إنشاء الـ holders بعد مسح الترجمة.
+    val onClearTranslation: () -> Unit = {},
     val preferences: ReaderPreferences = Injekt.get(),
     private val sourceManager: SourceManager = Injekt.get(),
 ) : ScreenModel {

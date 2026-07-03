@@ -359,6 +359,30 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
             min(position + 3, adapter.itemCount - 1),
         )
     }
+
+    /**
+     * TachiyomiAT: يُستدعى بعد تغيير إعدادات الترجمة الخاصة بالمانجا أو بعد مسح الترجمة.
+     *
+     * يصفّر [ReaderPage.translation] لكل صفحات الفصل الحالي (إن طُلب) ثم يُجبر إعادة إنشاء
+     * كل الـ holders عبر تفريغ مجمّع إعادة الاستخدام (recycledViewPool)، مما يجبرها على
+     * إعادة قراءة [tachiyomi.domain.translation.MangaTranslationPreferences] بالقيم المحدّثة
+     * وإعادة تطبيق منطق الأولوية (العادية ← الفورية الخاصة ← الفورية العامة).
+     *
+     * نظير [PagerViewer.refreshTranslation] لضمان تطابق السلوك بين الوضعين.
+     *
+     * @param clearExisting إذا true يمسح الترجمة المعروضة حالياً (بعد زر المسح).
+     */
+    @android.annotation.SuppressLint("NotifyDataSetChanged")
+    fun refreshTranslation(clearExisting: Boolean = false) {
+        if (clearExisting) {
+            adapter.items.filterIsInstance<ReaderPage>().forEach { it.translation = null }
+        }
+        // تفريغ المجمّع يجبر RecyclerView على إنشاء holders جديدة بدل إعادة استخدام القديمة،
+        // فيُعاد حساب realtimeTranslation (المحسوب في الـ constructor) من جديد.
+        recycler.recycledViewPool.clear()
+        adapter.refresh()
+        adapter.notifyDataSetChanged()
+    }
 }
 
 // Double the cache size to reduce rebinds/recycles incurred by the extra layout space on scroll direction changes

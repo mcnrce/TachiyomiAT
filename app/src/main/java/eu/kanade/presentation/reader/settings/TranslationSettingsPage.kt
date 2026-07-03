@@ -10,6 +10,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,7 +52,24 @@ internal fun ColumnScope.TranslationSettingsPage(
     // ─── إعدادات الترجمة الخاصة بهذه المانجا ────────────────────
 
     val hasOverridePref = remember(mangaId) { mangaTranslationPreferences.hasOverride(mangaId) }
+    val enabledPref = remember(mangaId) { mangaTranslationPreferences.enabled(mangaId) }
+    val sourceLangPref = remember(mangaId) { mangaTranslationPreferences.sourceLanguage(mangaId) }
+
     val hasOverride by hasOverridePref.collectAsState()
+    val enabled by enabledPref.collectAsState()
+    val sourceLangRaw by sourceLangPref.collectAsState()
+
+    // TachiyomiAT: بعد أي تغيير في إعدادات الترجمة الخاصة بالمانجا نُعيد إنشاء الـ holders
+    // ليُعاد تطبيق منطق الأولوية فوراً (العادية ← الفورية الخاصة ← الفورية العامة).
+    // نتخطى أول تكوين حتى لا يُعاد التحميل بمجرد فتح التبويب.
+    var skipInitialReload by remember(mangaId) { mutableStateOf(true) }
+    LaunchedEffect(hasOverride, enabled, sourceLangRaw) {
+        if (skipInitialReload) {
+            skipInitialReload = false
+        } else {
+            screenModel.onReloadTranslation()
+        }
+    }
 
     CheckboxItem(
         label = stringResource(ATMR.strings.pref_translation_manga_override),
@@ -59,15 +77,11 @@ internal fun ColumnScope.TranslationSettingsPage(
     )
 
     if (hasOverride) {
-        val enabledPref = remember(mangaId) { mangaTranslationPreferences.enabled(mangaId) }
-
         CheckboxItem(
             label = stringResource(ATMR.strings.pref_translation_manga_enabled),
             pref = enabledPref,
         )
 
-        val sourceLangPref = remember(mangaId) { mangaTranslationPreferences.sourceLanguage(mangaId) }
-        val sourceLangRaw by sourceLangPref.collectAsState()
         val sourceLang = remember(sourceLangRaw) {
             TextRecognizerLanguage.entries.firstOrNull { it.name == sourceLangRaw }
                 ?: TextRecognizerLanguage.CHINESE
@@ -127,6 +141,9 @@ internal fun ColumnScope.TranslationSettingsPage(
                         val chapter = screenModel.currentChapter
                         if (currentManga != null && source != null && chapter != null) {
                             translationManager.deleteTranslation(chapter, currentManga, source)
+                            mangaTranslationPreferences.clearChapterTranslation(chapter.id)
+                            // صفّر الـ overlay المعروض حالياً وأعد إنشاء الـ holders
+                            screenModel.onClearTranslation()
                         }
                         showClearChapterDialog = false
                     },
@@ -161,6 +178,8 @@ internal fun ColumnScope.TranslationSettingsPage(
                             translationManager.deleteManga(currentManga, source)
                         }
                         mangaTranslationPreferences.clear(mangaId)
+                        // صفّر الـ overlay المعروض حالياً وأعد إنشاء الـ holders
+                        screenModel.onClearTranslation()
                         showClearAllDialog = false
                     },
                 ) {
