@@ -16,6 +16,8 @@ import tachiyomi.core.common.preference.PreferenceStore
 class MangaTranslationPreferences(
     private val preferenceStore: PreferenceStore,
 ) {
+    // ─── إعدادات خاصة بالمانجا ───────────────────────────────────────────────
+
     /**
      * هل يوجد override خاص بهذه المانجا أصلاً؟
      * false يعني: اتبع الإعداد العام بالكامل (لا تطبيق لأي قيمة أدناه).
@@ -61,5 +63,51 @@ class MangaTranslationPreferences(
         } else {
             globalRealtimeEnabled
         }
+    }
+
+    // ─── تتبع اكتمال ترجمة الفصل ─────────────────────────────────────────────
+    //
+    // هذا هو مصدر الحقيقة الوحيد لسؤال "هل هذا الفصل مترجم؟"
+    // بدل الاعتماد على file.exists() (الذي يعود true حتى لو الترجمة ناقصة)،
+    // نخزّن عدد الصفحات المترجمة فعلاً مقارنةً بإجمالي صفحات الفصل.
+    // يُحدَّث من ChapterTranslator بعد كل صفحة (realtime) أو بعد الانتهاء (batch).
+
+    /** عدد الصفحات التي اكتملت ترجمتها في هذا الفصل */
+    fun translatedPagesCount(chapterId: Long) =
+        preferenceStore.getInt("chapter_translated_pages_$chapterId", 0)
+
+    /** إجمالي صفحات هذا الفصل */
+    fun totalPagesCount(chapterId: Long) =
+        preferenceStore.getInt("chapter_total_pages_$chapterId", 0)
+
+    /**
+     * الفصل "مترجم" إذا وصلنا لـ 90% على الأقل من صفحاته.
+     * نسبة 90% وليس 100% لأن بعض الصفحات لا تحتوي نصاً (صور بلا فقاعات)
+     * فيتخطاها OCR ولا تُحسب في الترجمة، لذا 90% = اكتمال فعلي.
+     */
+    fun isChapterFullyTranslated(chapterId: Long): Boolean {
+        val translated = translatedPagesCount(chapterId).get()
+        val total = totalPagesCount(chapterId).get()
+        if (total <= 0) return false
+        return translated >= (total * 0.9f).toInt()
+    }
+
+    /**
+     * يُحدَّث من ChapterTranslator:
+     * - بعد كل صفحة تنتهي ترجمتها (realtime mode)
+     * - مرة واحدة بعد انتهاء الفصل كاملاً (batch mode)
+     */
+    fun updateTranslatedPages(chapterId: Long, translated: Int, total: Int) {
+        translatedPagesCount(chapterId).set(translated)
+        totalPagesCount(chapterId).set(total)
+    }
+
+    /**
+     * يُستدعى عند حذف ترجمة الفصل لإعادة العداد للصفر،
+     * حتى تعود أيقونة الترجمة لحالة "غير مترجم" فوراً.
+     */
+    fun clearChapterTranslation(chapterId: Long) {
+        translatedPagesCount(chapterId).set(0)
+        totalPagesCount(chapterId).set(0)
     }
 }
