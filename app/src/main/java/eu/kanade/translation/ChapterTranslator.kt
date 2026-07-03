@@ -316,7 +316,8 @@ class ChapterTranslator(
             val pages = mutableMapOf<String, PageTranslation>()
             val tmpFile = translationMangaDir.createFile("tmp")!!
             val streams = getChapterPages(chapterPath)
-
+            val totalPageCount = streams.size
+            
             withContext(Dispatchers.IO) {
                 for ((fileName, streamFn) in streams) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
@@ -332,13 +333,16 @@ class ChapterTranslator(
             withContext(Dispatchers.IO) { textTranslator.translate(pages) }
 
             writeTranslationFile(translationMangaDir, saveFile, pages)
-            translation.status = Translation.State.TRANSLATED
-        } catch (error: Throwable) {
-            if (error is CancellationException) throw error
-            translation.status = Translation.State.ERROR
-            logcat(LogPriority.ERROR, error)
-        }
-    }
+translation.status = Translation.State.TRANSLATED
+// batch يترجم كل الصفحات → مكتمل دائماً
+val chapterId = translation.chapter.id
+if (chapterId != null) {
+    mangaTranslationPreferences.updateTranslatedPages(
+        chapterId = chapterId,
+        translated = totalPageCount,  // كل الصفحات
+        total = totalPageCount,
+    )
+}
 
     // ─── Realtime Translation (وضع القراءة الفورية — بدون أرشيف، streaming) ────
 
