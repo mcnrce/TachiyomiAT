@@ -58,6 +58,7 @@ import tachiyomi.domain.translation.TranslationPreferences
 import tachiyomi.i18n.at.ATMR
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.io.File
 import java.io.InputStream
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -139,19 +140,15 @@ class ChapterTranslator(
         internalClearQueue()
     }
 
-    /**
-     * لتفريغ مخلفات الفصل وتنظيف الكاش عند الخروج من القارئ لتهيئته للفصل القادم.
-     * (من File 9 - مفيد للتنظيف الفوري)
-     */
     fun forceRemoveRealtimeTranslation(chapterId: Long) {
         _queueState.update { queue ->
             val toCancel = queue.filter { it.chapter.id == chapterId && it.isRealtimeMode }
             toCancel.forEach { translation ->
                 translation.status = Translation.State.NOT_TRANSLATED
-                translation.takePageStreams() // إفراغ مجاري البث
-                translation.existingPages.clear() // مسح الكاش المحلي
+                translation.takePageStreams()
+                translation.existingPages.clear()
             }
-            queue - toCancel
+            queue - toCancel.toSet()
         }
     }
 
@@ -167,15 +164,19 @@ class ChapterTranslator(
                             .toList()
                             .take(5)
                             .map { (_, translations) -> translations.first() }
+                    
                     emit(activeTranslations)
                     if (activeTranslations.isEmpty()) break
-                    val activeTranslationsErroredFlow =
+                    
+                    // إصلاح مشكلة تجمّد الطابور: يجب الانتظار حتى يكتمل أو يفشل الفصل
+                    val activeTranslationsFinishedFlow =
                         combine(activeTranslations.map(Translation::statusFlow)) { states ->
-                            states.contains(Translation.State.ERROR)
+                            states.all { it == Translation.State.TRANSLATED || it == Translation.State.ERROR }
                         }.filter { it }
-                    activeTranslationsErroredFlow.first()
+                    activeTranslationsFinishedFlow.first()
                 }
             }.distinctUntilChanged()
+            
             supervisorScope {
                 val translationJobs = mutableMapOf<Translation, Job>()
                 activeTranslationFlow.collectLatest { activeTranslations ->
@@ -202,8 +203,8 @@ class ChapterTranslator(
             if (areAllTranslationsFinished()) stop()
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
-            logcat(LogPriority.ERROR, e)
-            stop()
+            logcat(LogPriority.ERROR, e) { "خطأ غير متوقع في جوب الترجمة" }
+            translation.status = Translation.State.ERROR
         }
     }
 
@@ -211,8 +212,6 @@ class ChapterTranslator(
         translationJob?.cancel()
         translationJob = null
     }
-
-    // ─── Queueing: Batch Mode (الترجمة العادية بعد التنزيل) ─────────────────────
 
     fun queueChapter(manga: Manga, chapter: Chapter) {
         val source = sourceManager.get(manga.source) as? HttpSource ?: return
@@ -225,22 +224,6 @@ class ChapterTranslator(
         addToQueue(translation)
     }
 
-    // ─── Queueing: Realtime Mode (الترجمة الفورية أثناء القراءة) ────────────────
-
-    /**
-     * يبحث عن translation فوري موجود لنفس الفصل، أو ينشئ واحداً جديداً.
-     * ثم يضيف الصفحات الجديدة إليه ويبدأ التشغيل إذا لم يكن يعمل.
-     * هذا هو المدخل الوحيد المستخدم من PagerPageHolder / WebtoonPageHolder.
-     *
-     * منطق أولوية اللغة:
-     *   - إذا للمانجا إعداد خاص (hasOverride == true) → نستخدم لغة المصدر الخاصة بها.
-     *   - وإلا → نستخدم لغة المصدر العامة (translationPreferences.translateFromLanguage).
-     * لغة الهدف تبقى دائماً من الإعداد العام (لا يوجد سبب وجيه لتخصيصها لكل مانجا).
-     *
-     * ملاحظة: التحقق من "هل الترجمة الفورية مفعلة لهذه المانجا أصلاً؟" يحدث في الطبقة
-     * الأعلى (PagerPageHolder/WebtoonPageHolder عبر isRealtimeTranslationEffectivelyEnabled)
-     * قبل استدعاء هذه الدالة أساساً، فهذه الدالة تفترض أن الاستدعاء مشروع بالفعل.
-     */
     fun queueChapterWithPages(
         manga: Manga,
         chapter: Chapter,
@@ -261,7 +244,6 @@ class ChapterTranslator(
         val fromLang = resolveSourceLanguageForManga(manga.id)
         val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
 
-        // حمّل أي ترجمة محفوظة مسبقاً على القرص لنفس الفصل لكي لا نعيد ترجمة صفحات موجودة
         val existingOnDisk = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
             ?.let { runCatching { readTranslationFile(it) }.getOrNull() }
             ?: emptyMap()
@@ -280,14 +262,8 @@ class ChapterTranslator(
         start()
     }
 
-    // TachiyomiAT: خريطة لتتبع طلبات الإنهاء لكل translation فوري (chapterId → flag)
-    // بديل آمن لـ Translation.requestFinish() التي تحتاج تعديل Translation model
     private val finishRequests = java.util.concurrent.ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicBoolean>()
 
-    /**
-     * يُستدعى عند الخروج من القارئ — ينهي وضع realtime لفصل معين فوراً
-     * (يحفظ كل ما تُرجم حتى الآن، ثم يزيل الـ translation من الـ queue).
-     */
     fun finishRealtimeChapter(chapterId: Long) {
         finishRequests[chapterId]?.set(true)
     }
@@ -302,11 +278,6 @@ class ChapterTranslator(
         return true
     }
 
-    /**
-     * يحل لغة المصدر الفعلية لهذه المانجا تحديداً:
-     *   - إذا لدى المانجا إعداد خاص (hasOverride) → نقرأ sourceLanguage الخاص بها.
-     *   - وإلا → نقرأ translateFromLanguage العام، كما كان دائماً.
-     */
     private fun resolveSourceLanguageForManga(mangaId: Long): TextRecognizerLanguage {
         val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
         return if (hasOverride) {
@@ -315,8 +286,6 @@ class ChapterTranslator(
             TextRecognizerLanguage.fromPref(translationPreferences.translateFromLanguage())
         }
     }
-
-    // ─── Batch Translation (الوضع العادي — أرشيف كامل محمّل على الديسك) ─────────
 
     private suspend fun translateChapterBatch(translation: Translation) {
         try {
@@ -332,22 +301,29 @@ class ChapterTranslator(
             )!!
 
             val pages = mutableMapOf<String, PageTranslation>()
-            val tmpFile = translationMangaDir.createFile("tmp")!!
+            
+            // إصلاح CacheDir: ضمان إنشاء ملف بمسار حقيقي ليتمكن ML Kit من قراءته
+            val tmpFile = File(context.cacheDir, "ocr_tmp_batch.jpg")
+            if (!tmpFile.exists()) tmpFile.createNewFile()
+            
             val streams = getChapterPages(chapterPath)
             val totalPageCount = streams.size
 
             withContext(Dispatchers.IO) {
                 for ((fileName, streamFn) in streams) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
+                    
+                    streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
 
-                    val pageTranslation = recognizePage(tmpFile)
-                    if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
+                    val pageTranslation = recognizePage(tmpFile.absolutePath)
+                    if (pageTranslation != null) {
                         pages[fileName] = pageTranslation
                     }
                 }
             }
-            tmpFile.delete()
+            if (tmpFile.exists()) tmpFile.delete()
+            
+            // ترجمة النصوص
             withContext(Dispatchers.IO) { textTranslator.translate(pages) }
 
             writeTranslationFile(translationMangaDir, saveFile, pages)
@@ -360,19 +336,10 @@ class ChapterTranslator(
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
             translation.status = Translation.State.ERROR
-            logcat(LogPriority.ERROR, error)
+            logcat(LogPriority.ERROR, error) { "فشل الترجمة العادية" }
         }
     }
 
-    // ─── Realtime Translation (وضع القراءة الفورية — بدون أرشيف، streaming) ────
-
-    /**
-     * يبقى هذا الـ job حياً طالما الـ translation موجود في الـ queue.
-     * في كل دورة:
-     *   ١. يأخذ كل الصفحات الجديدة الواصلة منذ آخر دورة (takePageStreams)
-     *   ٢. لكل صفحة: OCR → ترجمة → دمج مع existingPages → حفظ JSON فوراً → بث event
-     *   ٣. إذا لم تصل صفحات جديدة لمدة طويلة (IDLE_TIMEOUT) أو طُلب الإنهاء صراحة → ينتهي
-     */
     private suspend fun translateChapterRealtime(translation: Translation) {
         ensureRecognizerAndTranslator(translation)
 
@@ -380,11 +347,14 @@ class ChapterTranslator(
         val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
         val chapterId = translation.chapter.id
 
-        // سجّل علم الإنهاء لهذا الفصل
         val finishFlag = java.util.concurrent.atomic.AtomicBoolean(false)
         if (chapterId != null) finishRequests[chapterId] = finishFlag
 
         var idleElapsed = 0L
+        
+        // إصلاح CacheDir للـ Realtime
+        val tmpFile = File(context.cacheDir, "ocr_tmp_rt.jpg")
+        if (!tmpFile.exists()) tmpFile.createNewFile()
 
         try {
             while (true) {
@@ -410,16 +380,14 @@ class ChapterTranslator(
                         continue
                     }
 
-                    val tmpFile = translationMangaDir.createFile("tmp_${fileName.hashCode()}")
-                        ?: continue
                     try {
                         withContext(Dispatchers.IO) {
-                            streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
+                            streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
                         }
 
-                        val pageTranslation = withContext(Dispatchers.IO) { recognizePage(tmpFile) }
+                        val pageTranslation = withContext(Dispatchers.IO) { recognizePage(tmpFile.absolutePath) }
 
-                        if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
+                        if (pageTranslation != null) {
                             val singlePageMap = mutableMapOf(fileName to pageTranslation)
                             withContext(Dispatchers.IO) { textTranslator.translate(singlePageMap) }
 
@@ -428,18 +396,22 @@ class ChapterTranslator(
 
                             persistRealtimeProgress(translationMangaDir, saveFile, translation)
                         }
-                    } finally {
-                        tmpFile.delete()
+                    } catch (e: Exception) {
+                        logcat(LogPriority.ERROR, e) { "خطأ في معالجة الصفحة: $fileName" }
                     }
                 }
             }
         } catch (e: Throwable) {
             if (e is CancellationException) throw e
-            logcat(LogPriority.ERROR, e)
+            translation.status = Translation.State.ERROR
+            logcat(LogPriority.ERROR, e) { "فشل الترجمة الفورية" }
         } finally {
+            if (tmpFile.exists()) tmpFile.delete()
             if (chapterId != null) finishRequests.remove(chapterId)
             runCatching { persistRealtimeProgress(translationMangaDir, saveFile, translation) }
-            translation.status = Translation.State.TRANSLATED
+            if (translation.status != Translation.State.ERROR) {
+                translation.status = Translation.State.TRANSLATED
+            }
         }
     }
 
@@ -455,19 +427,17 @@ class ChapterTranslator(
         }
     }
 
-    /**
-     * يكتب في ملف مؤقت أولاً ثم ينسخه للملف النهائي — لتجنب تلف JSON
-     * إذا انقطعت العملية أثناء الكتابة (مثلاً عند إغلاق التطبيق فجأة).
-     */
+    // ─── File I/O (مع إصلاح الـ Logcat) ────────────────────────────────────────
+
     private fun readTranslationFile(file: UniFile): Map<String, PageTranslation> {
         return try {
             val data = Json.decodeFromStream<Map<String, PageTranslation>>(file.openInputStream())
             if (data.isEmpty()) {
-                logcat(LogPriority.WARN) { "Translation file is empty: ${file.uri}" }
+                logcat(LogPriority.WARN) { "ملف الترجمة فارغ: ${file.uri}" }
             }
             data
         } catch (e: Exception) {
-            logcat(LogPriority.ERROR, e) { "Failed to read translation file: ${file.uri}" }
+            logcat(LogPriority.ERROR, e) { "فشل في قراءة ملف الترجمة: ${file.uri}" }
             emptyMap()
         }
     }
@@ -479,14 +449,14 @@ class ChapterTranslator(
     ) {
         try {
             if (pages.isEmpty()) {
-                logcat(LogPriority.WARN) { "Attempting to write empty translation file: $saveFile" }
+                logcat(LogPriority.WARN) { "محاولة لحفظ ملف ترجمة فارغ، سيتم التخطي: $saveFile" }
                 return
             }
             
             val tmpName = "${saveFile}.tmp"
             dir.findFile(tmpName)?.delete()
             val tmpJsonFile = dir.createFile(tmpName) ?: run {
-                logcat(LogPriority.ERROR) { "Failed to create tmp file: $tmpName" }
+                logcat(LogPriority.ERROR) { "فشل في إنشاء الملف المؤقت: $tmpName" }
                 return
             }
             
@@ -494,7 +464,7 @@ class ChapterTranslator(
             
             dir.findFile(saveFile)?.delete()
             val finalFile = dir.createFile(saveFile) ?: run {
-                logcat(LogPriority.ERROR) { "Failed to create final file: $saveFile" }
+                logcat(LogPriority.ERROR) { "فشل في إنشاء الملف النهائي: $saveFile" }
                 tmpJsonFile.delete()
                 return
             }
@@ -504,10 +474,9 @@ class ChapterTranslator(
             }
             tmpJsonFile.delete()
         } catch (e: Throwable) {
-            logcat(LogPriority.ERROR, e) { "Failed to write translation file: $saveFile" }
+            logcat(LogPriority.ERROR, e) { "فشل في حفظ ملف الترجمة: $saveFile" }
         }
     }
-
 
     private suspend fun ensureRecognizerAndTranslator(translation: Translation) {
         if (translation.fromLang != textRecognizer.language) {
@@ -525,13 +494,9 @@ class ChapterTranslator(
 
     /**
      * المدخل الرئيسي لـ OCR.
-     * يقرأ ارتفاع الصورة بدون تحميلها في RAM.
-     * المشكلة دائماً عمودية (صور طويلة) — لا يوجد تقطيع أفقي.
-     * إذا لم يجد OCR أي فقاعات → يعيد null مباشرة (early-exit).
+     * يستقبل مسار الملف الحقيقي String (وليس UniFile) لضمان التوافق مع C++.
      */
-    private fun recognizePage(tmpFile: UniFile): PageTranslation? {
-        val filePath = tmpFile.filePath ?: return null
-
+    private fun recognizePage(filePath: String): PageTranslation? {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(filePath, opts)
         val origW = opts.outWidth
@@ -555,7 +520,8 @@ class ChapterTranslator(
         val result = textRecognizer.recognize(image)
         val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
 
-        if (blocks.isEmpty()) return null
+        // إرجاع كائن فارغ إذا لم تجد نصوص (لتسجيل أن الصفحة تمت معالجتها)
+        if (blocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
 
         val enhancedW = origW * TextRecognizer.SCALE_FACTOR
         val enhancedH = origH * TextRecognizer.SCALE_FACTOR
@@ -628,7 +594,8 @@ class ChapterTranslator(
             decoder.recycle()
         }
 
-        if (allBlocks.isEmpty()) return null
+        // إرجاع كائن فارغ إذا لم تجد نصوص لتسجيل الانتهاء
+        if (allBlocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
 
         val pageTranslation = PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
         pageTranslation.blocks = smartMergeBlocks(allBlocks, origW.toFloat(), origH.toFloat())
@@ -1036,7 +1003,7 @@ class ChapterTranslator(
                     translation.status = Translation.State.NOT_TRANSLATED
                 }
             }
-            queue - translations
+            queue - translations.toSet()
         }
     }
 
