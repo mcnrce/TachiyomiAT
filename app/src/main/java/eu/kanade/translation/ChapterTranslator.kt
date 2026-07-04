@@ -459,35 +459,55 @@ class ChapterTranslator(
      * يكتب في ملف مؤقت أولاً ثم ينسخه للملف النهائي — لتجنب تلف JSON
      * إذا انقطعت العملية أثناء الكتابة (مثلاً عند إغلاق التطبيق فجأة).
      */
+    private fun readTranslationFile(file: UniFile): Map<String, PageTranslation> {
+        return try {
+            val data = Json.decodeFromStream<Map<String, PageTranslation>>(file.openInputStream())
+            if (data.isEmpty()) {
+                logcat(LogPriority.WARN) { "Translation file is empty: ${file.uri}" }
+            }
+            data
+        } catch (e: Exception) {
+            logcat(LogPriority.ERROR, e) { "Failed to read translation file: ${file.uri}" }
+            emptyMap()
+        }
+    }
+
     private fun writeTranslationFile(
         dir: UniFile,
         saveFile: String,
         pages: Map<String, PageTranslation>,
     ) {
         try {
+            if (pages.isEmpty()) {
+                logcat(LogPriority.WARN) { "Attempting to write empty translation file: $saveFile" }
+                return
+            }
+            
             val tmpName = "${saveFile}.tmp"
             dir.findFile(tmpName)?.delete()
-            val tmpJsonFile = dir.createFile(tmpName) ?: return
+            val tmpJsonFile = dir.createFile(tmpName) ?: run {
+                logcat(LogPriority.ERROR) { "Failed to create tmp file: $tmpName" }
+                return
+            }
+            
             Json.encodeToStream(pages, tmpJsonFile.openOutputStream())
-
+            
             dir.findFile(saveFile)?.delete()
-            val finalFile = dir.createFile(saveFile) ?: return
+            val finalFile = dir.createFile(saveFile) ?: run {
+                logcat(LogPriority.ERROR) { "Failed to create final file: $saveFile" }
+                tmpJsonFile.delete()
+                return
+            }
+            
             tmpJsonFile.openInputStream().use { input ->
                 finalFile.openOutputStream().use { output -> input.copyTo(output) }
             }
             tmpJsonFile.delete()
         } catch (e: Throwable) {
-            logcat(LogPriority.ERROR, e)
+            logcat(LogPriority.ERROR, e) { "Failed to write translation file: $saveFile" }
         }
     }
 
-    private fun readTranslationFile(file: UniFile): Map<String, PageTranslation> {
-        return try {
-            Json.decodeFromStream<Map<String, PageTranslation>>(file.openInputStream())
-        } catch (e: Exception) {
-            emptyMap()
-        }
-    }
 
     private suspend fun ensureRecognizerAndTranslator(translation: Translation) {
         if (translation.fromLang != textRecognizer.language) {
