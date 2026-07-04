@@ -40,10 +40,10 @@ import uy.kohesive.injekt.api.get
 @Composable
 internal fun ColumnScope.TranslationSettingsPage(
     screenModel: ReaderSettingsScreenModel,
+    viewModel: eu.kanade.tachiyomi.ui.reader.ReaderViewModel,  // ← جديد
     mangaTranslationPreferences: MangaTranslationPreferences = remember { Injekt.get() },
     translationManager: TranslationManager = remember { Injekt.get() },
-) {
-    val manga by screenModel.mangaFlow.collectAsState()
+) {    val manga by screenModel.mangaFlow.collectAsState()
     val mangaId = manga?.id ?: return
 
     HeadingItem(ATMR.strings.pref_category_translations)
@@ -84,6 +84,20 @@ internal fun ColumnScope.TranslationSettingsPage(
         }
     }
 
+} // نهاية if (hasOverride)
+
+    // زر تأكيد تطبيق التغييرات
+    androidx.compose.material3.Button(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        onClick = { viewModel.reloadTranslation() },
+    ) {
+        Text(stringResource(ATMR.strings.action_confirm))
+    }
+
+    // ─── أزرار المسح ─────────────────────────────────────────────
+    
     // ─── أزرار المسح ─────────────────────────────────────────────
 
     var showClearChapterDialog by remember { mutableStateOf(false) }
