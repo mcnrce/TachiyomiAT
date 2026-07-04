@@ -140,9 +140,10 @@ internal fun ColumnScope.TranslationSettingsPage(
                         val source = screenModel.getHttpSourceOrNull()
                         val chapter = screenModel.currentChapter
                         if (currentManga != null && source != null && chapter != null) {
-                            translationManager.deleteTranslation(chapter, currentManga, source)
-                        }
-                        showClearChapterDialog = false
+    translationManager.deleteTranslation(chapter, currentManga, source)
+    viewModel.clearTranslationFromScreen()  // ← أضف هذا
+}
+showClearChapterDialog = false
                     },
                 ) {
                     Text(
@@ -172,10 +173,11 @@ internal fun ColumnScope.TranslationSettingsPage(
                         val currentManga = manga
                         val source = screenModel.getHttpSourceOrNull()
                         if (currentManga != null && source != null) {
-                            translationManager.deleteManga(currentManga, source)
-                        }
-                        mangaTranslationPreferences.clear(mangaId)
-                        showClearAllDialog = false
+    translationManager.deleteManga(currentManga, source)
+    viewModel.clearTranslationFromScreen()  // ← أضف هذا
+}
+mangaTranslationPreferences.clear(mangaId)
+showClearAllDialog = false
                     },
                 ) {
                     Text(
