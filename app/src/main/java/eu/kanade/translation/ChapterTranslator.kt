@@ -63,11 +63,8 @@ import java.io.InputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
-import kotlin.math.ceil
-import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.sin
 import kotlin.math.sqrt
 
 class ChapterTranslator(
@@ -102,8 +99,6 @@ class ChapterTranslator(
     private val finishRequests = ConcurrentHashMap<Long, AtomicBoolean>()
 
     companion object {
-        private const val MAX_OCR_HEIGHT = 1920
-        private const val TILE_OVERLAP = 0.1f
         private const val REALTIME_IDLE_TIMEOUT_MS = 30_000L
         private const val REALTIME_POLL_INTERVAL_MS = 150L
     }
@@ -550,15 +545,11 @@ class ChapterTranslator(
         val origH = opts.outHeight
         if (origW <= 0 || origH <= 0) return null
 
-        return if (origH <= MAX_OCR_HEIGHT) {
-            val bitmap = BitmapFactory.decodeFile(filePath) ?: return null
-            try {
-                recognizeSingleBitmap(bitmap, origW, origH)
-            } finally {
-                bitmap.recycle()
-            }
-        } else {
-            recognizeWithVerticalTiling(filePath, origW, origH)
+        val bitmap = BitmapFactory.decodeFile(filePath) ?: return null
+        try {
+            return recognizeSingleBitmap(bitmap, origW, origH)
+        } finally {
+            bitmap.recycle()
         }
     }
 
@@ -581,69 +572,6 @@ class ChapterTranslator(
         }
         pageTranslation.imgWidth /= TextRecognizer.SCALE_FACTOR
         pageTranslation.imgHeight /= TextRecognizer.SCALE_FACTOR
-        return pageTranslation
-    }
-
-    private fun recognizeWithVerticalTiling(filePath: String, origW: Int, origH: Int): PageTranslation? {
-        val allBlocks = mutableListOf<TranslationBlock>()
-
-        val tileH    = MAX_OCR_HEIGHT
-        val overlapY = (tileH * TILE_OVERLAP).toInt()
-        val stepY    = tileH - overlapY
-        val numTiles = ceil((origH - overlapY).toFloat() / stepY).toInt()
-
-        val decoder = BitmapRegionDecoder.newInstance(filePath, false) ?: return null
-
-        try {
-            for (row in 0 until numTiles) {
-                val tileTop    = (row * stepY).coerceAtMost(origH - tileH).coerceAtLeast(0)
-                val tileBottom = (tileTop + tileH).coerceAtMost(origH)
-                val isLastTile = row == numTiles - 1
-
-                val region     = Rect(0, tileTop, origW, tileBottom)
-                val tileBitmap = decoder.decodeRegion(region, null) ?: continue
-
-                try {
-                    val image      = InputImage.fromBitmap(tileBitmap, 0)
-                    val result     = textRecognizer.recognize(image)
-                    val tileBlocks = result.textBlocks
-                        .filter { it.boundingBox != null && it.text.length > 1 }
-
-                    for (block in tileBlocks) {
-                        val bounds = block.boundingBox!!
-
-                        val tileActualH = tileBottom - tileTop
-                        val inOverlapY  = !isLastTile && bounds.top > tileActualH - overlapY
-                        if (inOverlapY) continue
-
-                        val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()
-                            ?.symbols?.firstOrNull()?.boundingBox
-
-                        allBlocks.add(
-                            TranslationBlock(
-                                text      = block.text,
-                                width     = bounds.width().toFloat(),
-                                height    = bounds.height().toFloat(),
-                                symWidth  = symBounds?.width()?.toFloat() ?: 12f,
-                                symHeight = symBounds?.height()?.toFloat() ?: 12f,
-                                angle     = block.lines.firstOrNull()?.angle ?: 0f,
-                                x         = bounds.left.toFloat(),
-                                y         = (tileTop + bounds.top).toFloat(),
-                            ),
-                        )
-                    }
-                } finally {
-                    tileBitmap.recycle()
-                }
-            }
-        } finally {
-            decoder.recycle()
-        }
-
-        if (allBlocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
-
-        val pageTranslation = PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
-        pageTranslation.blocks = smartMergeBlocks(allBlocks, origW.toFloat(), origH.toFloat())
         return pageTranslation
     }
 
@@ -863,8 +791,8 @@ class ChapterTranslator(
 
         return if (isAngled) {
             val rad = Math.toRadians(angle.toDouble())
-            val axisX = cos(rad).toFloat()
-            val axisY = sin(rad).toFloat()
+            val axisX = kotlin.math.cos(rad).toFloat()
+            val axisY = kotlin.math.sin(rad).toFloat()
             val magnitude = max(overlapLeft, overlapRight)
 
             val angledDirs = listOf(
