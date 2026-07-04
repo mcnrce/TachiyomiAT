@@ -83,9 +83,7 @@ internal fun ColumnScope.TranslationSettingsPage(
             }
         }
     }
-
-} // نهاية if (hasOverride)
-
+    
     // زر تأكيد تطبيق التغييرات
     androidx.compose.material3.Button(
         modifier = Modifier
@@ -95,6 +93,9 @@ internal fun ColumnScope.TranslationSettingsPage(
     ) {
         Text(stringResource(ATMR.strings.action_confirm))
     }
+
+} // نهاية if (hasOverride)
+
 
     // ─── أزرار المسح ─────────────────────────────────────────────
     
