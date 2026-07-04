@@ -301,44 +301,50 @@ class ChapterTranslator(
     // ─── Batch Translation (الوضع العادي — أرشيف كامل محمّل على الديسك) ─────────
 
     private suspend fun translateChapterBatch(translation: Translation) {
-        try {
-            ensureRecognizerAndTranslator(translation)
+    try {
+        ensureRecognizerAndTranslator(translation)
 
-            val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
-            val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
-            val chapterPath = downloadProvider.findChapterDir(
-                translation.chapter.name,
-                translation.chapter.scanlator,
-                translation.manga.title,
-                translation.source,
-            )!!
+        val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
+        val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
+        val chapterPath = downloadProvider.findChapterDir(
+            translation.chapter.name,
+            translation.chapter.scanlator,
+            translation.manga.title,
+            translation.source,
+        )!!
 
-            val pages = mutableMapOf<String, PageTranslation>()
-            val tmpFile = translationMangaDir.createFile("tmp")!!
-            val streams = getChapterPages(chapterPath)
-            val totalPageCount = streams.size
-            
-            withContext(Dispatchers.IO) {
-                for ((fileName, streamFn) in streams) {
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
+        val pages = mutableMapOf<String, PageTranslation>()
+        val tmpFile = translationMangaDir.createFile("tmp")!!
+        val streams = getChapterPages(chapterPath)
+        val totalPageCount = streams.size
 
-                    val pageTranslation = recognizePage(tmpFile)
-                    if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
-                        pages[fileName] = pageTranslation
-                    }
+        withContext(Dispatchers.IO) {
+            for ((fileName, streamFn) in streams) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                streamFn().use { tmpFile.openOutputStream().use { out -> it.copyTo(out) } }
+
+                val pageTranslation = recognizePage(tmpFile)
+                if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
+                    pages[fileName] = pageTranslation
                 }
             }
-            tmpFile.delete()
-            withContext(Dispatchers.IO) { textTranslator.translate(pages) }
+        }
+        tmpFile.delete()
+        withContext(Dispatchers.IO) { textTranslator.translate(pages) }
 
-            writeTranslationFile(translationMangaDir, saveFile, pages)
-translation.status = Translation.State.TRANSLATED
-// batch يترجم كل الصفحات → مكتمل دائماً
-val cid = translation.chapter.id
-if (cid != null) {
-    mangaTranslationPreferences.updateTranslatedPages(cid, totalPageCount, totalPageCount)
-}
+        writeTranslationFile(translationMangaDir, saveFile, pages)
+        translation.status = Translation.State.TRANSLATED
+
+        val cid = translation.chapter.id
+        if (cid != null) {
+            mangaTranslationPreferences.updateTranslatedPages(cid, totalPageCount, totalPageCount)
+        }
+    } catch (error: Throwable) {
+        if (error is CancellationException) throw error
+        translation.status = Translation.State.ERROR
+        logcat(LogPriority.ERROR, error)
+    }
+    }
 
     // ─── Realtime Translation (وضع القراءة الفورية — بدون أرشيف، streaming) ────
 
