@@ -335,13 +335,9 @@ class ChapterTranslator(
             writeTranslationFile(translationMangaDir, saveFile, pages)
 translation.status = Translation.State.TRANSLATED
 // batch يترجم كل الصفحات → مكتمل دائماً
-val chapterId = translation.chapter.id
-if (chapterId != null) {
-    mangaTranslationPreferences.updateTranslatedPages(
-        chapterId = chapterId,
-        translated = totalPageCount,  // كل الصفحات
-        total = totalPageCount,
-    )
+val cid = translation.chapter.id
+if (cid != null) {
+    mangaTranslationPreferences.updateTranslatedPages(cid, totalPageCount, totalPageCount)
 }
 
     // ─── Realtime Translation (وضع القراءة الفورية — بدون أرشيف، streaming) ────
