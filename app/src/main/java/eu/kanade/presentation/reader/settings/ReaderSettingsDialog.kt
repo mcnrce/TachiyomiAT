@@ -26,6 +26,7 @@ fun ReaderSettingsDialog(
     onShowMenus: () -> Unit,
     onHideMenus: () -> Unit,
     screenModel: ReaderSettingsScreenModel,
+    viewModel: eu.kanade.tachiyomi.ui.reader.ReaderViewModel,  // ← جديد
 ) {
     val tabTitles = persistentListOf(
         stringResource(MR.strings.pref_category_reading_mode),
@@ -68,7 +69,10 @@ fun ReaderSettingsDialog(
                     1 -> GeneralPage(screenModel)
                     2 -> ColorFilterPage(screenModel)
                     // TachiyomiAT
-                    3 -> TranslationSettingsPage(screenModel)
+                    3 -> TranslationSettingsPage(
+    screenModel = screenModel,
+    viewModel = viewModel,  // ← أضف هذا
+)
                 }
             }
         }
