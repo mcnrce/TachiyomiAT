@@ -210,34 +210,41 @@ class ReaderActivity : BaseActivity() {
             .launchIn(lifecycleScope)
 
                 viewModel.eventFlow
-            .onEach { event ->
-                when (event) {
-                    ReaderViewModel.Event.ReloadViewerChapters -> {
-                        viewModel.state.value.viewerChapters?.let(::setChapters)
-                    }
-                    ReaderViewModel.Event.PageChanged -> {
-                        displayRefreshHost.flash()
-                    }
-                    is ReaderViewModel.Event.SetOrientation -> {
-                        setOrientation(event.orientation)
-                    }
-                    is ReaderViewModel.Event.SavedImage -> {
-                        onSaveImageResult(event.result)
-                    }
-                    is ReaderViewModel.Event.ShareImage -> {
-                        onShareImageResult(event.uri, event.page)
-                    }
-                    is ReaderViewModel.Event.CopyImage -> {
-                        onCopyImageResult(event.uri)
-                    }
-                    is ReaderViewModel.Event.SetCoverResult -> {
-                        onSetAsCoverResult(event.result)
-                    }
-                    // 👇 هذا هو السطر الجديد المعدل الذي تم إضافته لإصلاح الخطأ
-                    else -> {}
-                }
+    .onEach { event ->
+        when (event) {
+            ReaderViewModel.Event.ReloadViewerChapters -> {
+                viewModel.state.value.viewerChapters?.let(::setChapters)
             }
-            .launchIn(lifecycleScope)
+            ReaderViewModel.Event.PageChanged -> {
+                displayRefreshHost.flash()
+            }
+            is ReaderViewModel.Event.SetOrientation -> {
+                setOrientation(event.orientation)
+            }
+            is ReaderViewModel.Event.SavedImage -> {
+                onSaveImageResult(event.result)
+            }
+            is ReaderViewModel.Event.ShareImage -> {
+                onShareImageResult(event.uri, event.page)
+            }
+            is ReaderViewModel.Event.CopyImage -> {
+                onCopyImageResult(event.uri)
+            }
+            is ReaderViewModel.Event.SetCoverResult -> {
+                onSetAsCoverResult(event.result)
+            }
+            // TachiyomiAT ← أضف هذا
+            is ReaderViewModel.Event.ReloadTranslation -> {
+                val viewer = viewModel.state.value.viewer
+                if (viewer is eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer) {
+                    viewer.refreshTranslation(event.clearExisting)
+                }
+                // WebtoonViewer لا يحتاج refreshTranslation الآن (يُضاف لاحقاً)
+            }
+            else -> {}
+        }
+    }
+    .launchIn(lifecycleScope)
     }
 
     /**
