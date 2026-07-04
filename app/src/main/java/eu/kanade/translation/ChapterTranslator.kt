@@ -225,48 +225,60 @@ class ChapterTranslator(
     }
 
     fun queueChapterWithPages(
-        manga: Manga,
-        chapter: Chapter,
-        pageStreams: List<Pair<String, () -> InputStream>>,
-    ) {
-        if (pageStreams.isEmpty()) return
+    manga: Manga,
+    chapter: Chapter,
+    pageStreams: List<Pair<String, () -> InputStream>>,
+) {
+    if (pageStreams.isEmpty()) return
 
-        val existing = queueState.value.find { it.chapter.id == chapter.id && it.isRealtimeMode }
-        if (existing != null) {
-            existing.addPageStreams(pageStreams)
-            if (!isRunning) start()
-            return
-        }
-
-        val source = sourceManager.get(manga.source) as? HttpSource ?: return
-        if (!validateEngineSupportsLanguage()) return
-
-        val fromLang = resolveSourceLanguageForManga(manga.id)
-        val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
-
-        val existingOnDisk = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
-            ?.let { runCatching { readTranslationFile(it) }.getOrNull() }
-            ?: emptyMap()
-
-        val translation = Translation(
-            source = source,
-            manga = manga,
-            chapter = chapter,
-            fromLang = fromLang,
-            toLang = toLang,
-            isRealtimeMode = true,
-        )
-        translation.existingPages.putAll(existingOnDisk)
-        translation.addPageStreams(pageStreams)
-        addToQueue(translation)
-        start()
+    val existing = queueState.value.find { it.chapter.id == chapter.id && it.isRealtimeMode }
+    if (existing != null) {
+        existing.addPageStreams(pageStreams)
+        if (!isRunning) start()
+        return
     }
 
-    private val finishRequests = java.util.concurrent.ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicBoolean>()
+    val source = sourceManager.get(manga.source) as? HttpSource ?: return
+    if (!validateEngineSupportsLanguage()) return
 
-    fun finishRealtimeChapter(chapterId: Long) {
-        finishRequests[chapterId]?.set(true)
+    val hasOverride = mangaTranslationPreferences.hasOverride(manga.id).get()
+    val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
+
+    // TachiyomiAT: تجنب الترجمة العبثية — إذا كان مصدر المانجا نفسه بلغة الهدف
+    // ولم يفعّل المستخدم إعداداً خاصاً صريحاً لهذه المانجا، لا داعي للترجمة أصلاً.
+    if (!hasOverride && sourceLanguageMatchesTarget(source.lang, toLang)) {
+        return
     }
+
+    val fromLang = resolveSourceLanguageForManga(manga.id)
+
+    val existingOnDisk = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
+        ?.let { runCatching { readTranslationFile(it) }.getOrNull() }
+        ?: emptyMap()
+
+    val translation = Translation(
+        source = source,
+        manga = manga,
+        chapter = chapter,
+        fromLang = fromLang,
+        toLang = toLang,
+        isRealtimeMode = true,
+    )
+    translation.existingPages.putAll(existingOnDisk)
+    translation.addPageStreams(pageStreams)
+    addToQueue(translation)
+    start()
+}
+
+/**
+ * يقارن كود لغة المصدر (source.lang، مثل "ar", "en", "zh") مع كود لغة الهدف.
+ * يتجاهل اللواحق الإقليمية (zh-CN → zh) للمقارنة العامة.
+ */
+private fun sourceLanguageMatchesTarget(sourceLang: String, toLang: TextTranslatorLanguage): Boolean {
+    val normalizedSource = sourceLang.substringBefore("-").lowercase()
+    val normalizedTarget = toLang.code.substringBefore("-").lowercase()
+    return normalizedSource == normalizedTarget
+}
 
     private fun validateEngineSupportsLanguage(): Boolean {
         val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
