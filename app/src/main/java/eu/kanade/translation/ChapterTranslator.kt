@@ -290,14 +290,40 @@ private fun sourceLanguageMatchesTarget(sourceLang: String, toLang: TextTranslat
         return true
     }
 
-    private fun resolveSourceLanguageForManga(mangaId: Long): TextRecognizerLanguage {
-        val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
-        return if (hasOverride) {
-            TextRecognizerLanguage.fromPref(mangaTranslationPreferences.sourceLanguage(mangaId))
-        } else {
-            TextRecognizerLanguage.fromPref(translationPreferences.translateFromLanguage())
-        }
+    /**
+ * يحل لغة المصدر الفعلية لهذه المانجا:
+ *   - إذا لدى المانجا إعداد خاص (hasOverride) → نستخدم sourceLanguage الذي اختاره المستخدم يدوياً.
+ *   - وإلا → نستنتجها تلقائياً من source.lang (لغة المصدر الفعلية للمانجا في Tachiyomi).
+ *
+ * تُعاد null إذا لغة المصدر غير مدعومة من أي محرك OCR في ML Kit
+ * (مثل العربية، الروسية، اليونانية...) — عندها لا تُترجم الفصول تلقائياً.
+ */
+private fun resolveSourceLanguageForManga(mangaId: Long, source: HttpSource): TextRecognizerLanguage? {
+    val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
+    if (hasOverride) {
+        return TextRecognizerLanguage.fromPref(mangaTranslationPreferences.sourceLanguage(mangaId))
     }
+    return autoDetectSourceLanguage(source.lang)
+}
+
+/**
+ * يحدد محرك OCR المناسب تلقائياً بناءً على لغة المصدر (source.lang).
+ * ML Kit يدعم فعلياً: صيني، ياباني، كوري، ومحرك Latin (يغطي كل اللغات اللاتينية:
+ * إنجليزي، فرنسي، ألماني، إسباني، إيطالي، برتغالي، هولندي، بولندي، تركي...).
+ * أي لغة أخرى (عربي، روسي، يوناني، تايلاندي...) غير مدعومة → تُعاد null.
+ */
+private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage? {
+    val code = sourceLang.substringBefore("-").lowercase()
+    return when (code) {
+        "zh" -> TextRecognizerLanguage.CHINESE
+        "ja" -> TextRecognizerLanguage.JAPANESE
+        "ko" -> TextRecognizerLanguage.KOREAN
+        "en", "fr", "de", "es", "it", "pt", "nl", "pl", "tr", "id", "vi",
+        "ro", "hu", "cs", "sk", "hr", "sl", "da", "sv", "no", "fi",
+        -> TextRecognizerLanguage.ENGLISH
+        else -> null
+    }
+}
 
     private suspend fun translateChapterBatch(translation: Translation) {
         try {
