@@ -250,7 +250,7 @@ class ChapterTranslator(
         return
     }
 
-    val fromLang = resolveSourceLanguageForManga(manga.id)
+    val fromLang = resolveSourceLanguageForManga(manga.id, source) ?: return
 
     val existingOnDisk = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
         ?.let { runCatching { readTranslationFile(it) }.getOrNull() }
