@@ -457,11 +457,12 @@ class ReaderActivity : BaseActivity() {
                 }
                 is ReaderViewModel.Dialog.Settings -> {
                     ReaderSettingsDialog(
-                        onDismissRequest = onDismissRequest,
-                        onShowMenus = { setMenuVisibility(true) },
-                        onHideMenus = { setMenuVisibility(false) },
-                        screenModel = settingsScreenModel,
-                    )
+    onDismissRequest = onDismissRequest,
+    onShowMenus = { setMenuVisibility(true) },
+    onHideMenus = { setMenuVisibility(false) },
+    screenModel = settingsScreenModel,
+    viewModel = viewModel,  // ← أضف هذا
+)
                 }
                 is ReaderViewModel.Dialog.ReadingModeSelect -> {
                     ReadingModeSelectDialog(
