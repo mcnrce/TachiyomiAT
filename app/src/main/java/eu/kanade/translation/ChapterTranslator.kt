@@ -60,6 +60,8 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.File
 import java.io.InputStream
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -95,6 +97,9 @@ class ChapterTranslator(
 
     // قفل لمنع تضارب الكتابة على نفس ملف JSON من أكثر من coroutine في نفس الوقت
     private val jsonWriteMutex = Mutex()
+
+    // TachiyomiAT: خريطة لتتبع طلبات الإنهاء لكل translation فوري (chapterId → flag)
+    private val finishRequests = ConcurrentHashMap<Long, AtomicBoolean>()
 
     companion object {
         private const val MAX_OCR_HEIGHT = 1920
@@ -164,10 +169,10 @@ class ChapterTranslator(
                             .toList()
                             .take(5)
                             .map { (_, translations) -> translations.first() }
-                    
+
                     emit(activeTranslations)
                     if (activeTranslations.isEmpty()) break
-                    
+
                     // إصلاح مشكلة تجمّد الطابور: يجب الانتظار حتى يكتمل أو يفشل الفصل
                     val activeTranslationsFinishedFlow =
                         combine(activeTranslations.map(Translation::statusFlow)) { states ->
@@ -176,7 +181,7 @@ class ChapterTranslator(
                     activeTranslationsFinishedFlow.first()
                 }
             }.distinctUntilChanged()
-            
+
             supervisorScope {
                 val translationJobs = mutableMapOf<Translation, Job>()
                 activeTranslationFlow.collectLatest { activeTranslations ->
@@ -224,61 +229,67 @@ class ChapterTranslator(
         addToQueue(translation)
     }
 
+    // ─── Queueing: Realtime Mode ────────────────────────────────────────────────
+
     fun queueChapterWithPages(
-    manga: Manga,
-    chapter: Chapter,
-    pageStreams: List<Pair<String, () -> InputStream>>,
-) {
-    if (pageStreams.isEmpty()) return
+        manga: Manga,
+        chapter: Chapter,
+        pageStreams: List<Pair<String, () -> InputStream>>,
+    ) {
+        if (pageStreams.isEmpty()) return
 
-    val existing = queueState.value.find { it.chapter.id == chapter.id && it.isRealtimeMode }
-    if (existing != null) {
-        existing.addPageStreams(pageStreams)
-        if (!isRunning) start()
-        return
+        val existing = queueState.value.find { it.chapter.id == chapter.id && it.isRealtimeMode }
+        if (existing != null) {
+            existing.addPageStreams(pageStreams)
+            if (!isRunning) start()
+            return
+        }
+
+        val source = sourceManager.get(manga.source) as? HttpSource ?: return
+        if (!validateEngineSupportsLanguage()) return
+
+        val hasOverride = mangaTranslationPreferences.hasOverride(manga.id).get()
+        val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
+
+        // TachiyomiAT: تجنب الترجمة العبثية — إذا كان مصدر المانجا نفسه بلغة الهدف
+        // ولم يفعّل المستخدم إعداداً خاصاً صريحاً لهذه المانجا، لا داعي للترجمة أصلاً.
+        if (!hasOverride && sourceLanguageMatchesTarget(source.lang, toLang)) {
+            return
+        }
+
+        val fromLang = resolveSourceLanguageForManga(manga.id, source) ?: return
+
+        val existingOnDisk = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
+            ?.let { runCatching { readTranslationFile(it) }.getOrNull() }
+            ?: emptyMap()
+
+        val translation = Translation(
+            source = source,
+            manga = manga,
+            chapter = chapter,
+            fromLang = fromLang,
+            toLang = toLang,
+            isRealtimeMode = true,
+        )
+        translation.existingPages.putAll(existingOnDisk)
+        translation.addPageStreams(pageStreams)
+        addToQueue(translation)
+        start()
     }
 
-    val source = sourceManager.get(manga.source) as? HttpSource ?: return
-    if (!validateEngineSupportsLanguage()) return
-
-    val hasOverride = mangaTranslationPreferences.hasOverride(manga.id).get()
-    val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
-
-    // TachiyomiAT: تجنب الترجمة العبثية — إذا كان مصدر المانجا نفسه بلغة الهدف
-    // ولم يفعّل المستخدم إعداداً خاصاً صريحاً لهذه المانجا، لا داعي للترجمة أصلاً.
-    if (!hasOverride && sourceLanguageMatchesTarget(source.lang, toLang)) {
-        return
+    /**
+     * يقارن كود لغة المصدر (source.lang، مثل "ar", "en", "zh") مع كود لغة الهدف.
+     * يتجاهل اللواحق الإقليمية (zh-CN → zh) للمقارنة العامة.
+     */
+    private fun sourceLanguageMatchesTarget(sourceLang: String, toLang: TextTranslatorLanguage): Boolean {
+        val normalizedSource = sourceLang.substringBefore("-").lowercase()
+        val normalizedTarget = toLang.code.substringBefore("-").lowercase()
+        return normalizedSource == normalizedTarget
     }
 
-    val fromLang = resolveSourceLanguageForManga(manga.id, source) ?: return
-
-    val existingOnDisk = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
-        ?.let { runCatching { readTranslationFile(it) }.getOrNull() }
-        ?: emptyMap()
-
-    val translation = Translation(
-        source = source,
-        manga = manga,
-        chapter = chapter,
-        fromLang = fromLang,
-        toLang = toLang,
-        isRealtimeMode = true,
-    )
-    translation.existingPages.putAll(existingOnDisk)
-    translation.addPageStreams(pageStreams)
-    addToQueue(translation)
-    start()
-}
-
-/**
- * يقارن كود لغة المصدر (source.lang، مثل "ar", "en", "zh") مع كود لغة الهدف.
- * يتجاهل اللواحق الإقليمية (zh-CN → zh) للمقارنة العامة.
- */
-private fun sourceLanguageMatchesTarget(sourceLang: String, toLang: TextTranslatorLanguage): Boolean {
-    val normalizedSource = sourceLang.substringBefore("-").lowercase()
-    val normalizedTarget = toLang.code.substringBefore("-").lowercase()
-    return normalizedSource == normalizedTarget
-}
+    fun finishRealtimeChapter(chapterId: Long) {
+        finishRequests[chapterId]?.set(true)
+    }
 
     private fun validateEngineSupportsLanguage(): Boolean {
         val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
@@ -291,39 +302,41 @@ private fun sourceLanguageMatchesTarget(sourceLang: String, toLang: TextTranslat
     }
 
     /**
- * يحل لغة المصدر الفعلية لهذه المانجا:
- *   - إذا لدى المانجا إعداد خاص (hasOverride) → نستخدم sourceLanguage الذي اختاره المستخدم يدوياً.
- *   - وإلا → نستنتجها تلقائياً من source.lang (لغة المصدر الفعلية للمانجا في Tachiyomi).
- *
- * تُعاد null إذا لغة المصدر غير مدعومة من أي محرك OCR في ML Kit
- * (مثل العربية، الروسية، اليونانية...) — عندها لا تُترجم الفصول تلقائياً.
- */
-private fun resolveSourceLanguageForManga(mangaId: Long, source: HttpSource): TextRecognizerLanguage? {
-    val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
-    if (hasOverride) {
-        return TextRecognizerLanguage.fromPref(mangaTranslationPreferences.sourceLanguage(mangaId))
+     * يحل لغة المصدر الفعلية لهذه المانجا:
+     *   - إذا لدى المانجا إعداد خاص (hasOverride) → نستخدم sourceLanguage الذي اختاره المستخدم يدوياً.
+     *   - وإلا → نستنتجها تلقائياً من source.lang (لغة المصدر الفعلية للمانجا في Tachiyomi).
+     *
+     * تُعاد null إذا لغة المصدر غير مدعومة من أي محرك OCR في ML Kit
+     * (مثل العربية، الروسية، اليونانية...) — عندها لا تُترجم الفصول تلقائياً.
+     */
+    private fun resolveSourceLanguageForManga(mangaId: Long, source: HttpSource): TextRecognizerLanguage? {
+        val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
+        if (hasOverride) {
+            return TextRecognizerLanguage.fromPref(mangaTranslationPreferences.sourceLanguage(mangaId))
+        }
+        return autoDetectSourceLanguage(source.lang)
     }
-    return autoDetectSourceLanguage(source.lang)
-}
 
-/**
- * يحدد محرك OCR المناسب تلقائياً بناءً على لغة المصدر (source.lang).
- * ML Kit يدعم فعلياً: صيني، ياباني، كوري، ومحرك Latin (يغطي كل اللغات اللاتينية:
- * إنجليزي، فرنسي، ألماني، إسباني، إيطالي، برتغالي، هولندي، بولندي، تركي...).
- * أي لغة أخرى (عربي، روسي، يوناني، تايلاندي...) غير مدعومة → تُعاد null.
- */
-private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage? {
-    val code = sourceLang.substringBefore("-").lowercase()
-    return when (code) {
-        "zh" -> TextRecognizerLanguage.CHINESE
-        "ja" -> TextRecognizerLanguage.JAPANESE
-        "ko" -> TextRecognizerLanguage.KOREAN
-        "en", "fr", "de", "es", "it", "pt", "nl", "pl", "tr", "id", "vi",
-        "ro", "hu", "cs", "sk", "hr", "sl", "da", "sv", "no", "fi",
-        -> TextRecognizerLanguage.ENGLISH
-        else -> null
+    /**
+     * يحدد محرك OCR المناسب تلقائياً بناءً على لغة المصدر (source.lang).
+     * ML Kit يدعم فعلياً: صيني، ياباني، كوري، ومحرك Latin (يغطي كل اللغات اللاتينية:
+     * إنجليزي، فرنسي، ألماني، إسباني، إيطالي، برتغالي، هولندي، بولندي، تركي...).
+     * أي لغة أخرى (عربي، روسي، يوناني، تايلاندي...) غير مدعومة → تُعاد null.
+     */
+    private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage? {
+        val code = sourceLang.substringBefore("-").lowercase()
+        return when (code) {
+            "zh" -> TextRecognizerLanguage.CHINESE
+            "ja" -> TextRecognizerLanguage.JAPANESE
+            "ko" -> TextRecognizerLanguage.KOREAN
+            "en", "fr", "de", "es", "it", "pt", "nl", "pl", "tr", "id", "vi",
+            "ro", "hu", "cs", "sk", "hr", "sl", "da", "sv", "no", "fi",
+            -> TextRecognizerLanguage.ENGLISH
+            else -> null
+        }
     }
-}
+
+    // ─── Batch Translation ────────────────────────────────────────────────────
 
     private suspend fun translateChapterBatch(translation: Translation) {
         try {
@@ -339,18 +352,18 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
             )!!
 
             val pages = mutableMapOf<String, PageTranslation>()
-            
+
             // إصلاح CacheDir: ضمان إنشاء ملف بمسار حقيقي ليتمكن ML Kit من قراءته
             val tmpFile = File(context.cacheDir, "ocr_tmp_batch.jpg")
             if (!tmpFile.exists()) tmpFile.createNewFile()
-            
+
             val streams = getChapterPages(chapterPath)
             val totalPageCount = streams.size
 
             withContext(Dispatchers.IO) {
                 for ((fileName, streamFn) in streams) {
                     kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    
+
                     streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
 
                     val pageTranslation = recognizePage(tmpFile.absolutePath)
@@ -360,8 +373,7 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
                 }
             }
             if (tmpFile.exists()) tmpFile.delete()
-            
-            // ترجمة النصوص
+
             withContext(Dispatchers.IO) { textTranslator.translate(pages) }
 
             writeTranslationFile(translationMangaDir, saveFile, pages)
@@ -378,6 +390,8 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
         }
     }
 
+    // ─── Realtime Translation ─────────────────────────────────────────────────
+
     private suspend fun translateChapterRealtime(translation: Translation) {
         ensureRecognizerAndTranslator(translation)
 
@@ -385,12 +399,11 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
         val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
         val chapterId = translation.chapter.id
 
-        val finishFlag = java.util.concurrent.atomic.AtomicBoolean(false)
+        val finishFlag = AtomicBoolean(false)
         if (chapterId != null) finishRequests[chapterId] = finishFlag
 
         var idleElapsed = 0L
-        
-        // إصلاح CacheDir للـ Realtime
+
         val tmpFile = File(context.cacheDir, "ocr_tmp_rt.jpg")
         if (!tmpFile.exists()) tmpFile.createNewFile()
 
@@ -465,7 +478,7 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
         }
     }
 
-    // ─── File I/O (مع إصلاح الـ Logcat) ────────────────────────────────────────
+    // ─── File I/O ─────────────────────────────────────────────────────────────
 
     private fun readTranslationFile(file: UniFile): Map<String, PageTranslation> {
         return try {
@@ -490,23 +503,23 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
                 logcat(LogPriority.WARN) { "محاولة لحفظ ملف ترجمة فارغ، سيتم التخطي: $saveFile" }
                 return
             }
-            
+
             val tmpName = "${saveFile}.tmp"
             dir.findFile(tmpName)?.delete()
             val tmpJsonFile = dir.createFile(tmpName) ?: run {
                 logcat(LogPriority.ERROR) { "فشل في إنشاء الملف المؤقت: $tmpName" }
                 return
             }
-            
+
             Json.encodeToStream(pages, tmpJsonFile.openOutputStream())
-            
+
             dir.findFile(saveFile)?.delete()
             val finalFile = dir.createFile(saveFile) ?: run {
                 logcat(LogPriority.ERROR) { "فشل في إنشاء الملف النهائي: $saveFile" }
                 tmpJsonFile.delete()
                 return
             }
-            
+
             tmpJsonFile.openInputStream().use { input ->
                 finalFile.openOutputStream().use { output -> input.copyTo(output) }
             }
@@ -528,12 +541,8 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
         }
     }
 
-    // ─── Image Recognition (مشترك بين الوضعين) ──────────────────────────────────
+    // ─── Image Recognition ─────────────────────────────────────────────────────
 
-    /**
-     * المدخل الرئيسي لـ OCR.
-     * يستقبل مسار الملف الحقيقي String (وليس UniFile) لضمان التوافق مع C++.
-     */
     private fun recognizePage(filePath: String): PageTranslation? {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(filePath, opts)
@@ -558,7 +567,6 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
         val result = textRecognizer.recognize(image)
         val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
 
-        // إرجاع كائن فارغ إذا لم تجد نصوص (لتسجيل أن الصفحة تمت معالجتها)
         if (blocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
 
         val enhancedW = origW * TextRecognizer.SCALE_FACTOR
@@ -632,7 +640,6 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
             decoder.recycle()
         }
 
-        // إرجاع كائن فارغ إذا لم تجد نصوص لتسجيل الانتهاء
         if (allBlocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
 
         val pageTranslation = PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
