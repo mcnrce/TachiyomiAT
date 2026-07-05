@@ -21,6 +21,7 @@ import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import tachiyomi.core.common.util.system.logcat
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -28,59 +29,33 @@ import uy.kohesive.injekt.injectLazy
 import kotlin.math.max
 import kotlin.math.min
 
-/**
- * Implementation of a [Viewer] to display pages with a [RecyclerView].
- */
 class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = true) : Viewer {
 
     val downloadManager: DownloadManager by injectLazy()
 
     private val scope = MainScope()
 
-    /**
-     * Recycler view used by this viewer.
-     */
     val recycler = WebtoonRecyclerView(activity)
 
-    /**
-     * Frame containing the recycler view.
-     */
     private val frame = WebtoonFrame(activity)
 
-    /**
-     * Distance to scroll when the user taps on one side of the recycler view.
-     */
     private val scrollDistance = activity.resources.displayMetrics.heightPixels * 3 / 4
 
-    /**
-     * Layout manager of the recycler view.
-     */
     private val layoutManager = WebtoonLayoutManager(activity, scrollDistance)
 
-    /**
-     * Configuration used by this viewer, like allow taps, or crop image borders.
-     */
     val config = WebtoonConfig(scope)
 
-    /**
-     * Adapter of the recycler view.
-     */
     private val adapter = WebtoonAdapter(this)
 
-    /**
-     * Currently active item. It can be a chapter page or a chapter transition.
-     */
     private var currentPage: Any? = null
 
-    private val threshold: Int =
-        Injekt.get<ReaderPreferences>()
-            .readerHideThreshold()
-            .get()
-            .threshold
+    private val threshold: Int = Injekt.get<ReaderPreferences>().readerHideThreshold().get().threshold
 
     init {
-        recycler.setItemViewCacheSize(RECYCLER_VIEW_CACHE_SIZE)
-        recycler.isVisible = false // Don't let the recycler layout yet
+        // تطبيق الحساب الذكي لحجم الكاش المسبق بدلاً من الرقم الثابت
+        recycler.setItemViewCacheSize(computeOffscreenPageLimit())
+        
+        recycler.isVisible = false 
         recycler.layoutParams = ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT)
         recycler.isFocusable = false
         recycler.itemAnimator = null
@@ -90,6 +65,11 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
             object : RecyclerView.OnScrollListener() {
                 override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
                     onScrolled()
+
+                    // تحديث ديناميكي للكاش المسبق بناءً على استهلاك الويب تون الحالي
+                    scope.launch {
+                        recycler.setItemViewCacheSize(computeOffscreenPageLimit())
+                    }
 
                     if ((dy > threshold || dy < -threshold) && activity.viewModel.state.value.menuVisible) {
                         activity.hideMenu()
@@ -141,22 +121,10 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
             false
         }
 
-        config.imagePropertyChangedListener = {
-            refreshAdapter()
-        }
-
-        config.themeChangedListener = {
-            ActivityCompat.recreate(activity)
-        }
-
-        config.doubleTapZoomChangedListener = {
-            frame.doubleTapZoom = it
-        }
-
-        config.zoomPropertyChangedListener = {
-            frame.zoomOutDisabled = it
-        }
-
+        config.imagePropertyChangedListener = { refreshAdapter() }
+        config.themeChangedListener = { ActivityCompat.recreate(activity) }
+        config.doubleTapZoomChangedListener = { frame.doubleTapZoom = it }
+        config.zoomPropertyChangedListener = { frame.zoomOutDisabled = it }
         config.navigationModeChangedListener = {
             val showOnStart = config.navigationOverlayOnStart || config.forceNavigationOverlay
             activity.binding.navigationOverlay.setNavigation(config.navigator, showOnStart)
@@ -166,19 +134,63 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         frame.addView(recycler)
     }
 
-    private fun checkAllowPreload(page: ReaderPage?): Boolean {
-        // Page is transition page - preload allowed
-        page ?: return true
+    // ─── الحساب الذكي للتحميل المسبق للترجمة (Memory Budget) ───
+    private fun computeOffscreenPageLimit(): Int {
+        val translationPreferences = Injekt.get<tachiyomi.domain.translation.TranslationPreferences>()
+        val mangaTranslationPreferences = Injekt.get<tachiyomi.domain.translation.MangaTranslationPreferences>()
+        val mangaId = activity.viewModel.manga?.id
 
-        // Initial opening - preload allowed
+        val realtimeEnabled = if (mangaId != null) {
+            mangaTranslationPreferences.resolveRealtimeEnabled(
+                mangaId = mangaId,
+                globalRealtimeEnabled = translationPreferences.realtimeTranslation().get(),
+            )
+        } else {
+            translationPreferences.realtimeTranslation().get()
+        }
+
+        if (!realtimeEnabled) return RECYCLER_VIEW_DEFAULT_CACHE_SIZE
+
+        val estimatedPageBytes = estimateCurrentPageMemoryBytes()
+        if (estimatedPageBytes <= 0L) return DEFAULT_REALTIME_OFFSCREEN_LIMIT
+
+        val maxPagesInBudget = (MEMORY_BUDGET_BYTES / estimatedPageBytes).toInt()
+        return maxPagesInBudget.coerceIn(RECYCLER_VIEW_DEFAULT_CACHE_SIZE, MAX_REALTIME_OFFSCREEN_LIMIT)
+    }
+
+    private fun estimateCurrentPageMemoryBytes(): Long {
+        val currentState = activity.viewModel.state.value
+        val currentPage = currentState.currentChapter?.pages?.getOrNull(currentState.currentPage - 1) ?: return 0L
+        val stream = currentPage.stream ?: return 0L
+
+        return try {
+            val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            stream().use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) return 0L
+            // ARGB_8888 = 4 bytes per pixel
+            opts.outWidth.toLong() * opts.outHeight.toLong() * 4L
+        } catch (e: Exception) {
+            0L
+        }
+    }
+
+    companion object {
+        // ميزانية الذاكرة للصفحات المحملة استباقياً (150 ميغابايت)
+        private const val MEMORY_BUDGET_BYTES = 150L * 1024 * 1024
+        private const val RECYCLER_VIEW_DEFAULT_CACHE_SIZE = 4
+        private const val DEFAULT_REALTIME_OFFSCREEN_LIMIT = 4
+        // الـ Webtoon يحتاج عدداً أكبر من Pager لأنه عمودي وسريع
+        private const val MAX_REALTIME_OFFSCREEN_LIMIT = 8 
+    }
+    // ────────────────────────────────────────────────────────────
+
+    private fun checkAllowPreload(page: ReaderPage?): Boolean {
+        page ?: return true
         currentPage ?: return true
 
         val nextItem = adapter.items.getOrNull(adapter.items.size - 1)
         val nextChapter = (nextItem as? ChapterTransition.Next)?.to ?: (nextItem as? ReaderPage)?.chapter
 
-        // Allow preload for
-        // 1. Going between pages of same chapter
-        // 2. Next chapter page
         return when (page.chapter) {
             (currentPage as? ReaderPage)?.chapter -> true
             nextChapter -> true
@@ -186,36 +198,25 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         }
     }
 
-    /**
-     * Returns the view this viewer uses.
-     */
     override fun getView(): View {
         return frame
     }
 
-    /**
-     * Destroys this viewer. Called when leaving the reader or swapping viewers.
-     */
     override fun destroy() {
         super.destroy()
         scope.cancel()
     }
 
-    /**
-     * Called from the RecyclerView listener when a [page] is marked as active. It notifies the
-     * activity of the change and requests the preload of the next chapter if this is the last page.
-     */
     private fun onPageSelected(page: ReaderPage, allowPreload: Boolean) {
         val pages = page.chapter.pages ?: return
         logcat { "onPageSelected: ${page.number}/${pages.size}" }
         activity.onPageSelected(page)
 
-        // Preload next chapter once we're within the last 5 pages of the current chapter
         val inPreloadRange = pages.size - page.number < 5
         if (inPreloadRange && allowPreload && page.chapter == adapter.currentChapter) {
             logcat { "Request preload next chapter because we're at page ${page.number} of ${pages.size}" }
             val nextItem = adapter.items.getOrNull(adapter.items.size - 1)
-            val transitionChapter = (nextItem as? ChapterTransition.Next)?.to ?: (nextItem as?ReaderPage)?.chapter
+            val transitionChapter = (nextItem as? ChapterTransition.Next)?.to ?: (nextItem as? ReaderPage)?.chapter
             if (transitionChapter != null) {
                 logcat { "Requesting to preload chapter ${transitionChapter.chapter.chapter_number}" }
                 activity.requestPreloadChapter(transitionChapter)
@@ -223,10 +224,6 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         }
     }
 
-    /**
-     * Called from the RecyclerView listener when a [transition] is marked as active. It request the
-     * preload of the destination chapter of the transition.
-     */
     private fun onTransitionSelected(transition: ChapterTransition) {
         logcat { "onTransitionSelected: $transition" }
         val toChapter = transition.to
@@ -236,9 +233,6 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         }
     }
 
-    /**
-     * Tells this viewer to set the given [chapters] as active.
-     */
     override fun setChapters(chapters: ViewerChapters) {
         val forceTransition = config.alwaysShowChapterTransition || currentPage is ChapterTransition
         adapter.setChapters(chapters, forceTransition)
@@ -251,9 +245,6 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         }
     }
 
-    /**
-     * Tells this viewer to move to the given [page].
-     */
     override fun moveToPage(page: ReaderPage) {
         val position = adapter.items.indexOf(page)
         if (position != -1) {
@@ -279,9 +270,6 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         }
     }
 
-    /**
-     * Scrolls up by [scrollDistance].
-     */
     private fun scrollUp() {
         if (config.usePageTransitions) {
             recycler.smoothScrollBy(0, -scrollDistance)
@@ -290,9 +278,6 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         }
     }
 
-    /**
-     * Scrolls down by [scrollDistance].
-     */
     private fun scrollDown() {
         if (config.usePageTransitions) {
             recycler.smoothScrollBy(0, scrollDistance)
@@ -301,10 +286,6 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         }
     }
 
-    /**
-     * Called from the containing activity when a key [event] is received. It should return true
-     * if the event was handled, false otherwise.
-     */
     override fun handleKeyEvent(event: KeyEvent): Boolean {
         val isUp = event.action == KeyEvent.ACTION_UP
 
@@ -339,18 +320,10 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         return true
     }
 
-    /**
-     * Called from the containing activity when a generic motion [event] is received. It should
-     * return true if the event was handled, false otherwise.
-     */
     override fun handleGenericMotionEvent(event: MotionEvent): Boolean {
         return false
     }
 
-    /**
-     * Notifies adapter of changes around the current page to trigger a relayout in the recycler.
-     * Used when an image configuration is changed.
-     */
     private fun refreshAdapter() {
         val position = layoutManager.findLastEndVisibleItemPosition()
         adapter.refresh()
@@ -360,6 +333,3 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         )
     }
 }
-
-// Double the cache size to reduce rebinds/recycles incurred by the extra layout space on scroll direction changes
-private const val RECYCLER_VIEW_CACHE_SIZE = 4
