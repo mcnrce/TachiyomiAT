@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -425,101 +426,90 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
     
     
     
-        private suspend fun translateChapterRealtime(translation: Translation) {
-        ensureRecognizerAndTranslator(translation)
+private suspend fun translateChapterRealtime(translation: Translation) {
+    ensureRecognizerAndTranslator(translation)
 
-        val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
-        val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
-        val chapterId = translation.chapter.id
+    val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
+    val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
+    val chapterId = translation.chapter.id
 
-        val finishFlag = java.util.concurrent.atomic.AtomicBoolean(false)
-        if (chapterId != null) finishRequests[chapterId] = finishFlag
+    val finishFlag = java.util.concurrent.atomic.AtomicBoolean(false)
+    if (chapterId != null) finishRequests[chapterId] = finishFlag
 
-        var idleElapsed = 0L
+    val tmpFile = java.io.File(context.cacheDir, "ocr_tmp_rt.jpg")
+    if (!tmpFile.exists()) tmpFile.createNewFile()
 
-        val tmpFile = java.io.File(context.cacheDir, "ocr_tmp_rt.jpg")
-        if (!tmpFile.exists()) tmpFile.createNewFile()
+    try {
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            if (finishFlag.get()) break
 
-        try {
-            while (true) {
-                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            val newStreams = translation.takePageStreams()
+            if (newStreams.isEmpty()) {
+                delay(REALTIME_POLL_INTERVAL_MS)
+                continue
+            }
 
-                if (finishFlag.get()) break
+            for ((fileName, streamFn) in newStreams) {
+                currentCoroutineContext().ensureActive()
 
-                val newStreams = translation.takePageStreams()
-
-                if (newStreams.isEmpty()) {
-                    idleElapsed += REALTIME_POLL_INTERVAL_MS
-                    if (idleElapsed >= REALTIME_IDLE_TIMEOUT_MS) break
-                    delay(REALTIME_POLL_INTERVAL_MS)
+                if (translation.existingPages.containsKey(fileName)) {
+                    translation.emitPageTranslated(fileName, translation.existingPages[fileName]!!)
                     continue
                 }
-                idleElapsed = 0L
 
-                for ((fileName, streamFn) in newStreams) {
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                try {
+                    val pageTranslation = withContext(Dispatchers.IO) {
+                        // كشف الأبعاد فقط دون فك تشفير الصورة بالكامل
+                        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        streamFn().use { stream -> BitmapFactory.decodeStream(stream, null, opts) }
+                        
+                        if (opts.outWidth <= 0 || opts.outHeight <= 0) return@withContext null
 
-                    if (translation.existingPages.containsKey(fileName)) {
-                        translation.emitPageTranslated(fileName, translation.existingPages[fileName]!!)
-                        continue
+                        // إذا كانت الصورة صغيرة (مانجا عادية)، نترجمها من الذاكرة مباشرة
+                        if (opts.outHeight <= MAX_OCR_HEIGHT) {
+                            val bitmap = streamFn().use { stream -> BitmapFactory.decodeStream(stream) }
+                            bitmap?.let { 
+                                try { recognizeSingleBitmap(it, opts.outWidth, opts.outHeight) } 
+                                finally { it.recycle() } 
+                            }
+                        } else {
+                            // إذا كانت طويلة (Webtoon)، نستخدم القرص للتقطيع
+                            streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
+                            recognizePage(tmpFile.absolutePath)
+                        }
                     }
 
-                    try {
-                        val pageTranslation = withContext(Dispatchers.IO) {
-                            // 1. قراءة أبعاد الصورة فقط في الذاكرة الحية (بدون استهلاك رام)
-                            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                            streamFn().use { stream -> BitmapFactory.decodeStream(stream, null, opts) }
-                            val origW = opts.outWidth
-                            val origH = opts.outHeight
+                    if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
+                        withContext(Dispatchers.IO) { textTranslator.translate(mutableMapOf(fileName to pageTranslation)) }
+                        
+                        translation.existingPages[fileName] = pageTranslation
+                        translation.emitPageTranslated(fileName, pageTranslation)
 
-                            if (origW <= 0 || origH <= 0) return@withContext null
-
-                            // 2. التحقق: هل الصورة تحتاج تقطيع أم نترجمها فوراً في الرام؟
-                            if (origH <= MAX_OCR_HEIGHT) {
-                                // ✅ المسار السريع (RAM Only): استخراج الصورة مباشرة للذاكرة
-                                val bitmap = streamFn().use { stream -> BitmapFactory.decodeStream(stream) }
-                                    ?: return@withContext null
-                                try {
-                                    recognizeSingleBitmap(bitmap, origW, origH)
-                                } finally {
-                                    bitmap.recycle() // تفريغ الرام فوراً بعد انتهاء الـ OCR
-                                }
-                            } else {
-                                // ⚠️ المسار البطيء (Disk Fallback): الويب تون والصور الطويلة
-                                streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
-                                recognizePage(tmpFile.absolutePath)
-                            }
-                        }
-
-                        // 3. ترجمة النصوص المستخرجة وحفظها في JSON
-                        if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
-                            val singlePageMap = mutableMapOf(fileName to pageTranslation)
-                            withContext(Dispatchers.IO) { textTranslator.translate(singlePageMap) }
-
-                            translation.existingPages[fileName] = pageTranslation
-                            translation.emitPageTranslated(fileName, pageTranslation)
-
-                            // حفظ الإحداثيات والنصوص للقرص لضمان عدم ضياعها
+                        // ✅ التحسين: حفظ الـ JSON في الخلفية دون تعطيل حلقة الترجمة
+                        scope.launch {
                             persistRealtimeProgress(translationMangaDir, saveFile, translation)
                         }
-                    } catch (e: Exception) {
-                        logcat(LogPriority.ERROR, e) { "خطأ في معالجة الصفحة: $fileName" }
                     }
+                } catch (e: Exception) {
+                    logcat(LogPriority.ERROR, e) { "خطأ في معالجة الصفحة: $fileName" }
                 }
             }
-        } catch (e: Throwable) {
-            if (e is CancellationException) throw e
-            translation.status = Translation.State.ERROR
-            logcat(LogPriority.ERROR, e) { "فشل الترجمة الفورية" }
-        } finally {
-            if (tmpFile.exists()) tmpFile.delete()
-            if (chapterId != null) finishRequests.remove(chapterId)
-            runCatching { persistRealtimeProgress(translationMangaDir, saveFile, translation) }
-            if (translation.status != Translation.State.ERROR) {
-                translation.status = Translation.State.TRANSLATED
-            }
+        }
+    } catch (e: Throwable) {
+        if (e is CancellationException) throw e
+        translation.status = Translation.State.ERROR
+    } finally {
+        if (tmpFile.exists()) tmpFile.delete()
+        if (chapterId != null) finishRequests.remove(chapterId)
+        // حفظ نهائي عند الانتهاء
+        runCatching { persistRealtimeProgress(translationMangaDir, saveFile, translation) }
+        if (translation.status != Translation.State.ERROR) {
+            translation.status = Translation.State.TRANSLATED
         }
     }
+}
+
 
     
 
