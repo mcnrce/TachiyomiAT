@@ -95,14 +95,12 @@ class ChapterTranslator(
     private var textRecognizer: TextRecognizer
     private var textTranslator: TextTranslator
 
-    // قفل لمنع تضارب الكتابة على نفس ملف JSON من أكثر من coroutine في نفس الوقت
     private val jsonWriteMutex = Mutex()
 
-    // TachiyomiAT: خريطة لتتبع طلبات الإنهاء لكل translation فوري (chapterId → flag)
     private val finishRequests = ConcurrentHashMap<Long, AtomicBoolean>()
 
     companion object {
-        private const val MAX_OCR_HEIGHT = 1920
+        private const val MAX_OCR_HEIGHT = 2500
         private const val REALTIME_IDLE_TIMEOUT_MS = 30_000L
         private const val REALTIME_POLL_INTERVAL_MS = 150L
     }
@@ -172,7 +170,6 @@ class ChapterTranslator(
                     emit(activeTranslations)
                     if (activeTranslations.isEmpty()) break
 
-                    // إصلاح مشكلة تجمّد الطابور: يجب الانتظار حتى يكتمل أو يفشل الفصل
                     val activeTranslationsFinishedFlow =
                         combine(activeTranslations.map(Translation::statusFlow)) { states ->
                             states.all { it == Translation.State.TRANSLATED || it == Translation.State.ERROR }
@@ -228,8 +225,6 @@ class ChapterTranslator(
         addToQueue(translation)
     }
 
-    // ─── Queueing: Realtime Mode ────────────────────────────────────────────────
-
     fun queueChapterWithPages(
         manga: Manga,
         chapter: Chapter,
@@ -250,8 +245,6 @@ class ChapterTranslator(
         val hasOverride = mangaTranslationPreferences.hasOverride(manga.id).get()
         val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
 
-        // TachiyomiAT: تجنب الترجمة العبثية — إذا كان مصدر المانجا نفسه بلغة الهدف
-        // ولم يفعّل المستخدم إعدادا خاصا صريحا لهذه المانجا، لا داعي للترجمة أصلا.
         if (!hasOverride && sourceLanguageMatchesTarget(source.lang, toLang)) {
             return
         }
@@ -276,10 +269,6 @@ class ChapterTranslator(
         start()
     }
 
-    /**
-     * يقارن كود لغة المصدر (source.lang، مثل "ar", "en", "zh") مع كود لغة الهدف.
-     * يتجاهل اللواحق الإقليمية (zh-CN → zh) للمقارنة العامة.
-     */
     private fun sourceLanguageMatchesTarget(sourceLang: String, toLang: TextTranslatorLanguage): Boolean {
         val normalizedSource = sourceLang.substringBefore("-").lowercase()
         val normalizedTarget = toLang.code.substringBefore("-").lowercase()
@@ -300,14 +289,6 @@ class ChapterTranslator(
         return true
     }
 
-    /**
-     * يحل لغة المصدر الفعلية لهذه المانجا:
-     *   - إذا لدى المانجا إعداد خاص (hasOverride) → نستخدم sourceLanguage الذي اختاره المستخدم يدويا.
-     *   - وإلا → نستنتجها تلقائيا من source.lang (لغة المصدر الفعلية للمانجا في Tachiyomi).
-     *
-     * تُعاد null إذا لغة المصدر غير مدعومة من أي محرك OCR في ML Kit
-     * (مثل العربية، الروسية، اليونانية...) — عندها لا تُترجم الفصول تلقائيا.
-     */
     private fun resolveSourceLanguageForManga(mangaId: Long, source: HttpSource): TextRecognizerLanguage? {
         val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
         if (hasOverride) {
@@ -316,12 +297,6 @@ class ChapterTranslator(
         return autoDetectSourceLanguage(source.lang)
     }
 
-    /**
-     * يحدد محرك OCR المناسب تلقائيا بناء على لغة المصدر (source.lang).
-     * ML Kit يدعم فعليا: صيني، ياباني، كوري، ومحرك Latin (يغطي كل اللغات اللاتينية:
-     * إنجليزي، فرنسي، ألماني، إسباني، إيطالي، برتغالي، هولندي، بولندي، تركي...).
-     * أي لغة أخرى (عربي، روسي، يوناني، تايلاندي...) غير مدعومة → تُعاد null.
-     */
     private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage? {
         val code = sourceLang.substringBefore("-").lowercase()
         return when (code) {
@@ -334,8 +309,6 @@ class ChapterTranslator(
             else -> null
         }
     }
-
-    // ─── Batch Translation ────────────────────────────────────────────────────
 
     private suspend fun translateChapterBatch(translation: Translation) {
         try {
@@ -352,7 +325,6 @@ class ChapterTranslator(
 
             val pages = mutableMapOf<String, PageTranslation>()
 
-            // إصلاح CacheDir: ضمان إنشاء ملف بمسار حقيقي ليتمكن ML Kit من قراءته
             val tmpFile = File(context.cacheDir, "ocr_tmp_batch.jpg")
             if (!tmpFile.exists()) tmpFile.createNewFile()
 
@@ -388,8 +360,6 @@ class ChapterTranslator(
             logcat(LogPriority.ERROR, error) { "فشل الترجمة العادية" }
         }
     }
-
-    // ─── Realtime Translation ─────────────────────────────────────────────────
 
     private suspend fun translateChapterRealtime(translation: Translation) {
         ensureRecognizerAndTranslator(translation)
@@ -477,8 +447,6 @@ class ChapterTranslator(
         }
     }
 
-    // ─── File I/O ─────────────────────────────────────────────────────────────
-
     private fun readTranslationFile(file: UniFile): Map<String, PageTranslation> {
         return try {
             val data = Json.decodeFromStream<Map<String, PageTranslation>>(file.openInputStream())
@@ -544,15 +512,6 @@ class ChapterTranslator(
     // ═══  التعرف على الصور - النظام الجديد (Smart Split)  ═════════════════════
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * النظام الجديد:
-     * 1. OCR أولي على الصورة الكاملة الأصلية → نحصل على أماكن الفقاعات
-     *    ملاحظة: TextRecognizer يكبّر الصورة داخلياً بمعامل SCALE_FACTOR (2x)
-     *    لذا يجب تقسيم إحداثيات الفقاعات على SCALE_FACTOR قبل استخدامها
-     * 2. نحسب المناطق المحظورة (block.y إلى block.y + block.height) بالإحداثيات الأصلية
-     * 3. نقسم الصورة إلى أجزاء لا تقطع أي فقاعة
-     * 4. OCR نهائي على كل جزء بدون overlap
-     */
     private fun recognizePage(filePath: String): PageTranslation? {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(filePath, opts)
@@ -560,7 +519,6 @@ class ChapterTranslator(
         val origH = opts.outHeight
         if (origW <= 0 || origH <= 0) return null
 
-        // إذا كانت الصورة صغيرة بما يكفي، نستخدم OCR مباشرة بدون تقطيع
         if (origH <= MAX_OCR_HEIGHT) {
             val bitmap = BitmapFactory.decodeFile(filePath) ?: return null
             try {
@@ -570,13 +528,6 @@ class ChapterTranslator(
             }
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // النظام الجديد: OCR أولي على الصورة الكاملة → تقطيع ذكي → OCR نهائي
-        // ═══════════════════════════════════════════════════════════════════════
-
-        // 1. OCR أولي على الصورة الكاملة الأصلية
-        //    TextRecognizer يكبّر الصورة داخلياً بـ SCALE_FACTOR،
-        //    لذا الإحداثيات المعادة هي إحداثيات الصورة المكبّرة
         val fullBitmap = BitmapFactory.decodeFile(filePath) ?: return null
         val previewBlocks = try {
             val fullImage = InputImage.fromBitmap(fullBitmap, 0)
@@ -585,11 +536,9 @@ class ChapterTranslator(
                 .filter { it.boundingBox != null && it.text.length > 1 }
                 .mapNotNull { block ->
                     block.boundingBox?.let { bounds ->
-                        // ⚠️ مهم جداً: تقسيم الإحداثيات على SCALE_FACTOR
-                        // لأن TextRecognizer يكبّر الصورة داخلياً بمعامل 2x
                         Pair(
-                            (bounds.top / TextRecognizer.SCALE_FACTOR),
-                            (bounds.bottom / TextRecognizer.SCALE_FACTOR)
+                            (bounds.top / TextRecognizer.SCALE_FACTOR).toInt(),
+                            (bounds.bottom / TextRecognizer.SCALE_FACTOR).toInt()
                         )
                     }
                 }
@@ -597,11 +546,8 @@ class ChapterTranslator(
             fullBitmap.recycle()
         }
 
-        // 2. حساب خطوط القطع الذكية (لا تقطع عبر أي فقاعة)
-        //    الآن الإحداثيات صحيحة (إحداثيات الصورة الأصلية)
         val splitLines = computeSmartSplitLines(origH, previewBlocks, MAX_OCR_HEIGHT)
 
-        // 3. إذا لم نحتاج تقطيع (خط واحد فقط = الصورة كاملة)
         if (splitLines.size <= 2) {
             val bitmap = BitmapFactory.decodeFile(filePath) ?: return null
             try {
@@ -611,23 +557,15 @@ class ChapterTranslator(
             }
         }
 
-        // 4. تقطيع الصورة وOCR على كل جزء
         return recognizeWithSmartSplit(filePath, origW, origH, splitLines)
     }
 
-    /**
-     * يحسب خطوط القطع الذكية:
-     * - لا تقطع عبر أي فقاعة (منطقة محظورة)
-     * - تحاول أن تكون الأجزاء قريبة من MAX_OCR_HEIGHT
-     * - إذا كانت الفقاعات متقاربة جدا ولا يمكن التقطيع، نستخدم الصورة كاملة
-     */
     private fun computeSmartSplitLines(
         origH: Int,
         bubbleZones: List<Pair<Int, Int>>,
         maxHeight: Int,
     ): List<Int> {
         if (bubbleZones.isEmpty()) {
-            // لا فقاعات → نقسم بشكل عادي
             val lines = mutableListOf(0)
             var current = 0
             while (current + maxHeight < origH) {
@@ -638,7 +576,6 @@ class ChapterTranslator(
             return lines
         }
 
-        // نرتب المناطق المحظورة وندمج المتداخلة
         val forbiddenZones = bubbleZones.sortedBy { it.first }
             .fold(mutableListOf<Pair<Int, Int>>()) { acc, zone ->
                 if (acc.isEmpty()) {
@@ -646,7 +583,6 @@ class ChapterTranslator(
                 } else {
                     val last = acc.last()
                     if (zone.first <= last.second) {
-                        // منطقتان متداخلتان أو متجاورتان → ندمجهما
                         acc[acc.size - 1] = Pair(last.first, max(last.second, zone.second))
                     } else {
                         acc.add(zone)
@@ -661,34 +597,26 @@ class ChapterTranslator(
         while (currentY < origH) {
             val targetEnd = min(currentY + maxHeight, origH)
 
-            // إذا كان الهدف داخل منطقة محظورة، نبحث عن نهاية المنطقة
             val forbiddenInRange = forbiddenZones.find { zone ->
-                // المنطقة المحظورة تتقاطع مع [currentY, targetEnd]
                 zone.first < targetEnd && zone.second > currentY
             }
 
             if (forbiddenInRange == null) {
-                // لا توجد فقاعة في النطاق → نقسم هنا
                 currentY = targetEnd
                 splitLines.add(currentY)
             } else {
-                // هناك فقاعة → نبحث عن مكان آمن للقطع
-                // نحاول نهاية المنطقة المحظورة
                 val afterForbidden = forbiddenInRange.second
 
                 if (afterForbidden >= origH) {
-                    // الفقاعة تمتد لنهاية الصورة → نستخدم ما تبقى كجزء واحد
                     splitLines.add(origH)
                     break
                 }
 
-                // نتحقق أن afterForbidden ليس داخل منطقة محظورة أخرى
                 val nextForbidden = forbiddenZones.find { it.first <= afterForbidden && it.second > afterForbidden }
                 if (nextForbidden == null) {
                     currentY = afterForbidden
                     splitLines.add(currentY)
                 } else {
-                    // نهاية المنطقة داخل منطقة أخرى → نبحث عن فجوة آمنة
                     var safeY = afterForbidden
                     while (safeY < origH) {
                         val conflict = forbiddenZones.find { it.first <= safeY && it.second > safeY }
@@ -707,7 +635,6 @@ class ChapterTranslator(
             }
         }
 
-        // إذا كان الجزء الأخير صغير جدا (< 20% من maxHeight)، ندمجه مع السابق
         if (splitLines.size >= 3) {
             val lastIdx = splitLines.size - 1
             val secondLast = splitLines[lastIdx - 1]
@@ -720,71 +647,83 @@ class ChapterTranslator(
         return splitLines
     }
 
-    /**
-     * يستخدم BitmapRegionDecoder لتقطيع الصورة حسب الخطوط المحسوبة
-     * ثم يطبق OCR على كل جزء بدون overlap
-     */
     private fun recognizeWithSmartSplit(
-        filePath: String,
-        origW: Int,
-        origH: Int,
-        splitLines: List<Int>,
-    ): PageTranslation? {
-        val allBlocks = mutableListOf<TranslationBlock>()
+    filePath: String,
+    origW: Int,
+    origH: Int,
+    splitLines: List<Int>,
+): PageTranslation? {
+    val allBlocks = mutableListOf<TranslationBlock>()
 
-        val decoder = BitmapRegionDecoder.newInstance(filePath, false) ?: return null
+    val decoder = BitmapRegionDecoder.newInstance(filePath, false) ?: return null
 
-        try {
-            for (i in 0 until splitLines.size - 1) {
-                val tileTop = splitLines[i]
-                val tileBottom = splitLines[i + 1]
-                val tileHeight = tileBottom - tileTop
+    try {
+        for (i in 0 until splitLines.size - 1) {
+            val tileTop = splitLines[i]
+            val tileBottom = splitLines[i + 1]
+            val tileHeight = tileBottom - tileTop
 
-                if (tileHeight <= 0) continue
+            if (tileHeight <= 0) continue
 
-                val region = Rect(0, tileTop, origW, tileBottom)
-                val tileBitmap = decoder.decodeRegion(region, null) ?: continue
+            val region = Rect(0, tileTop, origW, tileBottom)
+            val tileBitmap = decoder.decodeRegion(region, null) ?: continue
 
-                try {
-                    val image = InputImage.fromBitmap(tileBitmap, 0)
-                    val result = textRecognizer.recognize(image)
-                    val tileBlocks = result.textBlocks
-                        .filter { it.boundingBox != null && it.text.length > 1 }
+            try {
+                val image = InputImage.fromBitmap(tileBitmap, 0)
+                val result = textRecognizer.recognize(image)
+                val tileBlocks = result.textBlocks
+                    .filter { it.boundingBox != null && it.text.length > 1 }
 
-                    for (block in tileBlocks) {
-                        val bounds = block.boundingBox!!
-                        val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()
-                            ?.symbols?.firstOrNull()?.boundingBox
+                for (block in tileBlocks) {
+                    val bounds = block.boundingBox!!
+                    val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()
+                        ?.symbols?.firstOrNull()?.boundingBox
 
-                        allBlocks.add(
-                            TranslationBlock(
-                                text = block.text,
-                                width = bounds.width().toFloat(),
-                                height = bounds.height().toFloat(),
-                                symWidth = symBounds?.width()?.toFloat() ?: 12f,
-                                symHeight = symBounds?.height()?.toFloat() ?: 12f,
-                                angle = block.lines.firstOrNull()?.angle ?: 0f,
-                                x = bounds.left.toFloat(),
-                                y = (tileTop + bounds.top).toFloat(),
-                            ),
-                        )
-                    }
-                } finally {
-                    tileBitmap.recycle()
+                    // ✅ tileTop أصلي → نضربه في SCALE_FACTOR ليصبح مكبّر
+                    // ✅ bounds.top من OCR على الصورة المكبّرة → يبقى كما هو
+                    allBlocks.add(
+                        TranslationBlock(
+                            text = block.text,
+                            width = bounds.width().toFloat(),
+                            height = bounds.height().toFloat(),
+                            symWidth = symBounds?.width()?.toFloat() ?: 12f,
+                            symHeight = symBounds?.height()?.toFloat() ?: 12f,
+                            angle = block.lines.firstOrNull()?.angle ?: 0f,
+                            x = bounds.left.toFloat(),
+                            y = (tileTop * TextRecognizer.SCALE_FACTOR).toFloat() + bounds.top.toFloat(),
+                        ),
+                    )
                 }
+            } finally {
+                tileBitmap.recycle()
             }
-        } finally {
-            decoder.recycle()
         }
-
-        if (allBlocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
-
-        val pageTranslation = PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
-        pageTranslation.blocks = smartMergeBlocks(allBlocks, origW.toFloat(), origH.toFloat())
-        return pageTranslation
+    } finally {
+        decoder.recycle()
     }
 
-    // ─── Single Bitmap Recognition ────────────────────────────────────────────
+    if (allBlocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
+
+    // ✅ الدمج على المقياس المكبّر (مثل recognizeSingleBitmap)
+    val enhancedW = origW * TextRecognizer.SCALE_FACTOR
+    val enhancedH = origH * TextRecognizer.SCALE_FACTOR
+    val pageTranslation = PageTranslation(imgWidth = enhancedW.toFloat(), imgHeight = enhancedH.toFloat())
+    
+    pageTranslation.blocks = smartMergeBlocks(allBlocks, enhancedW.toFloat(), enhancedH.toFloat())
+
+    // ✅ تقسيم الكل على SCALE_FACTOR في النهاية
+    for (block in pageTranslation.blocks) {
+        block.x /= TextRecognizer.SCALE_FACTOR
+        block.y /= TextRecognizer.SCALE_FACTOR
+        block.width /= TextRecognizer.SCALE_FACTOR
+        block.height /= TextRecognizer.SCALE_FACTOR
+    }
+    pageTranslation.imgWidth /= TextRecognizer.SCALE_FACTOR
+    pageTranslation.imgHeight /= TextRecognizer.SCALE_FACTOR
+
+    return pageTranslation
+}
+
 
     private fun recognizeSingleBitmap(bitmap: Bitmap, origW: Int, origH: Int): PageTranslation? {
         val image = InputImage.fromBitmap(bitmap, 0)
@@ -793,22 +732,8 @@ class ChapterTranslator(
 
         if (blocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
 
-        val enhancedW = origW * TextRecognizer.SCALE_FACTOR
-        val enhancedH = origH * TextRecognizer.SCALE_FACTOR
-        val pageTranslation = convertToPageTranslation(blocks, enhancedW, enhancedH)
-
-        for (block in pageTranslation.blocks) {
-            block.x /= TextRecognizer.SCALE_FACTOR
-            block.y /= TextRecognizer.SCALE_FACTOR
-            block.width /= TextRecognizer.SCALE_FACTOR
-            block.height /= TextRecognizer.SCALE_FACTOR
-        }
-        pageTranslation.imgWidth /= TextRecognizer.SCALE_FACTOR
-        pageTranslation.imgHeight /= TextRecognizer.SCALE_FACTOR
-        return pageTranslation
+        return convertToPageTranslation(blocks, origW, origH)
     }
-
-    // ─── Conversion ──────────────────────────────────────────────────────────────
 
     private fun convertToPageTranslation(blocks: List<Text.TextBlock>, width: Int, height: Int): PageTranslation {
         val translation = PageTranslation(imgWidth = width.toFloat(), imgHeight = height.toFloat())
@@ -819,13 +744,13 @@ class ChapterTranslator(
             translation.blocks.add(
                 TranslationBlock(
                     text = block.text,
-                    width = bounds.width().toFloat(),
-                    height = bounds.height().toFloat(),
-                    symWidth = symBounds?.width()?.toFloat() ?: 12f,
-                    symHeight = symBounds?.height()?.toFloat() ?: 12f,
+                    width = bounds.width().toFloat() / TextRecognizer.SCALE_FACTOR,
+                    height = bounds.height().toFloat() / TextRecognizer.SCALE_FACTOR,
+                    symWidth = (symBounds?.width()?.toFloat() ?: 12f) / TextRecognizer.SCALE_FACTOR,
+                    symHeight = (symBounds?.height()?.toFloat() ?: 12f) / TextRecognizer.SCALE_FACTOR,
                     angle = block.lines.firstOrNull()?.angle ?: 0f,
-                    x = bounds.left.toFloat(),
-                    y = bounds.top.toFloat(),
+                    x = bounds.left.toFloat() / TextRecognizer.SCALE_FACTOR,
+                    y = bounds.top.toFloat() / TextRecognizer.SCALE_FACTOR,
                 ),
             )
         }
@@ -833,9 +758,6 @@ class ChapterTranslator(
         return translation
     }
 
-    // ─── Smart Merge ───────────────────────────────────────────────────────────
-
-    @Suppress("NAME_SHADOWING")
     private fun smartMergeBlocks(
         blocks: List<TranslationBlock>,
         imgWidth: Float,
@@ -895,8 +817,6 @@ class ChapterTranslator(
 
         return expandedBlocks
     }
-
-    // ─── Collision Resolution ──────────────────────────────────────────────────
 
     private fun resolveCollisions(
         blocks: MutableList<TranslationBlock>,
@@ -1053,8 +973,6 @@ class ChapterTranslator(
             a.y + a.height > b.y
     }
 
-    // ─── Merge Logic ────────────────────────────────────────────────────────────
-
     private fun shouldMergeTextBlock(
         r1: TranslationBlock,
         r2: TranslationBlock,
@@ -1159,8 +1077,6 @@ class ChapterTranslator(
         )
     }
 
-    // ─── Chapter Pages ─────────────────────────────────────────────────────────
-
     private fun getChapterPages(chapterPath: UniFile): List<Pair<String, () -> InputStream>> {
         if (chapterPath.isFile) {
             val reader = chapterPath.archiveReader(context)
@@ -1177,8 +1093,6 @@ class ChapterTranslator(
                 .toList()
         }
     }
-
-    // ─── Queue Management ──────────────────────────────────────────────────────
 
     private fun areAllTranslationsFinished(): Boolean =
         queueState.value.none { it.status.value <= Translation.State.TRANSLATING.value }
