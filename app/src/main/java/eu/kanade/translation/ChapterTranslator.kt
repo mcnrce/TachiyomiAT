@@ -422,19 +422,22 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
         }
     }
 
-    private suspend fun translateChapterRealtime(translation: Translation) {
+    
+    
+    
+        private suspend fun translateChapterRealtime(translation: Translation) {
         ensureRecognizerAndTranslator(translation)
 
         val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
         val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
         val chapterId = translation.chapter.id
 
-        val finishFlag = AtomicBoolean(false)
+        val finishFlag = java.util.concurrent.atomic.AtomicBoolean(false)
         if (chapterId != null) finishRequests[chapterId] = finishFlag
 
         var idleElapsed = 0L
 
-        val tmpFile = File(context.cacheDir, "ocr_tmp_rt.jpg")
+        val tmpFile = java.io.File(context.cacheDir, "ocr_tmp_rt.jpg")
         if (!tmpFile.exists()) tmpFile.createNewFile()
 
         try {
@@ -462,19 +465,41 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
                     }
 
                     try {
-                        withContext(Dispatchers.IO) {
-                            streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
+                        val pageTranslation = withContext(Dispatchers.IO) {
+                            // 1. قراءة أبعاد الصورة فقط في الذاكرة الحية (بدون استهلاك رام)
+                            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            streamFn().use { stream -> BitmapFactory.decodeStream(stream, null, opts) }
+                            val origW = opts.outWidth
+                            val origH = opts.outHeight
+
+                            if (origW <= 0 || origH <= 0) return@withContext null
+
+                            // 2. التحقق: هل الصورة تحتاج تقطيع أم نترجمها فوراً في الرام؟
+                            if (origH <= MAX_OCR_HEIGHT) {
+                                // ✅ المسار السريع (RAM Only): استخراج الصورة مباشرة للذاكرة
+                                val bitmap = streamFn().use { stream -> BitmapFactory.decodeStream(stream) }
+                                    ?: return@withContext null
+                                try {
+                                    recognizeSingleBitmap(bitmap, origW, origH)
+                                } finally {
+                                    bitmap.recycle() // تفريغ الرام فوراً بعد انتهاء الـ OCR
+                                }
+                            } else {
+                                // ⚠️ المسار البطيء (Disk Fallback): الويب تون والصور الطويلة
+                                streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
+                                recognizePage(tmpFile.absolutePath)
+                            }
                         }
 
-                        val pageTranslation = withContext(Dispatchers.IO) { recognizePage(tmpFile.absolutePath) }
-
-                        if (pageTranslation != null) {
+                        // 3. ترجمة النصوص المستخرجة وحفظها في JSON
+                        if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
                             val singlePageMap = mutableMapOf(fileName to pageTranslation)
                             withContext(Dispatchers.IO) { textTranslator.translate(singlePageMap) }
 
                             translation.existingPages[fileName] = pageTranslation
                             translation.emitPageTranslated(fileName, pageTranslation)
 
+                            // حفظ الإحداثيات والنصوص للقرص لضمان عدم ضياعها
                             persistRealtimeProgress(translationMangaDir, saveFile, translation)
                         }
                     } catch (e: Exception) {
@@ -495,6 +520,8 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
             }
         }
     }
+
+    
 
     private suspend fun persistRealtimeProgress(
         translationMangaDir: UniFile,
