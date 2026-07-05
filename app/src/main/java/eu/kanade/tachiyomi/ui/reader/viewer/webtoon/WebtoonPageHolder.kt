@@ -53,7 +53,6 @@ class WebtoonPageHolder(
     private val font: TranslationFont = TranslationFont.fromPref(translationPreferences.translationFont()),
     readerPreferences: ReaderPreferences = Injekt.get(),
     private val translationManager: TranslationManager = Injekt.get(),
-    // TachiyomiAT: نفس منطق الأولوية المستخدم في PagerPageHolder تماماً
     private val realtimeTranslation: Boolean = run {
         val mangaId = viewer.activity.viewModel.manga?.id
         if (mangaId == null) {
@@ -81,7 +80,6 @@ class WebtoonPageHolder(
     private val scope = MainScope()
 
     private var loadJob: Job? = null
-    // متغير خاص لإدارة مراقبة الترجمة ومنع تسريب الذاكرة في الويب تون
     private var translationCollectorJob: Job? = null
 
     init {
@@ -103,6 +101,10 @@ class WebtoonPageHolder(
     }
 
     fun bind(page: ReaderPage) {
+        // ✅ إلغاء المشترك السابق فوراً قبل إنشاء مشترك جديد
+        translationCollectorJob?.cancel()
+        translationCollectorJob = null
+        
         this.page = page
         loadJob?.cancel()
         loadJob = scope.launch { loadPageAndProcessStatus() }
@@ -112,16 +114,16 @@ class WebtoonPageHolder(
     }
 
     private fun observeRealtimeTranslation(boundPage: ReaderPage) {
-        translationCollectorJob?.cancel()
-        if (realtimeTranslation) {
-            translationCollectorJob = scope.launch {
-                val pageFileName = String.format("%03d.jpg", boundPage.index)
-                val chapterId = boundPage.chapter.chapter.id
-                translationManager.globalPageTranslatedFlow.collectLatest { event ->
-                    if (event.first == chapterId && event.second == pageFileName && boundPage.translation == null) {
-                        boundPage.translation = event.third
-                        withUIContext { addTranslationsView() }
-                    }
+        if (!realtimeTranslation) return
+        
+        translationCollectorJob = scope.launch {
+            val pageFileName = String.format("%03d.jpg", boundPage.index)
+            val chapterId = boundPage.chapter.chapter.id
+            
+            translationManager.globalPageTranslatedFlow.collectLatest { event ->
+                if (event.first == chapterId && event.second == pageFileName && boundPage.translation == null) {
+                    boundPage.translation = event.third
+                    withUIContext { addTranslationsView() }
                 }
             }
         }
@@ -142,7 +144,6 @@ class WebtoonPageHolder(
         loadJob?.cancel()
         loadJob = null
         
-        // تنظيف مراقب الترجمة عند إعادة الاستخدام (Recycle)
         translationCollectorJob?.cancel()
         translationCollectorJob = null
 
@@ -175,9 +176,8 @@ class WebtoonPageHolder(
                     Page.State.READY -> {
                         setImage()
                         addTranslationsView()
-                        if (page.translation == null && realtimeTranslation) {
-                            triggerRealtimeTranslation(page)
-                        }
+                        // ✅ نقل triggerRealtimeTranslation إلى onImageDecoded بدلاً من هنا
+                        // لضمان أن الصورة جاهزة فعلياً قبل طلب الترجمة
                     }
                     Page.State.ERROR -> setError()
                 }
@@ -267,6 +267,12 @@ class WebtoonPageHolder(
         progressContainer.isVisible = false
         removeErrorLayout()
         translationsView?.show()
+        
+        // ✅ بدء الترجمة الفورية بعد تحميل الصورة فعلياً
+        val page = this.page
+        if (page != null && page.translation == null && realtimeTranslation) {
+            triggerRealtimeTranslation(page)
+        }
     }
 
     private fun triggerRealtimeTranslation(page: ReaderPage) {
@@ -274,6 +280,13 @@ class WebtoonPageHolder(
         val manga = viewer.activity.viewModel.manga ?: return
         val domainChapter = page.chapter.chapter.toDomainChapter() ?: return
         val fileName = String.format("%03d.jpg", page.index)
+        
+        // ✅ لا تطلب إذا كانت الصفحة مترجمة أو في الطابور
+        if (page.translation != null) return
+        
+        val queued = translationManager.getQueuedTranslationOrNull(domainChapter.id!!)
+        if (queued != null && queued.existingPages.containsKey(fileName)) return
+        
         translationManager.queueChapterWithPages(manga, domainChapter, listOf(Pair(fileName, stream)))
     }
 
