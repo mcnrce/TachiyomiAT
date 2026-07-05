@@ -547,7 +547,9 @@ class ChapterTranslator(
     /**
      * النظام الجديد:
      * 1. OCR أولي على الصورة الكاملة الأصلية → نحصل على أماكن الفقاعات
-     * 2. نحسب المناطق المحظورة (block.y إلى block.y + block.height)
+     *    ملاحظة: TextRecognizer يكبّر الصورة داخلياً بمعامل SCALE_FACTOR (2x)
+     *    لذا يجب تقسيم إحداثيات الفقاعات على SCALE_FACTOR قبل استخدامها
+     * 2. نحسب المناطق المحظورة (block.y إلى block.y + block.height) بالإحداثيات الأصلية
      * 3. نقسم الصورة إلى أجزاء لا تقطع أي فقاعة
      * 4. OCR نهائي على كل جزء بدون overlap
      */
@@ -573,6 +575,8 @@ class ChapterTranslator(
         // ═══════════════════════════════════════════════════════════════════════
 
         // 1. OCR أولي على الصورة الكاملة الأصلية
+        //    TextRecognizer يكبّر الصورة داخلياً بـ SCALE_FACTOR،
+        //    لذا الإحداثيات المعادة هي إحداثيات الصورة المكبّرة
         val fullBitmap = BitmapFactory.decodeFile(filePath) ?: return null
         val previewBlocks = try {
             val fullImage = InputImage.fromBitmap(fullBitmap, 0)
@@ -581,7 +585,12 @@ class ChapterTranslator(
                 .filter { it.boundingBox != null && it.text.length > 1 }
                 .mapNotNull { block ->
                     block.boundingBox?.let { bounds ->
-                        Pair(bounds.top, bounds.bottom)
+                        // ⚠️ مهم جداً: تقسيم الإحداثيات على SCALE_FACTOR
+                        // لأن TextRecognizer يكبّر الصورة داخلياً بمعامل 2x
+                        Pair(
+                            (bounds.top / TextRecognizer.SCALE_FACTOR),
+                            (bounds.bottom / TextRecognizer.SCALE_FACTOR)
+                        )
                     }
                 }
         } finally {
@@ -589,6 +598,7 @@ class ChapterTranslator(
         }
 
         // 2. حساب خطوط القطع الذكية (لا تقطع عبر أي فقاعة)
+        //    الآن الإحداثيات صحيحة (إحداثيات الصورة الأصلية)
         val splitLines = computeSmartSplitLines(origH, previewBlocks, MAX_OCR_HEIGHT)
 
         // 3. إذا لم نحتاج تقطيع (خط واحد فقط = الصورة كاملة)
@@ -774,7 +784,7 @@ class ChapterTranslator(
         return pageTranslation
     }
 
-    // ─── Single Bitmap Recognition (بدون تغيير) ─────────────────────────────
+    // ─── Single Bitmap Recognition ────────────────────────────────────────────
 
     private fun recognizeSingleBitmap(bitmap: Bitmap, origW: Int, origH: Int): PageTranslation? {
         val image = InputImage.fromBitmap(bitmap, 0)
@@ -798,7 +808,7 @@ class ChapterTranslator(
         return pageTranslation
     }
 
-    // ─── Conversion (بدون تغيير) ──────────────────────────────────────────────
+    // ─── Conversion ──────────────────────────────────────────────────────────────
 
     private fun convertToPageTranslation(blocks: List<Text.TextBlock>, width: Int, height: Int): PageTranslation {
         val translation = PageTranslation(imgWidth = width.toFloat(), imgHeight = height.toFloat())
@@ -823,7 +833,7 @@ class ChapterTranslator(
         return translation
     }
 
-    // ─── Smart Merge (بدون تغيير) ───────────────────────────────────────────
+    // ─── Smart Merge ───────────────────────────────────────────────────────────
 
     @Suppress("NAME_SHADOWING")
     private fun smartMergeBlocks(
@@ -886,7 +896,7 @@ class ChapterTranslator(
         return expandedBlocks
     }
 
-    // ─── Collision Resolution (بدون تغيير) ───────────────────────────────────
+    // ─── Collision Resolution ──────────────────────────────────────────────────
 
     private fun resolveCollisions(
         blocks: MutableList<TranslationBlock>,
@@ -1043,7 +1053,7 @@ class ChapterTranslator(
             a.y + a.height > b.y
     }
 
-    // ─── Merge Logic (بدون تغيير) ────────────────────────────────────────────
+    // ─── Merge Logic ────────────────────────────────────────────────────────────
 
     private fun shouldMergeTextBlock(
         r1: TranslationBlock,
@@ -1149,7 +1159,7 @@ class ChapterTranslator(
         )
     }
 
-    // ─── Chapter Pages (بدون تغيير) ─────────────────────────────────────────
+    // ─── Chapter Pages ─────────────────────────────────────────────────────────
 
     private fun getChapterPages(chapterPath: UniFile): List<Pair<String, () -> InputStream>> {
         if (chapterPath.isFile) {
@@ -1168,7 +1178,7 @@ class ChapterTranslator(
         }
     }
 
-    // ─── Queue Management (بدون تغيير) ──────────────────────────────────────
+    // ─── Queue Management ──────────────────────────────────────────────────────
 
     private fun areAllTranslationsFinished(): Boolean =
         queueState.value.none { it.status.value <= Translation.State.TRANSLATING.value }
