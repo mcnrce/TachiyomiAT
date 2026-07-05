@@ -289,26 +289,87 @@ class ChapterTranslator(
         return true
     }
 
-    private fun resolveSourceLanguageForManga(mangaId: Long, source: HttpSource): TextRecognizerLanguage? {
-        val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
-        if (hasOverride) {
-            return TextRecognizerLanguage.fromPref(mangaTranslationPreferences.sourceLanguage(mangaId))
-        }
-        return autoDetectSourceLanguage(source.lang)
+    private fun resolveSourceLanguageForManga(mangaId: Long, source: HttpSource, mangaTitle: String): TextRecognizerLanguage? {
+    val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
+    if (hasOverride) {
+        return TextRecognizerLanguage.fromPref(mangaTranslationPreferences.sourceLanguage(mangaId))
     }
+    // TachiyomiAT: أولوية أولى — لغة مكتوبة صراحة في اسم المانجا نفسه [English]/(Korean)
+    // مفيد للمصادر التجميعية (aggregators) حيث source.lang = "all" ولا يفيد بشيء
+    val titleLang = detectLanguageFromMangaTitle(mangaTitle)
+    if (titleLang != null) return titleLang
 
-    private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage? {
-        val code = sourceLang.substringBefore("-").lowercase()
-        return when (code) {
-            "zh" -> TextRecognizerLanguage.CHINESE
-            "ja" -> TextRecognizerLanguage.JAPANESE
-            "ko" -> TextRecognizerLanguage.KOREAN
-            "en", "fr", "de", "es", "it", "pt", "nl", "pl", "tr", "id", "vi",
-            "ro", "hu", "cs", "sk", "hr", "sl", "da", "sv", "no", "fi",
-            -> TextRecognizerLanguage.ENGLISH
-            else -> null
-        }
+    // أولوية ثانية — لغة المصدر نفسه (المصادر العادية أحادية اللغة)
+    return autoDetectSourceLanguage(source.lang)
+}
+
+/**
+ * يبحث داخل اسم المانجا عن وسم لغة صريح بصيغة [English] أو (Korean) إلخ.
+ * هذا مفيد للمصادر التجميعية (aggregators) التي تجمع فصولاً بلغات متعددة
+ * تحت مصدر واحد (source.lang = "all")، حيث تكتب اللغة الفعلية داخل اسم المانجا.
+ *
+ * يبحث فقط عن أسماء اللغات المدعومة فعلياً من ML Kit (لا فائدة من اكتشاف
+ * لغة لا يوجد محرك OCR يدعمها أصلاً).
+ */
+private fun detectLanguageFromMangaTitle(mangaTitle: String): TextRecognizerLanguage? {
+    // كل صيغ الأقواس الأربعة: [ ] ( )
+    val bracketPattern = Regex("""[\[(]([^\])]+)[\])]""")
+    val matches = bracketPattern.findAll(mangaTitle)
+
+    for (match in matches) {
+        val tagContent = match.groupValues[1].lowercase()
+        val detected = mapLanguageNameToRecognizer(tagContent)
+        if (detected != null) return detected
     }
+    return null
+}
+
+/**
+ * يطابق اسم اللغة المكتوب بالكامل (إنجليزي) داخل الوسم مع محرك OCR المناسب.
+ * يدعم فقط اللغات التي لها محرك فعلي في ML Kit (نفس منطق autoDetectSourceLanguage).
+ */
+private fun mapLanguageNameToRecognizer(tagContent: String): TextRecognizerLanguage? {
+    return when {
+        tagContent.contains("chinese") -> TextRecognizerLanguage.CHINESE
+        tagContent.contains("japanese") -> TextRecognizerLanguage.JAPANESE
+        tagContent.contains("korean") -> TextRecognizerLanguage.KOREAN
+        tagContent.contains("english") ||
+        tagContent.contains("spanish") ||
+        tagContent.contains("french") ||
+        tagContent.contains("german") ||
+        tagContent.contains("italian") ||
+        tagContent.contains("portuguese") ||
+        tagContent.contains("dutch") ||
+        tagContent.contains("polish") ||
+        tagContent.contains("turkish") ||
+        tagContent.contains("indonesian") ||
+        tagContent.contains("vietnamese") ||
+        tagContent.contains("romanian") ||
+        tagContent.contains("hungarian") ||
+        tagContent.contains("czech") ||
+        tagContent.contains("slovak") ||
+        tagContent.contains("croatian") ||
+        tagContent.contains("slovenian") ||
+        tagContent.contains("danish") ||
+        tagContent.contains("swedish") ||
+        tagContent.contains("norwegian") ||
+        tagContent.contains("finnish") -> TextRecognizerLanguage.ENGLISH
+        else -> null
+    }
+}
+
+private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage? {
+    val code = sourceLang.substringBefore("-").lowercase()
+    return when (code) {
+        "zh" -> TextRecognizerLanguage.CHINESE
+        "ja" -> TextRecognizerLanguage.JAPANESE
+        "ko" -> TextRecognizerLanguage.KOREAN
+        "en", "fr", "de", "es", "it", "pt", "nl", "pl", "tr", "id", "vi",
+        "ro", "hu", "cs", "sk", "hr", "sl", "da", "sv", "no", "fi",
+        -> TextRecognizerLanguage.ENGLISH
+        else -> null
+    }
+}
 
     private suspend fun translateChapterBatch(translation: Translation) {
         try {
