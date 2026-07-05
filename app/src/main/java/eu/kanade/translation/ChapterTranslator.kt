@@ -103,12 +103,6 @@ class ChapterTranslator(
 
     companion object {
         private const val MAX_OCR_HEIGHT = 1920
-        // نسبة صغيرة (3%) من ارتفاع الـ tile — فقط تكفي لملامسة الفقاعات المقطوعة
-        // على حد التماس (وليس لالتقاطها كاملة، فهذا دور recognizeSeamRegion)
-        private const val SEAM_TOUCH_MARGIN_RATIO = 0.03f
-        // حد أدنى للـ padding عند قص منطقة seam، احتياطاً لحالات نادرة
-        // لا تُكتشف فيها أي فقاعة مشبوهة بأبعاد معقولة (حماية من قيم صغيرة جداً)
-        private const val MIN_SEAM_PADDING = 80
         private const val REALTIME_IDLE_TIMEOUT_MS = 30_000L
         private const val REALTIME_POLL_INTERVAL_MS = 150L
     }
@@ -257,7 +251,7 @@ class ChapterTranslator(
         val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
 
         // TachiyomiAT: تجنب الترجمة العبثية — إذا كان مصدر المانجا نفسه بلغة الهدف
-        // ولم يفعّل المستخدم إعداداً خاصاً صريحاً لهذه المانجا، لا داعي للترجمة أصلاً.
+        // ولم يفعّل المستخدم إعدادا خاصا صريحا لهذه المانجا، لا داعي للترجمة أصلا.
         if (!hasOverride && sourceLanguageMatchesTarget(source.lang, toLang)) {
             return
         }
@@ -308,11 +302,11 @@ class ChapterTranslator(
 
     /**
      * يحل لغة المصدر الفعلية لهذه المانجا:
-     *   - إذا لدى المانجا إعداد خاص (hasOverride) → نستخدم sourceLanguage الذي اختاره المستخدم يدوياً.
-     *   - وإلا → نستنتجها تلقائياً من source.lang (لغة المصدر الفعلية للمانجا في Tachiyomi).
+     *   - إذا لدى المانجا إعداد خاص (hasOverride) → نستخدم sourceLanguage الذي اختاره المستخدم يدويا.
+     *   - وإلا → نستنتجها تلقائيا من source.lang (لغة المصدر الفعلية للمانجا في Tachiyomi).
      *
      * تُعاد null إذا لغة المصدر غير مدعومة من أي محرك OCR في ML Kit
-     * (مثل العربية، الروسية، اليونانية...) — عندها لا تُترجم الفصول تلقائياً.
+     * (مثل العربية، الروسية، اليونانية...) — عندها لا تُترجم الفصول تلقائيا.
      */
     private fun resolveSourceLanguageForManga(mangaId: Long, source: HttpSource): TextRecognizerLanguage? {
         val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
@@ -323,8 +317,8 @@ class ChapterTranslator(
     }
 
     /**
-     * يحدد محرك OCR المناسب تلقائياً بناءً على لغة المصدر (source.lang).
-     * ML Kit يدعم فعلياً: صيني، ياباني، كوري، ومحرك Latin (يغطي كل اللغات اللاتينية:
+     * يحدد محرك OCR المناسب تلقائيا بناء على لغة المصدر (source.lang).
+     * ML Kit يدعم فعليا: صيني، ياباني، كوري، ومحرك Latin (يغطي كل اللغات اللاتينية:
      * إنجليزي، فرنسي، ألماني، إسباني، إيطالي، برتغالي، هولندي، بولندي، تركي...).
      * أي لغة أخرى (عربي، روسي، يوناني، تايلاندي...) غير مدعومة → تُعاد null.
      */
@@ -546,8 +540,17 @@ class ChapterTranslator(
         }
     }
 
-    // ─── Image Recognition ─────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ═══  التعرف على الصور - النظام الجديد (Smart Split)  ═════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * النظام الجديد:
+     * 1. OCR أولي على الصورة الكاملة الأصلية → نحصل على أماكن الفقاعات
+     * 2. نحسب المناطق المحظورة (block.y إلى block.y + block.height)
+     * 3. نقسم الصورة إلى أجزاء لا تقطع أي فقاعة
+     * 4. OCR نهائي على كل جزء بدون overlap
+     */
     private fun recognizePage(filePath: String): PageTranslation? {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(filePath, opts)
@@ -555,17 +558,223 @@ class ChapterTranslator(
         val origH = opts.outHeight
         if (origW <= 0 || origH <= 0) return null
 
-        return if (origH <= MAX_OCR_HEIGHT) {
+        // إذا كانت الصورة صغيرة بما يكفي، نستخدم OCR مباشرة بدون تقطيع
+        if (origH <= MAX_OCR_HEIGHT) {
             val bitmap = BitmapFactory.decodeFile(filePath) ?: return null
             try {
-                recognizeSingleBitmap(bitmap, origW, origH)
+                return recognizeSingleBitmap(bitmap, origW, origH)
             } finally {
                 bitmap.recycle()
             }
-        } else {
-            recognizeWithVerticalTiling(filePath, origW, origH)
         }
+
+        // ═══════════════════════════════════════════════════════════════════════
+        // النظام الجديد: OCR أولي على الصورة الكاملة → تقطيع ذكي → OCR نهائي
+        // ═══════════════════════════════════════════════════════════════════════
+
+        // 1. OCR أولي على الصورة الكاملة الأصلية
+        val fullBitmap = BitmapFactory.decodeFile(filePath) ?: return null
+        val previewBlocks = try {
+            val fullImage = InputImage.fromBitmap(fullBitmap, 0)
+            val fullResult = textRecognizer.recognize(fullImage)
+            fullResult.textBlocks
+                .filter { it.boundingBox != null && it.text.length > 1 }
+                .mapNotNull { block ->
+                    block.boundingBox?.let { bounds ->
+                        Pair(bounds.top, bounds.bottom)
+                    }
+                }
+        } finally {
+            fullBitmap.recycle()
+        }
+
+        // 2. حساب خطوط القطع الذكية (لا تقطع عبر أي فقاعة)
+        val splitLines = computeSmartSplitLines(origH, previewBlocks, MAX_OCR_HEIGHT)
+
+        // 3. إذا لم نحتاج تقطيع (خط واحد فقط = الصورة كاملة)
+        if (splitLines.size <= 2) {
+            val bitmap = BitmapFactory.decodeFile(filePath) ?: return null
+            try {
+                return recognizeSingleBitmap(bitmap, origW, origH)
+            } finally {
+                bitmap.recycle()
+            }
+        }
+
+        // 4. تقطيع الصورة وOCR على كل جزء
+        return recognizeWithSmartSplit(filePath, origW, origH, splitLines)
     }
+
+    /**
+     * يحسب خطوط القطع الذكية:
+     * - لا تقطع عبر أي فقاعة (منطقة محظورة)
+     * - تحاول أن تكون الأجزاء قريبة من MAX_OCR_HEIGHT
+     * - إذا كانت الفقاعات متقاربة جدا ولا يمكن التقطيع، نستخدم الصورة كاملة
+     */
+    private fun computeSmartSplitLines(
+        origH: Int,
+        bubbleZones: List<Pair<Int, Int>>,
+        maxHeight: Int,
+    ): List<Int> {
+        if (bubbleZones.isEmpty()) {
+            // لا فقاعات → نقسم بشكل عادي
+            val lines = mutableListOf(0)
+            var current = 0
+            while (current + maxHeight < origH) {
+                current += maxHeight
+                lines.add(current)
+            }
+            lines.add(origH)
+            return lines
+        }
+
+        // نرتب المناطق المحظورة وندمج المتداخلة
+        val forbiddenZones = bubbleZones.sortedBy { it.first }
+            .fold(mutableListOf<Pair<Int, Int>>()) { acc, zone ->
+                if (acc.isEmpty()) {
+                    acc.add(zone)
+                } else {
+                    val last = acc.last()
+                    if (zone.first <= last.second) {
+                        // منطقتان متداخلتان أو متجاورتان → ندمجهما
+                        acc[acc.size - 1] = Pair(last.first, max(last.second, zone.second))
+                    } else {
+                        acc.add(zone)
+                    }
+                }
+                acc
+            }
+
+        val splitLines = mutableListOf(0)
+        var currentY = 0
+
+        while (currentY < origH) {
+            val targetEnd = min(currentY + maxHeight, origH)
+
+            // إذا كان الهدف داخل منطقة محظورة، نبحث عن نهاية المنطقة
+            val forbiddenInRange = forbiddenZones.find { zone ->
+                // المنطقة المحظورة تتقاطع مع [currentY, targetEnd]
+                zone.first < targetEnd && zone.second > currentY
+            }
+
+            if (forbiddenInRange == null) {
+                // لا توجد فقاعة في النطاق → نقسم هنا
+                currentY = targetEnd
+                splitLines.add(currentY)
+            } else {
+                // هناك فقاعة → نبحث عن مكان آمن للقطع
+                // نحاول نهاية المنطقة المحظورة
+                val afterForbidden = forbiddenInRange.second
+
+                if (afterForbidden >= origH) {
+                    // الفقاعة تمتد لنهاية الصورة → نستخدم ما تبقى كجزء واحد
+                    splitLines.add(origH)
+                    break
+                }
+
+                // نتحقق أن afterForbidden ليس داخل منطقة محظورة أخرى
+                val nextForbidden = forbiddenZones.find { it.first <= afterForbidden && it.second > afterForbidden }
+                if (nextForbidden == null) {
+                    currentY = afterForbidden
+                    splitLines.add(currentY)
+                } else {
+                    // نهاية المنطقة داخل منطقة أخرى → نبحث عن فجوة آمنة
+                    var safeY = afterForbidden
+                    while (safeY < origH) {
+                        val conflict = forbiddenZones.find { it.first <= safeY && it.second > safeY }
+                        if (conflict == null) {
+                            currentY = safeY
+                            splitLines.add(currentY)
+                            break
+                        }
+                        safeY = conflict.second
+                    }
+                    if (safeY >= origH) {
+                        splitLines.add(origH)
+                        break
+                    }
+                }
+            }
+        }
+
+        // إذا كان الجزء الأخير صغير جدا (< 20% من maxHeight)، ندمجه مع السابق
+        if (splitLines.size >= 3) {
+            val lastIdx = splitLines.size - 1
+            val secondLast = splitLines[lastIdx - 1]
+            val last = splitLines[lastIdx]
+            if (last - secondLast < maxHeight * 0.2f && last == origH) {
+                splitLines.removeAt(lastIdx - 1)
+            }
+        }
+
+        return splitLines
+    }
+
+    /**
+     * يستخدم BitmapRegionDecoder لتقطيع الصورة حسب الخطوط المحسوبة
+     * ثم يطبق OCR على كل جزء بدون overlap
+     */
+    private fun recognizeWithSmartSplit(
+        filePath: String,
+        origW: Int,
+        origH: Int,
+        splitLines: List<Int>,
+    ): PageTranslation? {
+        val allBlocks = mutableListOf<TranslationBlock>()
+
+        val decoder = BitmapRegionDecoder.newInstance(filePath, false) ?: return null
+
+        try {
+            for (i in 0 until splitLines.size - 1) {
+                val tileTop = splitLines[i]
+                val tileBottom = splitLines[i + 1]
+                val tileHeight = tileBottom - tileTop
+
+                if (tileHeight <= 0) continue
+
+                val region = Rect(0, tileTop, origW, tileBottom)
+                val tileBitmap = decoder.decodeRegion(region, null) ?: continue
+
+                try {
+                    val image = InputImage.fromBitmap(tileBitmap, 0)
+                    val result = textRecognizer.recognize(image)
+                    val tileBlocks = result.textBlocks
+                        .filter { it.boundingBox != null && it.text.length > 1 }
+
+                    for (block in tileBlocks) {
+                        val bounds = block.boundingBox!!
+                        val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()
+                            ?.symbols?.firstOrNull()?.boundingBox
+
+                        allBlocks.add(
+                            TranslationBlock(
+                                text = block.text,
+                                width = bounds.width().toFloat(),
+                                height = bounds.height().toFloat(),
+                                symWidth = symBounds?.width()?.toFloat() ?: 12f,
+                                symHeight = symBounds?.height()?.toFloat() ?: 12f,
+                                angle = block.lines.firstOrNull()?.angle ?: 0f,
+                                x = bounds.left.toFloat(),
+                                y = (tileTop + bounds.top).toFloat(),
+                            ),
+                        )
+                    }
+                } finally {
+                    tileBitmap.recycle()
+                }
+            }
+        } finally {
+            decoder.recycle()
+        }
+
+        if (allBlocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
+
+        val pageTranslation = PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
+        pageTranslation.blocks = smartMergeBlocks(allBlocks, origW.toFloat(), origH.toFloat())
+        return pageTranslation
+    }
+
+    // ─── Single Bitmap Recognition (بدون تغيير) ─────────────────────────────
 
     private fun recognizeSingleBitmap(bitmap: Bitmap, origW: Int, origH: Int): PageTranslation? {
         val image = InputImage.fromBitmap(bitmap, 0)
@@ -589,157 +798,7 @@ class ChapterTranslator(
         return pageTranslation
     }
 
-    /**
-     * تقطيع عمودي مع معالجة الفقاعات المقطوعة على حدود الـ tiles.
-     *
-     * الخوارزمية:
-     *   ١. overlap صغير جداً (نسبة SEAM_TOUCH_MARGIN_RATIO من ارتفاع الـ tile) — فقط يكفي
-     *      وليس لالتقاطها كاملة (بعكس الطريقة القديمة).
-     *   ٢. كل tile يُعالَج بـ OCR عادي، لكن أي فقاعة تلامس الحافة العلوية/السفلية
-     *      لحدود التماس (seam) بين tile وتاليه تُعتبر "مشبوهة" (مقطوعة محتملاً).
-     *   ٣. للفقاعات المشبوهة فقط: نحسب منطقة padding حول نقطة القطع في الصورة الأصلية،
-     *      نقصها مباشرة من الأرشيف الأصلي (وليس من الـ tile)، نرسلها لـ OCR منفصل،
-     *      وندمج نتيجتها بإحداثيات مصححة لتحل محل الفقاعة المقطوعة الأصلية.
-     */
-    private fun recognizeWithVerticalTiling(filePath: String, origW: Int, origH: Int): PageTranslation? {
-        val allBlocks = mutableListOf<TranslationBlock>()
-
-        val tileH = MAX_OCR_HEIGHT
-        // هامش نسبي (3% من ارتفاع الـ tile) — فقط يكفي لملامسة الفقاعات المقطوعة على الحد
-        val touchMargin = (tileH * SEAM_TOUCH_MARGIN_RATIO).toInt().coerceAtLeast(1)
-        val stepY = tileH - touchMargin
-        val numTiles = ceil((origH - touchMargin).toFloat() / stepY).toInt().coerceAtLeast(1)
-
-        val decoder = BitmapRegionDecoder.newInstance(filePath, false) ?: return null
-
-        try {
-            // لكل حد تماس: موقعه + أكبر ارتفاع فقاعة مشبوهة لامسته (من أي الجهتين)
-            val seamMaxBubbleHeight = mutableMapOf<Int, Float>()
-
-            for (row in 0 until numTiles) {
-                val tileTop    = (row * stepY).coerceAtMost(origH - tileH).coerceAtLeast(0)
-                val tileBottom = (tileTop + tileH).coerceAtMost(origH)
-                val isLastTile = row == numTiles - 1
-                val topSeam = if (row > 0) tileTop else null
-                val bottomSeam = if (!isLastTile) tileBottom else null
-
-                val region     = Rect(0, tileTop, origW, tileBottom)
-                val tileBitmap = decoder.decodeRegion(region, null) ?: continue
-
-                try {
-                    val image      = InputImage.fromBitmap(tileBitmap, 0)
-                    val result     = textRecognizer.recognize(image)
-                    val tileBlocks = result.textBlocks
-                        .filter { it.boundingBox != null && it.text.length > 1 }
-
-                    for (block in tileBlocks) {
-                        val bounds = block.boundingBox!!
-                        val bubbleHeight = bounds.height().toFloat()
-
-                        val touchesTopSeam = topSeam != null && bounds.top <= touchMargin
-                        val touchesBottomSeam = bottomSeam != null &&
-                            bounds.bottom >= (tileBottom - tileTop) - touchMargin
-
-                        if (touchesTopSeam || touchesBottomSeam) {
-                            // فقاعة مشبوهة — لا تُضاف الآن، سجّل أكبر ارتفاع لكل seam لامسته
-                            if (touchesTopSeam) {
-                                val seam = topSeam!!
-                                seamMaxBubbleHeight[seam] = max(seamMaxBubbleHeight[seam] ?: 0f, bubbleHeight)
-                            }
-                            if (touchesBottomSeam) {
-                                val seam = bottomSeam!!
-                                seamMaxBubbleHeight[seam] = max(seamMaxBubbleHeight[seam] ?: 0f, bubbleHeight)
-                            }
-                            continue
-                        }
-
-                        val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()
-                            ?.symbols?.firstOrNull()?.boundingBox
-
-                        allBlocks.add(
-                            TranslationBlock(
-                                text      = block.text,
-                                width     = bounds.width().toFloat(),
-                                height    = bubbleHeight,
-                                symWidth  = symBounds?.width()?.toFloat() ?: 12f,
-                                symHeight = symBounds?.height()?.toFloat() ?: 12f,
-                                angle     = block.lines.firstOrNull()?.angle ?: 0f,
-                                x         = bounds.left.toFloat(),
-                                y         = (tileTop + bounds.top).toFloat(),
-                            ),
-                        )
-                    }
-                } finally {
-                    tileBitmap.recycle()
-                }
-            }
-
-            // ─── معالجة المناطق المشبوهة حول كل حد تماس ───────────────────────
-            // الـ padding لكل seam = أكبر ارتفاع فقاعة لامسته × 1.2 (زيادة 20% هامش أمان)
-            // إذا لم تُكتشف أي فقاعة مشبوهة على seam معين، نتخطاه (لا داعي لإعادة معالجته)
-            for ((seamY, maxBubbleHeight) in seamMaxBubbleHeight) {
-                val padding = (maxBubbleHeight * 1.2f).toInt().coerceAtLeast(MIN_SEAM_PADDING)
-                val seamBlocks = recognizeSeamRegion(decoder, origW, origH, seamY, padding)
-                allBlocks.addAll(seamBlocks)
-            }
-        } finally {
-            decoder.recycle()
-        }
-
-        if (allBlocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
-
-        val pageTranslation = PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
-        pageTranslation.blocks = smartMergeBlocks(allBlocks, origW.toFloat(), origH.toFloat())
-        return pageTranslation
-    }
-
-    /**
-     * يقص منطقة حول حد تماس معين (seamY) مباشرة من الصورة الأصلية،
-     * بـ padding محسوب ديناميكياً = أكبر ارتفاع فقاعة مشبوهة على هذا التقاطع تحديداً × 1.2،
-     * لضمان التقاط الفقاعة المقطوعة كاملة مهما كان حجمها.
-     */
-    private fun recognizeSeamRegion(
-        decoder: BitmapRegionDecoder,
-        origW: Int,
-        origH: Int,
-        seamY: Int,
-        padding: Int,
-    ): List<TranslationBlock> {
-        val regionTop = (seamY - padding).coerceAtLeast(0)
-        val regionBottom = (seamY + padding).coerceAtMost(origH)
-        if (regionBottom - regionTop < 20) return emptyList()
-
-        val region = Rect(0, regionTop, origW, regionBottom)
-        val seamBitmap = decoder.decodeRegion(region, null) ?: return emptyList()
-
-        return try {
-            val image = InputImage.fromBitmap(seamBitmap, 0)
-            val result = textRecognizer.recognize(image)
-            val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
-
-            blocks.map { block ->
-                val bounds = block.boundingBox!!
-                val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()
-                    ?.symbols?.firstOrNull()?.boundingBox
-
-                TranslationBlock(
-                    text      = block.text,
-                    width     = bounds.width().toFloat(),
-                    height    = bounds.height().toFloat(),
-                    symWidth  = symBounds?.width()?.toFloat() ?: 12f,
-                    symHeight = symBounds?.height()?.toFloat() ?: 12f,
-                    angle     = block.lines.firstOrNull()?.angle ?: 0f,
-                    x         = bounds.left.toFloat(),
-                    // إحداثي مطلق بالنسبة للصورة الكاملة
-                    y         = (regionTop + bounds.top).toFloat(),
-                )
-            }
-        } finally {
-            seamBitmap.recycle()
-        }
-    }
-
-    // ─── Conversion ────────────────────────────────────────────────────────────
+    // ─── Conversion (بدون تغيير) ──────────────────────────────────────────────
 
     private fun convertToPageTranslation(blocks: List<Text.TextBlock>, width: Int, height: Int): PageTranslation {
         val translation = PageTranslation(imgWidth = width.toFloat(), imgHeight = height.toFloat())
@@ -764,7 +823,7 @@ class ChapterTranslator(
         return translation
     }
 
-    // ─── Smart Merge ───────────────────────────────────────────────────────────
+    // ─── Smart Merge (بدون تغيير) ───────────────────────────────────────────
 
     @Suppress("NAME_SHADOWING")
     private fun smartMergeBlocks(
@@ -827,7 +886,7 @@ class ChapterTranslator(
         return expandedBlocks
     }
 
-    // ─── Collision Resolution ──────────────────────────────────────────────────
+    // ─── Collision Resolution (بدون تغيير) ───────────────────────────────────
 
     private fun resolveCollisions(
         blocks: MutableList<TranslationBlock>,
@@ -984,7 +1043,7 @@ class ChapterTranslator(
             a.y + a.height > b.y
     }
 
-    // ─── Merge Logic ───────────────────────────────────────────────────────────
+    // ─── Merge Logic (بدون تغيير) ────────────────────────────────────────────
 
     private fun shouldMergeTextBlock(
         r1: TranslationBlock,
@@ -1090,7 +1149,7 @@ class ChapterTranslator(
         )
     }
 
-    // ─── Chapter Pages ─────────────────────────────────────────────────────────
+    // ─── Chapter Pages (بدون تغيير) ─────────────────────────────────────────
 
     private fun getChapterPages(chapterPath: UniFile): List<Pair<String, () -> InputStream>> {
         if (chapterPath.isFile) {
@@ -1109,7 +1168,7 @@ class ChapterTranslator(
         }
     }
 
-    // ─── Queue Management ──────────────────────────────────────────────────────
+    // ─── Queue Management (بدون تغيير) ──────────────────────────────────────
 
     private fun areAllTranslationsFinished(): Boolean =
         queueState.value.none { it.status.value <= Translation.State.TRANSLATING.value }
