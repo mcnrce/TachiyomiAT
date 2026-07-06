@@ -20,6 +20,7 @@ import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -36,6 +37,9 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     val downloadManager: DownloadManager by injectLazy()
 
     private val scope = MainScope()
+    
+    // [تحسين]: متغير لحفظ عملية الحساب الحالية لإلغائها عند التقليب السريع
+    private var limitCalculationJob: Job? = null
 
     val pager = createPager()
 
@@ -69,8 +73,8 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         pager.id = R.id.reader_pager
         pager.adapter = adapter
         
-        // [تحسين]: تشغيل الحساب الذكي الأولي في الخلفية دون تجميد واجهة البدء
-        scope.launch {
+        // [تحسين]: تشغيل الحساب الذكي الأولي في الخلفية مع حفظ المهمة
+        limitCalculationJob = scope.launch {
             pager.offscreenPageLimit = computeOffscreenPageLimit()
         }
 
@@ -82,8 +86,9 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
                     }
                     onPageChange(position)
                     
-                    // [تحسين]: إعادة التقييم بسلاسة عبر الكوروتين لمنع التقطيع أثناء التقليب
-                    scope.launch {
+                    // [تحسين]: إلغاء الحساب القديم وبدء حساب جديد لتوفير المعالج والبطارية
+                    limitCalculationJob?.cancel()
+                    limitCalculationJob = scope.launch {
                         pager.offscreenPageLimit = computeOffscreenPageLimit()
                     }
                 }
@@ -139,7 +144,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
 
     // ─── الحساب الذكي للتحميل المسبق للترجمة (Memory Budget) ───
     
-    // [تحسين]: تحويل الدالة إلى suspend للسماح بالعمليات الخلفية
+    // [تحسين]: دالة suspend مدعومة بـ Coroutines
     private suspend fun computeOffscreenPageLimit(): Int {
         val translationPreferences = Injekt.get<tachiyomi.domain.translation.TranslationPreferences>()
         val mangaTranslationPreferences = Injekt.get<tachiyomi.domain.translation.MangaTranslationPreferences>()
@@ -164,7 +169,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         return maxPagesInBudget.coerceIn(1, MAX_REALTIME_OFFSCREEN_LIMIT)
     }
 
-    // [تحسين]: نقل قراءة الملفات (I/O) إلى Dispatchers.IO لمنع حظر الخيط الرئيسي (Main Thread)
+    // [تحسين]: نقل العمليات الثقيلة (I/O) إلى الخيط الخلفي لمنع التشنجات
     private suspend fun estimateCurrentPageMemoryBytes(): Long = withContext(Dispatchers.IO) {
         val currentState = activity.viewModel.state.value
         val currentPage = currentState.currentChapter?.pages?.getOrNull(currentState.currentPage - 1) ?: return@withContext 0L
