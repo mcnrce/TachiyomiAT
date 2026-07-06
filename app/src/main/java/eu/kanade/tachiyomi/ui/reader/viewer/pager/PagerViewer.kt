@@ -19,9 +19,11 @@ import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import tachiyomi.core.common.util.system.logcat
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -64,11 +66,14 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         pager.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
         pager.isFocusable = false
         
-        // تطبيق الحد الذكي للترجمة الفورية
-        pager.offscreenPageLimit = computeOffscreenPageLimit()
-        
         pager.id = R.id.reader_pager
         pager.adapter = adapter
+        
+        // [تحسين]: تشغيل الحساب الذكي الأولي في الخلفية دون تجميد واجهة البدء
+        scope.launch {
+            pager.offscreenPageLimit = computeOffscreenPageLimit()
+        }
+
         pager.addOnPageChangeListener(
             object : ViewPager.SimpleOnPageChangeListener() {
                 override fun onPageSelected(position: Int) {
@@ -77,7 +82,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
                     }
                     onPageChange(position)
                     
-                    // إعادة التقييم بعد الانتقال للصفحة لضمان استمرار التحميل المسبق
+                    // [تحسين]: إعادة التقييم بسلاسة عبر الكوروتين لمنع التقطيع أثناء التقليب
                     scope.launch {
                         pager.offscreenPageLimit = computeOffscreenPageLimit()
                     }
@@ -133,7 +138,9 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     }
 
     // ─── الحساب الذكي للتحميل المسبق للترجمة (Memory Budget) ───
-    private fun computeOffscreenPageLimit(): Int {
+    
+    // [تحسين]: تحويل الدالة إلى suspend للسماح بالعمليات الخلفية
+    private suspend fun computeOffscreenPageLimit(): Int {
         val translationPreferences = Injekt.get<tachiyomi.domain.translation.TranslationPreferences>()
         val mangaTranslationPreferences = Injekt.get<tachiyomi.domain.translation.MangaTranslationPreferences>()
         val mangaId = activity.viewModel.manga?.id
@@ -157,15 +164,16 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         return maxPagesInBudget.coerceIn(1, MAX_REALTIME_OFFSCREEN_LIMIT)
     }
 
-    private fun estimateCurrentPageMemoryBytes(): Long {
+    // [تحسين]: نقل قراءة الملفات (I/O) إلى Dispatchers.IO لمنع حظر الخيط الرئيسي (Main Thread)
+    private suspend fun estimateCurrentPageMemoryBytes(): Long = withContext(Dispatchers.IO) {
         val currentState = activity.viewModel.state.value
-        val currentPage = currentState.currentChapter?.pages?.getOrNull(currentState.currentPage - 1) ?: return 0L
-        val stream = currentPage.stream ?: return 0L
+        val currentPage = currentState.currentChapter?.pages?.getOrNull(currentState.currentPage - 1) ?: return@withContext 0L
+        val stream = currentPage.stream ?: return@withContext 0L
 
-        return try {
+        return@withContext try {
             val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             stream().use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }
-            if (opts.outWidth <= 0 || opts.outHeight <= 0) return 0L
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) return@withContext 0L
             // ARGB_8888 = 4 bytes per pixel
             opts.outWidth.toLong() * opts.outHeight.toLong() * 4L
         } catch (e: Exception) {
