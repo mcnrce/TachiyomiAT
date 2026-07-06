@@ -4,6 +4,9 @@ import eu.kanade.tachiyomi.network.await
 import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.model.TranslationBlock
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -82,7 +85,7 @@ class GoogleTranslator(
     // هل لغة الترجمة الحالية لا تستخدم لاتيني؟
     private val shouldFixUntranslated = nonLatinLanguages.contains(toLang)
 
-    override suspend fun translate(pages: MutableMap<String, PageTranslation>) {
+    override suspend fun translate(pages: MutableMap<String, PageTranslation>) = coroutineScope {
         val rtlLanguages = setOf(
             TextTranslatorLanguage.ARABIC,
             TextTranslatorLanguage.PERSIAN,
@@ -114,7 +117,7 @@ class GoogleTranslator(
             }
         }
 
-        if (allValidBlocks.isEmpty()) return
+        if (allValidBlocks.isEmpty()) return@coroutineScope
 
         // 2. التحزيم
         val batches = mutableListOf<MutableList<TranslationBlock>>()
@@ -135,77 +138,99 @@ class GoogleTranslator(
         }
         if (currentBatch.isNotEmpty()) batches.add(currentBatch)
 
-        // 3. الترجمة + إصلاح الكلمات غير المترجمة
-        batches.forEach { batch ->
-            val mergedText = batch.joinToString("\n") {
-                cleanSymbols(it.text) + SAFE_SEPARATOR
-            }
+        // 3. الترجمة وإصلاح الكلمات بالتوازي (Parallel Processing)
+        val deferredBatches = batches.map { batch ->
+            async {
+                val mergedText = batch.joinToString("\n") {
+                    cleanSymbols(it.text) + SAFE_SEPARATOR
+                }
 
-            val translatedMergedText = try {
-                translateText(toLang.code, mergedText)
-            } catch (e: Exception) {
-                logcat { "Translation failed: ${e.message}" }
-                ""
-            }
+                val translatedMergedText = try {
+                    translateText(toLang.code, mergedText)
+                } catch (e: Exception) {
+                    logcat { "Translation failed: ${e.message}" }
+                    ""
+                }
 
-            if (translatedMergedText.isNotBlank()) {
-                val translatedLines = translatedMergedText.split("\n")
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() }
+                if (translatedMergedText.isNotBlank()) {
+                    val translatedLines = translatedMergedText.split("\n")
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
 
-                batch.forEachIndexed { index, block ->
-                    if (index < translatedLines.size) {
-                        var cleanText = translatedLines[index]
-                            .removeSuffix(".")
-                            .removeSuffix(" .")
-                            .trim()
+                    val textToFixMap = mutableMapOf<Int, String>()
 
-                        // === إصلاح الكلمات غير المترجمة (فقط للغات غير اللاتينية) ===
-                        cleanText = fixUntranslatedWords(cleanText, toLang.code)
+                    batch.forEachIndexed { index, _ ->
+                        if (index < translatedLines.size) {
+                            val cleanText = translatedLines[index]
+                                .removeSuffix(".")
+                                .removeSuffix(" .")
+                                .trim()
+                            
+                            textToFixMap[index] = cleanText
+                        }
+                    }
 
-                        block.translation = rtlMarker + cleanText
+                    // إصلاح الكلمات غير المترجمة دفعة واحدة لهذه الحزمة
+                    val fixedTexts = fixUntranslatedWordsBatch(textToFixMap.values.toList(), toLang.code)
+
+                    batch.forEachIndexed { index, block ->
+                        if (index < fixedTexts.size) {
+                            block.translation = rtlMarker + fixedTexts[index]
+                        }
                     }
                 }
             }
         }
+
+        // انتظار انتهاء جميع الحزم
+        deferredBatches.awaitAll()
     }
 
     /**
-     * إذا وجدت كلمات لاتينية في النص المترجم، نستخرجها ونترجمها بمفردها
-     * ثم نستبدلها في النص. يُطبّق فقط عندما تكون لغة الترجمة غير لاتينية.
+     * يقوم بجمع كل الكلمات غير المترجمة من جميع السطور، وترسلها في طلب شبكة واحد فقط
      */
-    private suspend fun fixUntranslatedWords(translatedText: String, langCode: String): String {
-        // إذا كانت لغة الترجمة تستخدم لاتيني، لا نُفحّص
-        if (!shouldFixUntranslated) return translatedText
+    private suspend fun fixUntranslatedWordsBatch(translatedTexts: List<String>, langCode: String): List<String> {
+        if (!shouldFixUntranslated) return translatedTexts
 
-        // البحث عن الكلمات اللاتينية المتبقية (2 حروف أو أكثر)
-        val untranslatedWords = untranslatedWordPattern.findAll(translatedText)
-            .map { it.value }
-            .distinct()
-            .toList()
+        // استخراج كل الكلمات اللاتينية من جميع النصوص معاً بدون تكرار
+        val allUntranslatedWords = translatedTexts.flatMap { text ->
+            untranslatedWordPattern.findAll(text).map { it.value }.toList()
+        }.distinct()
 
-        if (untranslatedWords.isEmpty()) return translatedText
+        if (allUntranslatedWords.isEmpty()) return translatedTexts
 
-        var fixedText = translatedText
+        // تجميع الكلمات في نص واحد يفصل بينها سطر جديد
+        val wordsToTranslateMerged = allUntranslatedWords.joinToString("\n")
 
-        // ترجمة كل كلمة غير مترجمة بمفردها
-        for (word in untranslatedWords) {
-            try {
-                val singleTranslation = translateText(langCode, word)
-                    .trim()
-                    .removeSuffix(".")
-                    .removeSuffix(" .")
+        val translatedWordsMerged = try {
+            translateText(langCode, wordsToTranslateMerged)
+        } catch (e: Exception) {
+            logcat { "Failed to translate missing words batch: ${e.message}" }
+            ""
+        }
 
-                // إذا ترجمت بنجاح ولم تبقَ لاتينية
-                if (singleTranslation.isNotBlank() && !untranslatedWordPattern.containsMatchIn(singleTranslation)) {
-                    fixedText = fixedText.replace(word, singleTranslation)
+        val translationMap = mutableMapOf<String, String>()
+        if (translatedWordsMerged.isNotBlank()) {
+            val translatedWordsList = translatedWordsMerged.split("\n").map { it.trim() }
+            allUntranslatedWords.forEachIndexed { index, word ->
+                if (index < translatedWordsList.size) {
+                    val singleTranslation = translatedWordsList[index].removeSuffix(".").removeSuffix(" .").trim()
+                    if (singleTranslation.isNotBlank() && !untranslatedWordPattern.containsMatchIn(singleTranslation)) {
+                        translationMap[word] = singleTranslation
+                    }
                 }
-            } catch (e: Exception) {
-                logcat { "Failed to translate word '$word': ${e.message}" }
             }
         }
 
-        return fixedText
+        // استبدال الكلمات في النصوص الأصلية
+        return translatedTexts.map { originalText ->
+            var fixedText = originalText
+            translationMap.forEach { (englishWord, translatedWord) ->
+                // استخدام Regex بحدود الكلمة (\b) لتجنب استبدال أجزاء من كلمات أخرى
+                fixedText = fixedText.replace(Regex("""\b$englishWord\b"""), translatedWord)
+            }
+            fixedText
+        }
     }
 
     private fun cleanSymbols(rawText: String): String {
