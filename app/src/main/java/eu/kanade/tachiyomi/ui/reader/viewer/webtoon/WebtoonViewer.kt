@@ -19,9 +19,12 @@ import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import tachiyomi.core.common.util.system.logcat
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -34,6 +37,9 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
     val downloadManager: DownloadManager by injectLazy()
 
     private val scope = MainScope()
+    
+    // [تحسين]: التحكم في المهام المتراكمة
+    private var limitCalculationJob: Job? = null
 
     val recycler = WebtoonRecyclerView(activity)
 
@@ -52,24 +58,22 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
     private val threshold: Int = Injekt.get<ReaderPreferences>().readerHideThreshold().get().threshold
 
     init {
-        // تطبيق الحساب الذكي لحجم الكاش المسبق بدلاً من الرقم الثابت
-        recycler.setItemViewCacheSize(computeOffscreenPageLimit())
-        
         recycler.isVisible = false 
         recycler.layoutParams = ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT)
         recycler.isFocusable = false
         recycler.itemAnimator = null
         recycler.layoutManager = layoutManager
         recycler.adapter = adapter
+        
+        // [تحسين]: الحساب الأولي في الخلفية بأمان
+        limitCalculationJob = scope.launch {
+            recycler.setItemViewCacheSize(computeOffscreenPageLimit())
+        }
+
         recycler.addOnScrollListener(
             object : RecyclerView.OnScrollListener() {
                 override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
-                    onScrolled()
-
-                    // تحديث ديناميكي للكاش المسبق بناءً على استهلاك الويب تون الحالي
-                    scope.launch {
-                        recycler.setItemViewCacheSize(computeOffscreenPageLimit())
-                    }
+                    onScrolled() // الدالة المخصصة في الأسفل هي من ستتولى أمر الحساب الذكي
 
                     if ((dy > threshold || dy < -threshold) && activity.viewModel.state.value.menuVisible) {
                         activity.hideMenu()
@@ -135,7 +139,9 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
     }
 
     // ─── الحساب الذكي للتحميل المسبق للترجمة (Memory Budget) ───
-    private fun computeOffscreenPageLimit(): Int {
+    
+    // [تحسين]: تحويلها لـ suspend
+    private suspend fun computeOffscreenPageLimit(): Int {
         val translationPreferences = Injekt.get<tachiyomi.domain.translation.TranslationPreferences>()
         val mangaTranslationPreferences = Injekt.get<tachiyomi.domain.translation.MangaTranslationPreferences>()
         val mangaId = activity.viewModel.manga?.id
@@ -158,16 +164,16 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         return maxPagesInBudget.coerceIn(RECYCLER_VIEW_DEFAULT_CACHE_SIZE, MAX_REALTIME_OFFSCREEN_LIMIT)
     }
 
-    private fun estimateCurrentPageMemoryBytes(): Long {
+    // [تحسين]: نقل الـ I/O للخلفية Dispatchers.IO
+    private suspend fun estimateCurrentPageMemoryBytes(): Long = withContext(Dispatchers.IO) {
         val currentState = activity.viewModel.state.value
-        val currentPage = currentState.currentChapter?.pages?.getOrNull(currentState.currentPage - 1) ?: return 0L
-        val stream = currentPage.stream ?: return 0L
+        val currentPage = currentState.currentChapter?.pages?.getOrNull(currentState.currentPage - 1) ?: return@withContext 0L
+        val stream = currentPage.stream ?: return@withContext 0L
 
-        return try {
+        return@withContext try {
             val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             stream().use { android.graphics.BitmapFactory.decodeStream(it, null, opts) }
-            if (opts.outWidth <= 0 || opts.outHeight <= 0) return 0L
-            // ARGB_8888 = 4 bytes per pixel
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) return@withContext 0L
             opts.outWidth.toLong() * opts.outHeight.toLong() * 4L
         } catch (e: Exception) {
             0L
@@ -175,11 +181,9 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
     }
 
     companion object {
-        // ميزانية الذاكرة للصفحات المحملة استباقياً (150 ميغابايت)
         private const val MEMORY_BUDGET_BYTES = 150L * 1024 * 1024
         private const val RECYCLER_VIEW_DEFAULT_CACHE_SIZE = 4
         private const val DEFAULT_REALTIME_OFFSCREEN_LIMIT = 4
-        // الـ Webtoon يحتاج عدداً أكبر من Pager لأنه عمودي وسريع
         private const val MAX_REALTIME_OFFSCREEN_LIMIT = 8 
     }
     // ────────────────────────────────────────────────────────────
@@ -261,11 +265,19 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         val position = pos ?: layoutManager.findLastEndVisibleItemPosition()
         val item = adapter.items.getOrNull(position)
         val allowPreload = checkAllowPreload(item as? ReaderPage)
+        
+        // [تحسين]: الحساب الذكي للكاش يتم فقط عندما تتغير الصفحة (وليس مع كل بكسل تمرير)
         if (item != null && currentPage != item) {
             currentPage = item
             when (item) {
                 is ReaderPage -> onPageSelected(item, allowPreload)
                 is ChapterTransition -> onTransitionSelected(item)
+            }
+            
+            // تحديث الكاش بأمان عبر الكوروتين وإلغاء المهمة السابقة لمنع التكدس
+            limitCalculationJob?.cancel()
+            limitCalculationJob = scope.launch {
+                recycler.setItemViewCacheSize(computeOffscreenPageLimit())
             }
         }
     }
@@ -280,7 +292,7 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
 
     private fun scrollDown() {
         if (config.usePageTransitions) {
-            recycler.smoothScrollBy(0, scrollDistance)
+             recycler.smoothScrollBy(0, scrollDistance)
         } else {
             recycler.scrollBy(0, scrollDistance)
         }
