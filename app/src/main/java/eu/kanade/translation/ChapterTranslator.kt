@@ -110,18 +110,16 @@ class ChapterTranslator(
         private const val REALTIME_POLL_INTERVAL_MS = 150L
         
         // ─── إعدادات التوازي والمراقبة الذكية الجديدة ───
-        private const val ASPECT_RATIO_THRESHOLD = 2.5f // نسبة الارتفاع إلى العرض للويبتون
-        private const val TILE_OCR_CONCURRENCY = 3      // توازي معالجة الشرائح داخل الويبتون الواحدة
-        private const val BATCH_CONCURRENCY_DEFAULT = 4 // التوازي الافتراضي للصفحات العادية
-        private const val BATCH_CONCURRENCY_HIGH = 8    // التوازي العالي عند قلة الفقاعات النصوص
+        private const val ASPECT_RATIO_THRESHOLD = 2.5f 
+        private const val TILE_OCR_CONCURRENCY = 3      
+        private const val BATCH_CONCURRENCY_DEFAULT = 4 
+        private const val BATCH_CONCURRENCY_HIGH = 8    
         private const val BUBBLE_COUNT_LOW_THRESHOLD = 4.0f
     }
 
-    // متحكمات التوازي لحماية الذاكرة من الـ OOM
     private val tileOcrSemaphore = Semaphore(TILE_OCR_CONCURRENCY)
     private val longImageSemaphore = Semaphore(1)
 
-    // متتبع معدل الفقاعات لتحديد سرعة التوازي بشكل ديناميكي
     @Volatile
     private var rollingAvgBubbles = 4.0f
     private val rollingAvgLock = Any()
@@ -556,6 +554,7 @@ class ChapterTranslator(
             translation.status = Translation.State.ERROR
         } finally {
             if (chapterId != null) finishRequests.remove(chapterId)
+            // حفظ نهائي عند الانتهاء
             runCatching { persistRealtimeProgress(translationMangaDir, saveFile, translation) }
             if (translation.status != Translation.State.ERROR) {
                 translation.status = Translation.State.TRANSLATED
@@ -563,14 +562,12 @@ class ChapterTranslator(
         }
     }
 
+    // [الإصلاح]: الدالة المحدثة لأخذ Snapshot آمن ومنع ConcurrentModificationException
     private suspend fun persistRealtimeProgress(
-        private suspend fun persistRealtimeProgress(
         translationMangaDir: UniFile,
         saveFile: String,
         translation: Translation,
     ) {
-        // [الإصلاح]: أخذ نسخة (Snapshot) آمنة من البيانات الحالية لحفظها 
-        // لمنع تعارضها مع الترجمات المتزامنة التي لا تزال تعمل
         val pagesSnapshot = translation.existingPages.toMap()
         
         jsonWriteMutex.withLock {
@@ -579,7 +576,6 @@ class ChapterTranslator(
             }
         }
     }
-
 
     private fun readTranslationFile(file: UniFile): Map<String, PageTranslation> {
         return try {
