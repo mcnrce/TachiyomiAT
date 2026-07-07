@@ -233,15 +233,17 @@ class ReaderActivity : BaseActivity() {
             is ReaderViewModel.Event.SetCoverResult -> {
                 onSetAsCoverResult(event.result)
             }
-            // TachiyomiAT ← أضف هذا
             is ReaderViewModel.Event.ReloadTranslation -> {
-                val viewer = viewModel.state.value.viewer
-                if (viewer is eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer) {
-                    viewer.refreshTranslation(event.clearExisting)
-                }
-                // WebtoonViewer لا يحتاج refreshTranslation الآن (يُضاف لاحقاً)
-            }
-            else -> {}
+    when (val viewer = viewModel.state.value.viewer) {
+        is eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer -> {
+            viewer.refreshTranslation(event.clearExisting)
+        }
+        is eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonViewer -> {
+            // استدعاء دالة التحديث الخاصة بقارئ الويب تون
+            viewer.refreshTranslation(event.clearExisting)
+        }
+    }
+   }else -> {}
         }
     }
     .launchIn(lifecycleScope)
