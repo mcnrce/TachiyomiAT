@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.webtoon
 
+import android.annotation.SuppressLint
 import android.graphics.PointF
 import android.view.KeyEvent
 import android.view.MotionEvent
