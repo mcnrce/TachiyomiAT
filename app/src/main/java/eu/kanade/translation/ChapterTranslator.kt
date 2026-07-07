@@ -564,16 +564,22 @@ class ChapterTranslator(
     }
 
     private suspend fun persistRealtimeProgress(
+        private suspend fun persistRealtimeProgress(
         translationMangaDir: UniFile,
         saveFile: String,
         translation: Translation,
     ) {
+        // [الإصلاح]: أخذ نسخة (Snapshot) آمنة من البيانات الحالية لحفظها 
+        // لمنع تعارضها مع الترجمات المتزامنة التي لا تزال تعمل
+        val pagesSnapshot = translation.existingPages.toMap()
+        
         jsonWriteMutex.withLock {
             withContext(Dispatchers.IO) {
-                writeTranslationFile(translationMangaDir, saveFile, translation.existingPages)
+                writeTranslationFile(translationMangaDir, saveFile, pagesSnapshot)
             }
         }
     }
+
 
     private fun readTranslationFile(file: UniFile): Map<String, PageTranslation> {
         return try {
