@@ -336,6 +336,16 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         return false
     }
 
+    // [إضافة]: دالة تحديث الترجمة الخاصة بالويب تون
+    @SuppressLint("NotifyDataSetChanged")
+    fun refreshTranslation(clearExisting: Boolean = false) {
+        if (clearExisting) {
+            adapter.items.filterIsInstance<ReaderPage>().forEach { it.translation = null }
+        }
+        // إجبار RecyclerView على إعادة رسم الصفحات فوراً لتحديث الترجمة
+        adapter.notifyDataSetChanged()
+    }
+
     private fun refreshAdapter() {
         val position = layoutManager.findLastEndVisibleItemPosition()
         adapter.refresh()
