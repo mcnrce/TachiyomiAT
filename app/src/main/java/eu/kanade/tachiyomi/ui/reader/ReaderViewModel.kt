@@ -239,14 +239,24 @@ class ReaderViewModel @JvmOverloads constructor(
     }
 
     override fun onCleared() {
-        val currentChapters = state.value.viewerChapters
-        if (currentChapters != null) {
-            currentChapters.unref()
-            chapterToDownload?.let {
-                downloadManager.addDownloadsToStartOfQueue(listOf(it))
-            }
+    val currentChapters = state.value.viewerChapters
+    
+    // [تحسين]: إيقاف أي ترجمة نشطة للفصل الحالي عند الخروج من القارئ
+    // لتوفير البيانات وطلبات الـ API
+    state.value.currentChapter?.chapter?.id?.let { currentChapterId ->
+        translationManager.getQueuedTranslationOrNull(currentChapterId)?.let { t ->
+            translationManager.cancelQueuedTranslation(t)
         }
     }
+
+    if (currentChapters != null) {
+        currentChapters.unref()
+        chapterToDownload?.let {
+            downloadManager.addDownloadsToStartOfQueue(listOf(it))
+        }
+    }
+}
+
 
     /**
      * Called when the user pressed the back button and is going to leave the reader. Used to
