@@ -15,6 +15,7 @@ import tachiyomi.domain.source.service.SourceManager
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.io.InputStream
+import java.util.concurrent.ConcurrentHashMap
 
 data class Translation(
     val source: HttpSource,
@@ -23,17 +24,17 @@ data class Translation(
     val fromLang: TextRecognizerLanguage = TextRecognizerLanguage.CHINESE,
     val toLang: TextTranslatorLanguage = TextTranslatorLanguage.ENGLISH,
     @Transient private val _pageStreams: MutableList<Pair<String, () -> InputStream>> = mutableListOf(),
-    @Transient val existingPages: MutableMap<String, PageTranslation> = mutableMapOf(),
-    // true = ترجمة فورية تبقى في الـ queue وتنتظر صفحات جديدة
+    // [الإصلاح]: استخدام ConcurrentHashMap ليتحمل الإضافة من مسارات (Threads) متعددة في نفس الوقت
+    @Transient val existingPages: MutableMap<String, PageTranslation> = ConcurrentHashMap(),
     val isRealtimeMode: Boolean = false,
 ) {
+
     @Transient
     private val _statusFlow = MutableStateFlow(State.NOT_TRANSLATED)
 
     @Transient
     val statusFlow = _statusFlow.asStateFlow()
 
-    // flow يُصدر (fileName, PageTranslation) بعد كل صفحة تنتهي ترجمتها
     @Transient
     private val _pageTranslatedFlow = MutableSharedFlow<Pair<String, PageTranslation>>(extraBufferCapacity = 64)
 
