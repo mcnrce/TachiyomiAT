@@ -1,5 +1,6 @@
 package eu.kanade.translation
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -26,6 +27,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,7 +44,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
@@ -64,7 +69,6 @@ import java.io.InputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
-import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -101,9 +105,31 @@ class ChapterTranslator(
     private val finishRequests = ConcurrentHashMap<Long, AtomicBoolean>()
 
     companion object {
-        private const val MAX_OCR_HEIGHT = 2500
+        private const val MAX_OCR_HEIGHT = 4000
         private const val REALTIME_IDLE_TIMEOUT_MS = 30_000L
         private const val REALTIME_POLL_INTERVAL_MS = 150L
+        
+        // ─── إعدادات التوازي والمراقبة الذكية الجديدة ───
+        private const val ASPECT_RATIO_THRESHOLD = 2.5f // نسبة الارتفاع إلى العرض للويبتون
+        private const val TILE_OCR_CONCURRENCY = 3      // توازي معالجة الشرائح داخل الويبتون الواحدة
+        private const val BATCH_CONCURRENCY_DEFAULT = 4 // التوازي الافتراضي للصفحات العادية
+        private const val BATCH_CONCURRENCY_HIGH = 8    // التوازي العالي عند قلة الفقاعات النصوص
+        private const val BUBBLE_COUNT_LOW_THRESHOLD = 4.0f
+    }
+
+    // متحكمات التوازي لحماية الذاكرة من الـ OOM
+    private val tileOcrSemaphore = Semaphore(TILE_OCR_CONCURRENCY)
+    private val longImageSemaphore = Semaphore(1)
+
+    // متتبع معدل الفقاعات لتحديد سرعة التوازي بشكل ديناميكي
+    @Volatile
+    private var rollingAvgBubbles = 4.0f
+    private val rollingAvgLock = Any()
+
+    private fun updateRollingAvg(count: Int) {
+        synchronized(rollingAvgLock) {
+            rollingAvgBubbles = (rollingAvgBubbles * 0.8f) + (count * 0.2f)
+        }
     }
 
     init {
@@ -291,86 +317,73 @@ class ChapterTranslator(
     }
 
     private fun resolveSourceLanguageForManga(mangaId: Long, source: HttpSource, mangaTitle: String): TextRecognizerLanguage? {
-    val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
-    if (hasOverride) {
-        return TextRecognizerLanguage.fromPref(mangaTranslationPreferences.sourceLanguage(mangaId))
+        val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
+        if (hasOverride) {
+            return TextRecognizerLanguage.fromPref(mangaTranslationPreferences.sourceLanguage(mangaId))
+        }
+        val titleLang = detectLanguageFromMangaTitle(mangaTitle)
+        if (titleLang != null) return titleLang
+        return autoDetectSourceLanguage(source.lang)
     }
-    // TachiyomiAT: أولوية أولى — لغة مكتوبة صراحة في اسم المانجا نفسه [English]/(Korean)
-    // مفيد للمصادر التجميعية (aggregators) حيث source.lang = "all" ولا يفيد بشيء
-    val titleLang = detectLanguageFromMangaTitle(mangaTitle)
-    if (titleLang != null) return titleLang
 
-    // أولوية ثانية — لغة المصدر نفسه (المصادر العادية أحادية اللغة)
-    return autoDetectSourceLanguage(source.lang)
-}
+    private fun detectLanguageFromMangaTitle(mangaTitle: String): TextRecognizerLanguage? {
+        val bracketPattern = Regex("""[\[(]([^\])]+)[\])]""")
+        val matches = bracketPattern.findAll(mangaTitle)
 
-/**
- * يبحث داخل اسم المانجا عن وسم لغة صريح بصيغة [English] أو (Korean) إلخ.
- * هذا مفيد للمصادر التجميعية (aggregators) التي تجمع فصولاً بلغات متعددة
- * تحت مصدر واحد (source.lang = "all")، حيث تكتب اللغة الفعلية داخل اسم المانجا.
- *
- * يبحث فقط عن أسماء اللغات المدعومة فعلياً من ML Kit (لا فائدة من اكتشاف
- * لغة لا يوجد محرك OCR يدعمها أصلاً).
- */
-private fun detectLanguageFromMangaTitle(mangaTitle: String): TextRecognizerLanguage? {
-    // كل صيغ الأقواس الأربعة: [ ] ( )
-    val bracketPattern = Regex("""[\[(]([^\])]+)[\])]""")
-    val matches = bracketPattern.findAll(mangaTitle)
-
-    for (match in matches) {
-        val tagContent = match.groupValues[1].lowercase()
-        val detected = mapLanguageNameToRecognizer(tagContent)
-        if (detected != null) return detected
+        for (match in matches) {
+            val tagContent = match.groupValues[1].lowercase()
+            val detected = mapLanguageNameToRecognizer(tagContent)
+            if (detected != null) return detected
+        }
+        return null
     }
-    return null
-}
 
-/**
- * يطابق اسم اللغة المكتوب بالكامل (إنجليزي) داخل الوسم مع محرك OCR المناسب.
- * يدعم فقط اللغات التي لها محرك فعلي في ML Kit (نفس منطق autoDetectSourceLanguage).
- */
-private fun mapLanguageNameToRecognizer(tagContent: String): TextRecognizerLanguage? {
-    return when {
-        tagContent.contains("chinese") -> TextRecognizerLanguage.CHINESE
-        tagContent.contains("japanese") -> TextRecognizerLanguage.JAPANESE
-        tagContent.contains("korean") -> TextRecognizerLanguage.KOREAN
-        tagContent.contains("english") ||
-        tagContent.contains("spanish") ||
-        tagContent.contains("french") ||
-        tagContent.contains("german") ||
-        tagContent.contains("italian") ||
-        tagContent.contains("portuguese") ||
-        tagContent.contains("dutch") ||
-        tagContent.contains("polish") ||
-        tagContent.contains("turkish") ||
-        tagContent.contains("indonesian") ||
-        tagContent.contains("vietnamese") ||
-        tagContent.contains("romanian") ||
-        tagContent.contains("hungarian") ||
-        tagContent.contains("czech") ||
-        tagContent.contains("slovak") ||
-        tagContent.contains("croatian") ||
-        tagContent.contains("slovenian") ||
-        tagContent.contains("danish") ||
-        tagContent.contains("swedish") ||
-        tagContent.contains("norwegian") ||
-        tagContent.contains("finnish") -> TextRecognizerLanguage.ENGLISH
-        else -> null
+    private fun mapLanguageNameToRecognizer(tagContent: String): TextRecognizerLanguage? {
+        return when {
+            tagContent.contains("chinese") -> TextRecognizerLanguage.CHINESE
+            tagContent.contains("japanese") -> TextRecognizerLanguage.JAPANESE
+            tagContent.contains("korean") -> TextRecognizerLanguage.KOREAN
+            tagContent.contains("english") ||
+            tagContent.contains("spanish") ||
+            tagContent.contains("french") ||
+            tagContent.contains("german") ||
+            tagContent.contains("italian") ||
+            tagContent.contains("portuguese") ||
+            tagContent.contains("dutch") ||
+            tagContent.contains("polish") ||
+            tagContent.contains("turkish") ||
+            tagContent.contains("indonesian") ||
+            tagContent.contains("vietnamese") ||
+            tagContent.contains("romanian") ||
+            tagContent.contains("hungarian") ||
+            tagContent.contains("czech") ||
+            tagContent.contains("slovak") ||
+            tagContent.contains("croatian") ||
+            tagContent.contains("slovenian") ||
+            tagContent.contains("danish") ||
+            tagContent.contains("swedish") ||
+            tagContent.contains("norwegian") ||
+            tagContent.contains("finnish") -> TextRecognizerLanguage.ENGLISH
+            else -> null
+        }
     }
-}
 
-private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage? {
-    val code = sourceLang.substringBefore("-").lowercase()
-    return when (code) {
-        "zh" -> TextRecognizerLanguage.CHINESE
-        "ja" -> TextRecognizerLanguage.JAPANESE
-        "ko" -> TextRecognizerLanguage.KOREAN
-        "en", "fr", "de", "es", "it", "pt", "nl", "pl", "tr", "id", "vi",
-        "ro", "hu", "cs", "sk", "hr", "sl", "da", "sv", "no", "fi",
-        -> TextRecognizerLanguage.ENGLISH
-        else -> null
+    private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage? {
+        val code = sourceLang.substringBefore("-").lowercase()
+        return when (code) {
+            "zh" -> TextRecognizerLanguage.CHINESE
+            "ja" -> TextRecognizerLanguage.JAPANESE
+            "ko" -> TextRecognizerLanguage.KOREAN
+            "en", "fr", "de", "es", "it", "pt", "nl", "pl", "tr", "id", "vi",
+            "ro", "hu", "cs", "sk", "hr", "sl", "da", "sv", "no", "fi",
+            -> TextRecognizerLanguage.ENGLISH
+            else -> null
+        }
     }
-}
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ═══  التعرف على الصور والترجمة ═══════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private suspend fun translateChapterBatch(translation: Translation) {
         try {
@@ -385,31 +398,42 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
                 translation.source,
             )!!
 
-            val pages = mutableMapOf<String, PageTranslation>()
-
-            val tmpFile = File(context.cacheDir, "ocr_tmp_batch.jpg")
-            if (!tmpFile.exists()) tmpFile.createNewFile()
-
+            val pages = java.util.concurrent.ConcurrentHashMap<String, PageTranslation>()
             val streams = getChapterPages(chapterPath)
             val totalPageCount = streams.size
 
-            withContext(Dispatchers.IO) {
-                for ((fileName, streamFn) in streams) {
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            val currentAvg = rollingAvgBubbles
+            val concurrencyLimit = if (currentAvg < BUBBLE_COUNT_LOW_THRESHOLD) BATCH_CONCURRENCY_HIGH else BATCH_CONCURRENCY_DEFAULT
+            val batchSemaphore = Semaphore(concurrencyLimit)
 
-                    streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
+            withContext(Dispatchers.Default) {
+                val deferredPages = streams.map { (fileName, streamFn) ->
+                    async {
+                        batchSemaphore.withPermit {
+                            currentCoroutineContext().ensureActive()
+                            val tmpFile = File(context.cacheDir, "ocr_tmp_${System.nanoTime()}.jpg")
+                            try {
+                                if (!tmpFile.exists()) tmpFile.createNewFile()
+                                streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
 
-                    val pageTranslation = recognizePage(tmpFile.absolutePath)
-                    if (pageTranslation != null) {
-                        pages[fileName] = pageTranslation
+                                val pageTranslation = recognizePage(tmpFile.absolutePath)
+                                if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
+                                    pages[fileName] = pageTranslation
+                                }
+                            } finally {
+                                if (tmpFile.exists()) tmpFile.delete()
+                            }
+                        }
                     }
                 }
+                deferredPages.awaitAll()
             }
-            if (tmpFile.exists()) tmpFile.delete()
 
-            withContext(Dispatchers.IO) { textTranslator.translate(pages) }
-
-            writeTranslationFile(translationMangaDir, saveFile, pages)
+            if (pages.isNotEmpty()) {
+                withContext(Dispatchers.IO) { textTranslator.translate(pages) }
+                writeTranslationFile(translationMangaDir, saveFile, pages)
+            }
+            
             translation.status = Translation.State.TRANSLATED
 
             val cid = translation.chapter.id
@@ -423,95 +447,121 @@ private fun autoDetectSourceLanguage(sourceLang: String): TextRecognizerLanguage
         }
     }
 
-    
-    
-    
-private suspend fun translateChapterRealtime(translation: Translation) {
-    ensureRecognizerAndTranslator(translation)
+    private suspend fun translateChapterRealtime(translation: Translation) {
+        ensureRecognizerAndTranslator(translation)
 
-    val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
-    val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
-    val chapterId = translation.chapter.id
+        val translationMangaDir = provider.getMangaDir(translation.manga.title, translation.source)
+        val saveFile = provider.getTranslationFileName(translation.chapter.name, translation.chapter.scanlator)
+        val chapterId = translation.chapter.id
 
-    val finishFlag = java.util.concurrent.atomic.AtomicBoolean(false)
-    if (chapterId != null) finishRequests[chapterId] = finishFlag
+        val finishFlag = java.util.concurrent.atomic.AtomicBoolean(false)
+        if (chapterId != null) finishRequests[chapterId] = finishFlag
 
-    val tmpFile = java.io.File(context.cacheDir, "ocr_tmp_rt.jpg")
-    if (!tmpFile.exists()) tmpFile.createNewFile()
-
-    try {
-        while (true) {
-            currentCoroutineContext().ensureActive()
-            if (finishFlag.get()) break
-
-            val newStreams = translation.takePageStreams()
-            if (newStreams.isEmpty()) {
-                delay(REALTIME_POLL_INTERVAL_MS)
-                continue
-            }
-
-            for ((fileName, streamFn) in newStreams) {
+        try {
+            while (true) {
                 currentCoroutineContext().ensureActive()
+                if (finishFlag.get()) break
 
-                if (translation.existingPages.containsKey(fileName)) {
-                    translation.emitPageTranslated(fileName, translation.existingPages[fileName]!!)
+                val newStreams = translation.takePageStreams()
+                if (newStreams.isEmpty()) {
+                    delay(REALTIME_POLL_INTERVAL_MS)
                     continue
                 }
 
-                try {
-                    val pageTranslation = withContext(Dispatchers.IO) {
-                        // كشف الأبعاد فقط دون فك تشفير الصورة بالكامل
-                        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                        streamFn().use { stream -> BitmapFactory.decodeStream(stream, null, opts) }
-                        
-                        if (opts.outWidth <= 0 || opts.outHeight <= 0) return@withContext null
+                val currentAvg = rollingAvgBubbles
+                val concurrencyLimit = if (currentAvg < BUBBLE_COUNT_LOW_THRESHOLD) BATCH_CONCURRENCY_HIGH else BATCH_CONCURRENCY_DEFAULT
+                val realtimeSemaphore = Semaphore(concurrencyLimit)
 
-                        // إذا كانت الصورة صغيرة (مانجا عادية)، نترجمها من الذاكرة مباشرة
-                        if (opts.outHeight <= MAX_OCR_HEIGHT) {
-                            val bitmap = streamFn().use { stream -> BitmapFactory.decodeStream(stream) }
-                            bitmap?.let { 
-                                try { recognizeSingleBitmap(it, opts.outWidth, opts.outHeight) } 
-                                finally { it.recycle() } 
+                withContext(Dispatchers.Default) {
+                    val deferredList = newStreams.map { (fileName, streamFn) ->
+                        async {
+                            realtimeSemaphore.withPermit {
+                                currentCoroutineContext().ensureActive()
+
+                                if (translation.existingPages.containsKey(fileName)) {
+                                    translation.emitPageTranslated(fileName, translation.existingPages[fileName]!!)
+                                    return@async
+                                }
+
+                                val tmpFile = File(context.cacheDir, "ocr_tmp_rt_${System.nanoTime()}.jpg")
+                                try {
+                                    val pageTranslation = withContext(Dispatchers.IO) {
+                                        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                        streamFn().use { stream -> BitmapFactory.decodeStream(stream, null, opts) }
+                                        
+                                        if (opts.outWidth <= 0 || opts.outHeight <= 0) return@withContext null
+
+                                        val aspectRatio = opts.outHeight.toFloat() / opts.outWidth.toFloat()
+                                        val isLongImage = opts.outHeight > MAX_OCR_HEIGHT && aspectRatio > ASPECT_RATIO_THRESHOLD
+
+                                        if (!tmpFile.exists()) tmpFile.createNewFile()
+                                        streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
+                                        
+                                        // فحص أولي سريع لتخطي الصفحات الفارغة
+                                        val previewOptions = BitmapFactory.Options().apply { inSampleSize = 4 }
+                                        val previewBitmap = try {
+                                            BitmapFactory.decodeFile(tmpFile.absolutePath, previewOptions)
+                                        } catch (e: Exception) { null }
+
+                                        val hasText = if (previewBitmap != null) {
+                                            val previewImage = InputImage.fromBitmap(previewBitmap, 0)
+                                            val previewText = textRecognizer.recognize(previewImage)
+                                            previewBitmap.recycle()
+                                            previewText.textBlocks.isNotEmpty()
+                                        } else true
+
+                                        if (!hasText) {
+                                            if (!isLongImage) updateRollingAvg(0)
+                                            return@withContext PageTranslation(imgWidth = opts.outWidth.toFloat(), imgHeight = opts.outHeight.toFloat())
+                                        }
+
+                                        if (!isLongImage) {
+                                            val bitmap = BitmapFactory.decodeFile(tmpFile.absolutePath)
+                                            bitmap?.let { 
+                                                try { recognizeSingleBitmap(it, opts.outWidth, opts.outHeight) } 
+                                                finally { it.recycle() } 
+                                            }
+                                        } else {
+                                            longImageSemaphore.withPermit { recognizePage(tmpFile.absolutePath) }
+                                        }
+                                    }
+
+                                    if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
+                                        withContext(Dispatchers.IO) { textTranslator.translate(mutableMapOf(fileName to pageTranslation)) }
+                                        
+                                        translation.existingPages[fileName] = pageTranslation
+                                        translation.emitPageTranslated(fileName, pageTranslation)
+
+                                        scope.launch {
+                                            persistRealtimeProgress(translationMangaDir, saveFile, translation)
+                                        }
+                                    } else if (pageTranslation != null && pageTranslation.blocks.isEmpty()) {
+                                         translation.existingPages[fileName] = pageTranslation
+                                         translation.emitPageTranslated(fileName, pageTranslation)
+                                    }
+
+                                } catch (e: Exception) {
+                                    logcat(LogPriority.ERROR, e) { "خطأ في معالجة الصفحة: $fileName" }
+                                } finally {
+                                    if (tmpFile.exists()) tmpFile.delete()
+                                }
                             }
-                        } else {
-                            // إذا كانت طويلة (Webtoon)، نستخدم القرص للتقطيع
-                            streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
-                            recognizePage(tmpFile.absolutePath)
                         }
                     }
-
-                    if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
-                        withContext(Dispatchers.IO) { textTranslator.translate(mutableMapOf(fileName to pageTranslation)) }
-                        
-                        translation.existingPages[fileName] = pageTranslation
-                        translation.emitPageTranslated(fileName, pageTranslation)
-
-                        // ✅ التحسين: حفظ الـ JSON في الخلفية دون تعطيل حلقة الترجمة
-                        scope.launch {
-                            persistRealtimeProgress(translationMangaDir, saveFile, translation)
-                        }
-                    }
-                } catch (e: Exception) {
-                    logcat(LogPriority.ERROR, e) { "خطأ في معالجة الصفحة: $fileName" }
+                    deferredList.awaitAll()
                 }
             }
-        }
-    } catch (e: Throwable) {
-        if (e is CancellationException) throw e
-        translation.status = Translation.State.ERROR
-    } finally {
-        if (tmpFile.exists()) tmpFile.delete()
-        if (chapterId != null) finishRequests.remove(chapterId)
-        // حفظ نهائي عند الانتهاء
-        runCatching { persistRealtimeProgress(translationMangaDir, saveFile, translation) }
-        if (translation.status != Translation.State.ERROR) {
-            translation.status = Translation.State.TRANSLATED
+        } catch (e: Throwable) {
+            if (e is CancellationException) throw e
+            translation.status = Translation.State.ERROR
+        } finally {
+            if (chapterId != null) finishRequests.remove(chapterId)
+            runCatching { persistRealtimeProgress(translationMangaDir, saveFile, translation) }
+            if (translation.status != Translation.State.ERROR) {
+                translation.status = Translation.State.TRANSLATED
+            }
         }
     }
-}
-
-
-    
 
     private suspend fun persistRealtimeProgress(
         translationMangaDir: UniFile,
@@ -586,18 +636,15 @@ private suspend fun translateChapterRealtime(translation: Translation) {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ═══  التعرف على الصور - النظام الجديد (Smart Split)  ═════════════════════
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private fun recognizePage(filePath: String): PageTranslation? {
+    private suspend fun recognizePage(filePath: String): PageTranslation? {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(filePath, opts)
         val origW = opts.outWidth
         val origH = opts.outHeight
         if (origW <= 0 || origH <= 0) return null
 
-        if (origH <= MAX_OCR_HEIGHT) {
+        val aspectRatio = origH.toFloat() / origW.toFloat()
+        if (origH <= MAX_OCR_HEIGHT || aspectRatio <= ASPECT_RATIO_THRESHOLD) {
             val bitmap = BitmapFactory.decodeFile(filePath) ?: return null
             try {
                 return recognizeSingleBitmap(bitmap, origW, origH)
@@ -725,88 +772,83 @@ private suspend fun translateChapterRealtime(translation: Translation) {
         return splitLines
     }
 
-    private fun recognizeWithSmartSplit(
-    filePath: String,
-    origW: Int,
-    origH: Int,
-    splitLines: List<Int>,
-): PageTranslation? {
-    val allBlocks = mutableListOf<TranslationBlock>()
-
-    val decoder = BitmapRegionDecoder.newInstance(filePath, false) ?: return null
-
-    try {
+    private suspend fun recognizeWithSmartSplit(
+        filePath: String,
+        origW: Int,
+        origH: Int,
+        splitLines: List<Int>,
+    ): PageTranslation? = withContext(Dispatchers.Default) {
+        val decoder = BitmapRegionDecoder.newInstance(filePath, false) ?: return@withContext null
+        val pairs = mutableListOf<Pair<Int, Int>>()
         for (i in 0 until splitLines.size - 1) {
-            val tileTop = splitLines[i]
-            val tileBottom = splitLines[i + 1]
-            val tileHeight = tileBottom - tileTop
+            pairs.add(Pair(splitLines[i], splitLines[i + 1]))
+        }
 
-            if (tileHeight <= 0) continue
+        val deferredBlocks = pairs.map { (tileTop, tileBottom) ->
+            async {
+                tileOcrSemaphore.withPermit {
+                    ensureActive()
+                    val tileHeight = tileBottom - tileTop
+                    if (tileHeight <= 0) return@async emptyList()
+                    val region = Rect(0, tileTop, origW, tileBottom)
+                    val tileBitmap = decoder.decodeRegion(region, null) ?: return@async emptyList()
 
-            val region = Rect(0, tileTop, origW, tileBottom)
-            val tileBitmap = decoder.decodeRegion(region, null) ?: continue
-
-            try {
-                val image = InputImage.fromBitmap(tileBitmap, 0)
-                val result = textRecognizer.recognize(image)
-                val tileBlocks = result.textBlocks
-                    .filter { it.boundingBox != null && it.text.length > 1 }
-
-                for (block in tileBlocks) {
-                    val bounds = block.boundingBox!!
-                    val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()
-                        ?.symbols?.firstOrNull()?.boundingBox
-
-                    // ✅ tileTop أصلي → نضربه في SCALE_FACTOR ليصبح مكبّر
-                    // ✅ bounds.top من OCR على الصورة المكبّرة → يبقى كما هو
-                    allBlocks.add(
-                        TranslationBlock(
-                            text = block.text,
-                            width = bounds.width().toFloat(),
-                            height = bounds.height().toFloat(),
-                            symWidth = symBounds?.width()?.toFloat() ?: 12f,
-                            symHeight = symBounds?.height()?.toFloat() ?: 12f,
-                            angle = block.lines.firstOrNull()?.angle ?: 0f,
-                            x = bounds.left.toFloat(),
-                            y = (tileTop * TextRecognizer.SCALE_FACTOR).toFloat() + bounds.top.toFloat(),
-                        ),
-                    )
+                    try {
+                        val image = InputImage.fromBitmap(tileBitmap, 0)
+                        val result = textRecognizer.recognize(image)
+                        result.textBlocks
+                            .filter { it.boundingBox != null && it.text.length > 1 }
+                            .map { block ->
+                                val bounds = block.boundingBox!!
+                                val symBounds = block.lines.firstOrNull()?.elements?.firstOrNull()
+                                    ?.symbols?.firstOrNull()?.boundingBox
+                                TranslationBlock(
+                                    text = block.text,
+                                    width = bounds.width().toFloat(),
+                                    height = bounds.height().toFloat(),
+                                    symWidth = symBounds?.width()?.toFloat() ?: 12f,
+                                    symHeight = symBounds?.height()?.toFloat() ?: 12f,
+                                    angle = block.lines.firstOrNull()?.angle ?: 0f,
+                                    x = bounds.left.toFloat(),
+                                    y = (tileTop * TextRecognizer.SCALE_FACTOR).toFloat() + bounds.top.toFloat(),
+                                )
+                            }
+                    } finally {
+                        tileBitmap.recycle()
+                    }
                 }
-            } finally {
-                tileBitmap.recycle()
             }
         }
-    } finally {
+
+        val allBlocks = deferredBlocks.awaitAll().flatten()
         decoder.recycle()
+
+        if (allBlocks.isEmpty()) return@withContext PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
+
+        val enhancedW = origW * TextRecognizer.SCALE_FACTOR
+        val enhancedH = origH * TextRecognizer.SCALE_FACTOR
+        val pageTranslation = PageTranslation(imgWidth = enhancedW.toFloat(), imgHeight = enhancedH.toFloat())
+        
+        pageTranslation.blocks = smartMergeBlocks(allBlocks, enhancedW.toFloat(), enhancedH.toFloat())
+
+        for (block in pageTranslation.blocks) {
+            block.x /= TextRecognizer.SCALE_FACTOR
+            block.y /= TextRecognizer.SCALE_FACTOR
+            block.width /= TextRecognizer.SCALE_FACTOR
+            block.height /= TextRecognizer.SCALE_FACTOR
+        }
+        pageTranslation.imgWidth /= TextRecognizer.SCALE_FACTOR
+        pageTranslation.imgHeight /= TextRecognizer.SCALE_FACTOR
+
+        pageTranslation
     }
-
-    if (allBlocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
-
-    // ✅ الدمج على المقياس المكبّر (مثل recognizeSingleBitmap)
-    val enhancedW = origW * TextRecognizer.SCALE_FACTOR
-    val enhancedH = origH * TextRecognizer.SCALE_FACTOR
-    val pageTranslation = PageTranslation(imgWidth = enhancedW.toFloat(), imgHeight = enhancedH.toFloat())
-    
-    pageTranslation.blocks = smartMergeBlocks(allBlocks, enhancedW.toFloat(), enhancedH.toFloat())
-
-    // ✅ تقسيم الكل على SCALE_FACTOR في النهاية
-    for (block in pageTranslation.blocks) {
-        block.x /= TextRecognizer.SCALE_FACTOR
-        block.y /= TextRecognizer.SCALE_FACTOR
-        block.width /= TextRecognizer.SCALE_FACTOR
-        block.height /= TextRecognizer.SCALE_FACTOR
-    }
-    pageTranslation.imgWidth /= TextRecognizer.SCALE_FACTOR
-    pageTranslation.imgHeight /= TextRecognizer.SCALE_FACTOR
-
-    return pageTranslation
-}
-
 
     private fun recognizeSingleBitmap(bitmap: Bitmap, origW: Int, origH: Int): PageTranslation? {
         val image = InputImage.fromBitmap(bitmap, 0)
         val result = textRecognizer.recognize(image)
         val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
+
+        updateRollingAvg(blocks.size)
 
         if (blocks.isEmpty()) return PageTranslation(imgWidth = origW.toFloat(), imgHeight = origH.toFloat())
 
