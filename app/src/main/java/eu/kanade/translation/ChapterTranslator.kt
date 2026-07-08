@@ -105,19 +105,9 @@ class ChapterTranslator(
     private val finishRequests = ConcurrentHashMap<Long, AtomicBoolean>()
 
     companion object {
-        private const val MAX_OCR_HEIGHT = 4000
-        private const val REALTIME_IDLE_TIMEOUT_MS = 30_000L
-        private const val REALTIME_POLL_INTERVAL_MS = 150L
-        
-        // ─── إعدادات التوازي والمراقبة الذكية الجديدة ───
-        private const val ASPECT_RATIO_THRESHOLD = 2.5f 
-        private const val TILE_OCR_CONCURRENCY = 3      
-        private const val BATCH_CONCURRENCY_DEFAULT = 4 
-        private const val BATCH_CONCURRENCY_HIGH = 8    
-        private const val BUBBLE_COUNT_LOW_THRESHOLD = 4.0f
+        // تم نقل جميع الثوابت التقنية إلى TranslationPreferences لتصبح ديناميكية بالكامل
     }
 
-    private val tileOcrSemaphore = Semaphore(TILE_OCR_CONCURRENCY)
     private val longImageSemaphore = Semaphore(1)
 
     @Volatile
@@ -126,7 +116,9 @@ class ChapterTranslator(
 
     private fun updateRollingAvg(count: Int) {
         synchronized(rollingAvgLock) {
-            rollingAvgBubbles = (rollingAvgBubbles * 0.8f) + (count * 0.2f)
+            val historySize = translationPreferences.lowBubbleHistorySize().get().coerceAtLeast(1).toFloat()
+            val alpha = 1.0f / historySize
+            rollingAvgBubbles = (rollingAvgBubbles * (1.0f - alpha)) + (count * alpha)
         }
     }
 
@@ -400,8 +392,7 @@ class ChapterTranslator(
             val streams = getChapterPages(chapterPath)
             val totalPageCount = streams.size
 
-            val currentAvg = rollingAvgBubbles
-            val concurrencyLimit = if (currentAvg < BUBBLE_COUNT_LOW_THRESHOLD) BATCH_CONCURRENCY_HIGH else BATCH_CONCURRENCY_DEFAULT
+            val concurrencyLimit = translationPreferences.batchOcrConcurrency().get().coerceAtLeast(1)
             val batchSemaphore = Semaphore(concurrencyLimit)
 
             withContext(Dispatchers.Default) {
@@ -462,12 +453,17 @@ class ChapterTranslator(
 
                 val newStreams = translation.takePageStreams()
                 if (newStreams.isEmpty()) {
-                    delay(REALTIME_POLL_INTERVAL_MS)
+                    delay(translationPreferences.realtimePollIntervalMs().get().toLong())
                     continue
                 }
 
                 val currentAvg = rollingAvgBubbles
-                val concurrencyLimit = if (currentAvg < BUBBLE_COUNT_LOW_THRESHOLD) BATCH_CONCURRENCY_HIGH else BATCH_CONCURRENCY_DEFAULT
+                val lowBubbleThreshold = translationPreferences.lowBubbleCountThreshold().get().toFloat()
+                val concurrencyLimit = if (currentAvg < lowBubbleThreshold) {
+                    translationPreferences.realtimeLowBubbleConcurrency().get().coerceAtLeast(1)
+                } else {
+                    translationPreferences.batchOcrConcurrency().get().coerceAtLeast(1)
+                }
                 val realtimeSemaphore = Semaphore(concurrencyLimit)
 
                 withContext(Dispatchers.Default) {
@@ -490,7 +486,9 @@ class ChapterTranslator(
                                         if (opts.outWidth <= 0 || opts.outHeight <= 0) return@withContext null
 
                                         val aspectRatio = opts.outHeight.toFloat() / opts.outWidth.toFloat()
-                                        val isLongImage = opts.outHeight > MAX_OCR_HEIGHT && aspectRatio > ASPECT_RATIO_THRESHOLD
+                                        val maxOcrHeight = translationPreferences.maxOcrHeight().get()
+                                        val aspectRatioThreshold = translationPreferences.longImageAspectRatioThreshold().get().toFloatOrNull() ?: 2.5f
+                                        val isLongImage = opts.outHeight > maxOcrHeight && aspectRatio > aspectRatioThreshold
 
                                         if (!tmpFile.exists()) tmpFile.createNewFile()
                                         streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
@@ -562,7 +560,6 @@ class ChapterTranslator(
         }
     }
 
-    // [الإصلاح]: الدالة المحدثة لأخذ Snapshot آمن ومنع ConcurrentModificationException
     private suspend fun persistRealtimeProgress(
         translationMangaDir: UniFile,
         saveFile: String,
@@ -646,7 +643,10 @@ class ChapterTranslator(
         if (origW <= 0 || origH <= 0) return null
 
         val aspectRatio = origH.toFloat() / origW.toFloat()
-        if (origH <= MAX_OCR_HEIGHT || aspectRatio <= ASPECT_RATIO_THRESHOLD) {
+        val maxOcrHeight = translationPreferences.maxOcrHeight().get()
+        val aspectRatioThreshold = translationPreferences.longImageAspectRatioThreshold().get().toFloatOrNull() ?: 2.5f
+
+        if (origH <= maxOcrHeight || aspectRatio <= aspectRatioThreshold) {
             val bitmap = BitmapFactory.decodeFile(filePath) ?: return null
             try {
                 return recognizeSingleBitmap(bitmap, origW, origH)
@@ -673,7 +673,7 @@ class ChapterTranslator(
             fullBitmap.recycle()
         }
 
-        val splitLines = computeSmartSplitLines(origH, previewBlocks, MAX_OCR_HEIGHT)
+        val splitLines = computeSmartSplitLines(origH, previewBlocks, maxOcrHeight)
 
         if (splitLines.size <= 2) {
             val bitmap = BitmapFactory.decodeFile(filePath) ?: return null
@@ -786,9 +786,13 @@ class ChapterTranslator(
             pairs.add(Pair(splitLines[i], splitLines[i + 1]))
         }
 
+        // إنشاء سيموفور محلي لكل صورة طويلة بناءً على الإعدادات المتغيرة
+        val tileConcurrency = translationPreferences.tileOcrConcurrency().get().coerceAtLeast(1)
+        val localTileSemaphore = Semaphore(tileConcurrency)
+
         val deferredBlocks = pairs.map { (tileTop, tileBottom) ->
             async {
-                tileOcrSemaphore.withPermit {
+                localTileSemaphore.withPermit {
                     ensureActive()
                     val tileHeight = tileBottom - tileTop
                     if (tileHeight <= 0) return@async emptyList()
