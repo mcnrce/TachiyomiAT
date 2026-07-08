@@ -43,6 +43,7 @@ object SettingsTranslationScreen : SearchableSettings {
             getTranslationLangGroup(translationPreferences),
             getTranslatioEngineGroup(translationPreferences),
             getTranslatioAdvancedGroup(translationPreferences),
+            getTranslationPerformanceGroup(translationPreferences), // القسم الجديد للأداء
         )
     }
 
@@ -114,6 +115,89 @@ object SettingsTranslationScreen : SearchableSettings {
                     pref = translationPreferences.translationFilteredWords(),
                     title = stringResource(ATMR.strings.pref_translation_filtered_words),
                     subtitle = stringResource(ATMR.strings.pref_sub_translation_filtered_words),
+                ),
+            ),
+        )
+    }
+
+    // ─── القسم الجديد: إعدادات الأداء والتقطيع الذكي ────────────────────────────────────
+    @Composable
+    private fun getTranslationPerformanceGroup(
+        translationPreferences: TranslationPreferences,
+    ): Preference.PreferenceGroup {
+        return Preference.PreferenceGroup(
+            title = "الأداء والتعرف المتقدم (OCR & Performance)",
+            preferenceItems = persistentListOf(
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.maxOcrHeight(),
+                    title = "الحد الأقصى لارتفاع الصورة (Webtoon)",
+                    subtitle = "الصور الأطول سيتم تقطيعها بذكاء للحفاظ على دقة الـ OCR.",
+                    entries = listOf(1500, 2000, 2500, 3000, 4000).associateWith { "$it بكسل" }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.EditTextPreference(
+                    pref = translationPreferences.longImageAspectRatioThreshold(),
+                    title = "نسبة العرض للطول للويب تون",
+                    subtitle = "الحد الأدنى لاعتبار الصورة ويب تون طويل (مثال: 2.5).",
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.batchOcrConcurrency(),
+                    title = "توازي الصفحات (الترجمة العادية)",
+                    subtitle = "عدد الصفحات التي تتم معالجتها معاً في الخلفية.",
+                    entries = listOf(1, 2, 3, 4, 6, 8).associateWith { "$it صفحات" }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.tileOcrConcurrency(),
+                    title = "توازي شرائح الصور الطويلة",
+                    subtitle = "عدد الشرائح المعالجة معاً للصورة الطويلة الواحدة.",
+                    entries = listOf(1, 2, 3, 4, 6, 8).associateWith { "$it شرائح" }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.lowBubbleCountThreshold(),
+                    title = "حد الفقاعات المنخفض (وضع الأكشن)",
+                    subtitle = "متوسط الفقاعات لتفعيل المعالجة السريعة (Fast-mode).",
+                    entries = listOf(2, 4, 6, 8, 10).associateWith { "$it فقاعات" }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.lowBubbleHistorySize(),
+                    title = "حجم سجل الفقاعات",
+                    subtitle = "عدد الصفحات لحساب متوسط كثافة النصوص.",
+                    entries = listOf(3, 5, 8, 10).associateWith { "$it صفحات" }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.realtimeLowBubbleConcurrency(),
+                    title = "توازي الصفحات (الترجمة الفورية السريعة)",
+                    subtitle = "زيادة السرعة في مشاهد الأكشن خفيفة النصوص.",
+                    entries = listOf(1, 2, 3, 4, 6, 8).associateWith { "$it صفحات" }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.realtimeIdleTimeoutSeconds(),
+                    title = "مهلة الخمول للترجمة الفورية",
+                    subtitle = "إيقاف المترجم لتوفير البطارية عند توقفك عن القراءة.",
+                    entries = listOf(1, 3, 5, 10, 15, 30, 45, 60, 120, 300).associateWith { "$it ثانية" }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.realtimePollIntervalMs(),
+                    title = "معدل فحص الصفحات (الترجمة الفورية)",
+                    subtitle = "الزمن بين محاولات الفحص. رقم أقل = استجابة أسرع.",
+                    entries = listOf(10, 20, 30, 40, 50, 100, 150, 250, 500).associateWith { "$it ملي ثانية" }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.realtimePreloadMemoryBudgetMb(),
+                    title = "ميزانية الذاكرة للتحميل المسبق",
+                    subtitle = "الحد الأقصى للرام المسموح به للتحميل المسبق (Preload).",
+                    entries = listOf(50, 100, 150, 200, 300, 400, 250, 400, 500).associateWith { "$it MB" }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.realtimeDefaultPreloadCount(),
+                    title = "العدد الافتراضي للتحميل المسبق",
+                    subtitle = "عدد الصفحات المترجمة مسبقاً قبل وصولك إليها.",
+                    entries = listOf(1, 2, 3, 4, 5).associateWith { "$it صفحات" }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.realtimeMaxPreloadCount(),
+                    title = "الحد الأقصى المطلق للتحميل المسبق",
+                    subtitle = "يمنع تحميل عدد مفرط من الصفحات مهما كانت الميزانية.",
+                    entries = listOf(1, 2, 4, 6, 8, 10).associateWith { "$it صفحات" }.toImmutableMap(),
                 ),
             ),
         )
