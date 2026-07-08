@@ -38,7 +38,6 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
 
     private val scope = MainScope()
     
-    // [تحسين]: متغير لحفظ عملية الحساب الحالية لإلغائها عند التقليب السريع
     private var limitCalculationJob: Job? = null
 
     val pager = createPager()
@@ -73,7 +72,6 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         pager.id = R.id.reader_pager
         pager.adapter = adapter
         
-        // [تحسين]: تشغيل الحساب الذكي الأولي في الخلفية مع حفظ المهمة
         limitCalculationJob = scope.launch {
             pager.offscreenPageLimit = computeOffscreenPageLimit()
         }
@@ -86,7 +84,6 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
                     }
                     onPageChange(position)
                     
-                    // [تحسين]: إلغاء الحساب القديم وبدء حساب جديد لتوفير المعالج والبطارية
                     limitCalculationJob?.cancel()
                     limitCalculationJob = scope.launch {
                         pager.offscreenPageLimit = computeOffscreenPageLimit()
@@ -142,9 +139,8 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         }
     }
 
-    // ─── الحساب الذكي للتحميل المسبق للترجمة (Memory Budget) ───
+    // ─── الحساب الذكي للتحميل المسبق للترجمة (Memory Budget الديناميكي) ───
     
-    // [تحسين]: دالة suspend مدعومة بـ Coroutines
     private suspend fun computeOffscreenPageLimit(): Int {
         val translationPreferences = Injekt.get<tachiyomi.domain.translation.TranslationPreferences>()
         val mangaTranslationPreferences = Injekt.get<tachiyomi.domain.translation.MangaTranslationPreferences>()
@@ -162,14 +158,24 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         // إذا لم تكن الترجمة مفعلة، نحافظ على تحميل صفحة واحدة لتقليل الضغط
         if (!realtimeEnabled) return 1 
 
-        val estimatedPageBytes = estimateCurrentPageMemoryBytes()
-        if (estimatedPageBytes <= 0L) return DEFAULT_REALTIME_OFFSCREEN_LIMIT
+        // قراءة الإعدادات الديناميكية من TranslationPreferences
+        val defaultPreload = translationPreferences.realtimeDefaultPreloadCount().get()
+        val maxPreload = translationPreferences.realtimeMaxPreloadCount().get()
+        val memoryBudgetMb = translationPreferences.realtimePreloadMemoryBudgetMb().get()
+        val memoryBudgetBytes = memoryBudgetMb * 1024L * 1024L // تحويل الميجابايت إلى بايت
 
-        val maxPagesInBudget = (MEMORY_BUDGET_BYTES / estimatedPageBytes).toInt()
-        return maxPagesInBudget.coerceIn(1, MAX_REALTIME_OFFSCREEN_LIMIT)
+        val estimatedPageBytes = estimateCurrentPageMemoryBytes()
+        
+        // إذا فشلنا في حساب الحجم، نستخدم العدد الافتراضي
+        if (estimatedPageBytes <= 0L) return defaultPreload
+
+        // حساب عدد الصفحات التي يمكن للرام تحملها
+        val maxPagesInBudget = (memoryBudgetBytes / estimatedPageBytes).toInt()
+        
+        // إرجاع القيمة مع ضمان عدم تخطي الحد الأقصى المطلق أو النزول عن 1
+        return maxPagesInBudget.coerceIn(1, maxPreload)
     }
 
-    // [تحسين]: نقل العمليات الثقيلة (I/O) إلى الخيط الخلفي لمنع التشنجات
     private suspend fun estimateCurrentPageMemoryBytes(): Long = withContext(Dispatchers.IO) {
         val currentState = activity.viewModel.state.value
         val currentPage = currentState.currentChapter?.pages?.getOrNull(currentState.currentPage - 1) ?: return@withContext 0L
@@ -185,14 +191,6 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             0L
         }
     }
-
-    companion object {
-        // ميزانية الذاكرة (150 ميغابايت) لضمان عدم حدوث OutOfMemory
-        private const val MEMORY_BUDGET_BYTES = 150L * 1024 * 1024
-        private const val DEFAULT_REALTIME_OFFSCREEN_LIMIT = 2
-        private const val MAX_REALTIME_OFFSCREEN_LIMIT = 6
-    }
-    // ────────────────────────────────────────────────────────────
 
     override fun destroy() {
         super.destroy()
