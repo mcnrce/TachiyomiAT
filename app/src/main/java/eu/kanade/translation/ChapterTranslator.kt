@@ -477,10 +477,9 @@ class ChapterTranslator(
                                     return@async
                                 }
 
-                                                                val tmpFile = File(context.cacheDir, "ocr_tmp_rt_${System.nanoTime()}.jpg")
+                                val tmpFile = File(context.cacheDir, "ocr_tmp_rt_${System.nanoTime()}.jpg")
                                 try {
                                     val pageTranslation = withContext(Dispatchers.IO) {
-                                        // كشف الأبعاد فقط لمعرفة ما إذا كانت الصورة ويبتون أم صفحة عادية
                                         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                                         streamFn().use { stream -> BitmapFactory.decodeStream(stream, null, opts) }
                                         
@@ -494,9 +493,6 @@ class ChapterTranslator(
                                         if (!tmpFile.exists()) tmpFile.createNewFile()
                                         streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
                                         
-                                        // 🚀 تم إزالة الفحص الأولي المكرر هنا!
-                                        // سنرسل الصورة فوراً للمحرك الأساسي، وهو سيتجاهلها تلقائياً إذا كانت فارغة.
-
                                         if (!isLongImage) {
                                             val bitmap = BitmapFactory.decodeFile(tmpFile.absolutePath)
                                             bitmap?.let { 
@@ -504,39 +500,6 @@ class ChapterTranslator(
                                                 finally { it.recycle() } 
                                             }
                                         } else {
-                                            longImageSemaphore.withPermit { recognizePage(tmpFile.absolutePath) }
-                                        }
-                                    }
-
-                                    // إذا وجدت فقاعات، نقوم بترجمتها
-                                    if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
-                                        withContext(Dispatchers.IO) { 
-                                            translatorMutex.withLock { 
-                                                textTranslator.translate(mutableMapOf(fileName to pageTranslation)) 
-                                            }
-                                        }
-                                        
-                                        mapUpdateMutex.withLock {
-                                            translation.existingPages[fileName] = pageTranslation
-                                        }
-                                        translation.emitPageTranslated(fileName, pageTranslation)
-
-                                        scope.launch {
-                                            persistRealtimeProgress(translationMangaDir, saveFile, translation)
-                                        }
-                                    // إذا لم توجد فقاعات (الصفحة فارغة تماماً)، نحفظها كفارغة لتخطيها مستقبلاً
-                                    } else if (pageTranslation != null && pageTranslation.blocks.isEmpty()) {
-                                        mapUpdateMutex.withLock {
-                                            translation.existingPages[fileName] = pageTranslation
-                                        }
-                                        translation.emitPageTranslated(fileName, pageTranslation)
-                                    }
-
-                                } catch (e: Exception) {
-                                    logcat(LogPriority.ERROR, e) { "خطأ في معالجة الصفحة: $fileName" }
-                                } finally {
-                                    if (tmpFile.exists()) tmpFile.delete()
-                                } else {
                                             longImageSemaphore.withPermit { recognizePage(tmpFile.absolutePath) }
                                         }
                                     }
