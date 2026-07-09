@@ -100,12 +100,16 @@ class ChapterTranslator(
     private var textRecognizer: TextRecognizer
     private var textTranslator: TextTranslator
 
+    // أقفال التزامن لحماية محركات ML Kit والبيانات من الانهيار أثناء التوازي
     private val jsonWriteMutex = Mutex()
+    private val ocrMutex = Mutex()
+    private val translatorMutex = Mutex()
+    private val mapUpdateMutex = Mutex()
 
     private val finishRequests = ConcurrentHashMap<Long, AtomicBoolean>()
 
     companion object {
-        // تم نقل جميع الثوابت التقنية إلى TranslationPreferences لتصبح ديناميكية بالكامل
+        // الثوابت تم نقلها للإعدادات لتصبح ديناميكية
     }
 
     private val longImageSemaphore = Semaphore(1)
@@ -419,7 +423,12 @@ class ChapterTranslator(
             }
 
             if (pages.isNotEmpty()) {
-                withContext(Dispatchers.IO) { textTranslator.translate(pages) }
+                withContext(Dispatchers.IO) {
+                    // حماية محرك الترجمة بالقفل
+                    translatorMutex.withLock {
+                        textTranslator.translate(pages)
+                    }
+                }
                 writeTranslationFile(translationMangaDir, saveFile, pages)
             }
             
@@ -472,8 +481,13 @@ class ChapterTranslator(
                             realtimeSemaphore.withPermit {
                                 currentCoroutineContext().ensureActive()
 
-                                if (translation.existingPages.containsKey(fileName)) {
-                                    translation.emitPageTranslated(fileName, translation.existingPages[fileName]!!)
+                                // قراءة آمنة من الـ Map
+                                val alreadyTranslated = mapUpdateMutex.withLock { 
+                                    translation.existingPages.containsKey(fileName) 
+                                }
+                                if (alreadyTranslated) {
+                                    val existingPage = mapUpdateMutex.withLock { translation.existingPages[fileName]!! }
+                                    translation.emitPageTranslated(fileName, existingPage)
                                     return@async
                                 }
 
@@ -493,7 +507,6 @@ class ChapterTranslator(
                                         if (!tmpFile.exists()) tmpFile.createNewFile()
                                         streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
                                         
-                                        // فحص أولي سريع لتخطي الصفحات الفارغة
                                         val previewOptions = BitmapFactory.Options().apply { inSampleSize = 4 }
                                         val previewBitmap = try {
                                             BitmapFactory.decodeFile(tmpFile.absolutePath, previewOptions)
@@ -501,7 +514,8 @@ class ChapterTranslator(
 
                                         val hasText = if (previewBitmap != null) {
                                             val previewImage = InputImage.fromBitmap(previewBitmap, 0)
-                                            val previewText = textRecognizer.recognize(previewImage)
+                                            // 🔒 حماية محرك الـ OCR أثناء المعاينة
+                                            val previewText = ocrMutex.withLock { textRecognizer.recognize(previewImage) }
                                             previewBitmap.recycle()
                                             previewText.textBlocks.isNotEmpty()
                                         } else true
@@ -523,17 +537,28 @@ class ChapterTranslator(
                                     }
 
                                     if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
-                                        withContext(Dispatchers.IO) { textTranslator.translate(mutableMapOf(fileName to pageTranslation)) }
+                                        withContext(Dispatchers.IO) { 
+                                            // 🔒 حماية محرك الترجمة
+                                            translatorMutex.withLock { 
+                                                textTranslator.translate(mutableMapOf(fileName to pageTranslation)) 
+                                            }
+                                        }
                                         
-                                        translation.existingPages[fileName] = pageTranslation
+                                        // 🔒 تحديث الـ Map بأمان
+                                        mapUpdateMutex.withLock {
+                                            translation.existingPages[fileName] = pageTranslation
+                                        }
                                         translation.emitPageTranslated(fileName, pageTranslation)
 
                                         scope.launch {
                                             persistRealtimeProgress(translationMangaDir, saveFile, translation)
                                         }
                                     } else if (pageTranslation != null && pageTranslation.blocks.isEmpty()) {
-                                         translation.existingPages[fileName] = pageTranslation
-                                         translation.emitPageTranslated(fileName, pageTranslation)
+                                        // 🔒 تحديث الـ Map بأمان
+                                        mapUpdateMutex.withLock {
+                                            translation.existingPages[fileName] = pageTranslation
+                                        }
+                                        translation.emitPageTranslated(fileName, pageTranslation)
                                     }
 
                                 } catch (e: Exception) {
@@ -565,7 +590,8 @@ class ChapterTranslator(
         saveFile: String,
         translation: Translation,
     ) {
-        val pagesSnapshot = translation.existingPages.toMap()
+        // 🔒 أخذ لقطة للبيانات بأمان لمنع الانهيار أثناء التخزين المؤقت
+        val pagesSnapshot = mapUpdateMutex.withLock { translation.existingPages.toMap() }
         
         jsonWriteMutex.withLock {
             withContext(Dispatchers.IO) {
@@ -658,7 +684,8 @@ class ChapterTranslator(
         val fullBitmap = BitmapFactory.decodeFile(filePath) ?: return null
         val previewBlocks = try {
             val fullImage = InputImage.fromBitmap(fullBitmap, 0)
-            val fullResult = textRecognizer.recognize(fullImage)
+            // 🔒 حماية محرك الـ OCR أثناء المعاينة للصور الطويلة
+            val fullResult = ocrMutex.withLock { textRecognizer.recognize(fullImage) }
             fullResult.textBlocks
                 .filter { it.boundingBox != null && it.text.length > 1 }
                 .mapNotNull { block ->
@@ -786,7 +813,6 @@ class ChapterTranslator(
             pairs.add(Pair(splitLines[i], splitLines[i + 1]))
         }
 
-        // إنشاء سيموفور محلي لكل صورة طويلة بناءً على الإعدادات المتغيرة
         val tileConcurrency = translationPreferences.tileOcrConcurrency().get().coerceAtLeast(1)
         val localTileSemaphore = Semaphore(tileConcurrency)
 
@@ -801,7 +827,8 @@ class ChapterTranslator(
 
                     try {
                         val image = InputImage.fromBitmap(tileBitmap, 0)
-                        val result = textRecognizer.recognize(image)
+                        // 🔒 حماية الـ OCR داخل الشرائح
+                        val result = ocrMutex.withLock { textRecognizer.recognize(image) }
                         result.textBlocks
                             .filter { it.boundingBox != null && it.text.length > 1 }
                             .map { block ->
@@ -849,9 +876,10 @@ class ChapterTranslator(
         pageTranslation
     }
 
-    private fun recognizeSingleBitmap(bitmap: Bitmap, origW: Int, origH: Int): PageTranslation? {
+    private suspend fun recognizeSingleBitmap(bitmap: Bitmap, origW: Int, origH: Int): PageTranslation? {
         val image = InputImage.fromBitmap(bitmap, 0)
-        val result = textRecognizer.recognize(image)
+        // 🔒 حماية الـ OCR للصور المفردة
+        val result = ocrMutex.withLock { textRecognizer.recognize(image) }
         val blocks = result.textBlocks.filter { it.boundingBox != null && it.text.length > 1 }
 
         updateRollingAvg(blocks.size)
