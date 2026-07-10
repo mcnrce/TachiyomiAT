@@ -154,7 +154,7 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         }
 
         // الكاش الافتراضي لـ Webtoon RecyclerView لمنع التقطيع إذا الترجمة معطلة
-        val defaultRecyclerCache = 4 
+        val defaultRecyclerCache = 1
 
         if (!realtimeEnabled) return defaultRecyclerCache
 
