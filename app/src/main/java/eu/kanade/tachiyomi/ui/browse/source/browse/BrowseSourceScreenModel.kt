@@ -55,6 +55,9 @@ import uy.kohesive.injekt.api.get
 import java.time.Instant
 import eu.kanade.tachiyomi.source.model.Filter as SourceModelFilter
 
+// 🚀 استيراد المترجم الخاص بنا
+import eu.kanade.translation.MetadataTranslator
+
 class BrowseSourceScreenModel(
     private val sourceId: Long,
     listingQuery: String?,
@@ -77,6 +80,9 @@ class BrowseSourceScreenModel(
     var displayMode by sourcePreferences.sourceDisplayMode().asState(screenModelScope)
 
     val source = sourceManager.getOrStub(sourceId)
+    
+    // 🚀 جلب كائن المترجم المسجل في AppModule
+    private val metadataTranslator: MetadataTranslator = Injekt.get()
 
     init {
         if (source is CatalogueSource) {
@@ -116,6 +122,11 @@ class BrowseSourceScreenModel(
                     networkToLocalManga.await(it.toDomainManga(sourceId))
                         .let { localManga -> getManga.subscribe(localManga.url, localManga.source) }
                         .filterNotNull()
+                        .map { manga ->
+                            // 🚀 اعتراض عنوان المانجا القادم من المصدر وترجمته فوراً في الخلفية
+                            val translatedTitle = metadataTranslator.translateTitle(manga.title)
+                            manga.copy(title = translatedTitle)
+                        }
                         .stateIn(ioCoroutineScope)
                 }
                     .filter { !hideInLibraryItems || !it.value.favorite }
