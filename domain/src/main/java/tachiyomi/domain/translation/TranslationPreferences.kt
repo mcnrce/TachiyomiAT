@@ -113,4 +113,23 @@ class TranslationPreferences(
      * واحدة حتى لو كانت صغيرة الحجم.
      */
     fun realtimeMaxPreloadCount() = preferenceStore.getInt("realtime_max_preload_count", 6)
+
+        // ─── ترجمة بيانات المانجا (Metadata Translation) ───────────────────────
+    // إعدادات لترجمة النصوص الحقيقية مثل الأوصاف، العناوين، والوسوم.
+
+    // التفعيل العام لميزة ترجمة النصوص
+    fun metadataTranslationEnabled() = preferenceStore.getBoolean("metadata_translation_enabled", false)
+
+    // اختيار لغة الهدف لكل جزء بشكل مستقل
+    fun translateMangaTitleTo() = preferenceStore.getString("metadata_target_lang_title", "ar")
+    fun translateMangaDescriptionTo() = preferenceStore.getString("metadata_target_lang_description", "ar")
+    fun translateMangaTagsTo() = preferenceStore.getString("metadata_target_lang_tags", "ar")
+    fun translateSourceUiTo() = preferenceStore.getString("metadata_target_lang_ui", "ar") // لترجمة واجهة الإضافة
+
+    // محرك الترجمة الخاص بالنصوص (مستقل عن محرك ترجمة الصور)
+    // يُفضل هنا استخدام موديلات سريعة ورخيصة لأنها تعمل باستمرار
+    fun metadataTranslationEngine() = preferenceStore.getInt("metadata_translation_engine", 0)
+    fun metadataTranslationEngineModel() = preferenceStore.getString("metadata_translation_engine_model", "gemini-1.5-flash") 
+    fun metadataTranslationEngineApiKey() = preferenceStore.getString("metadata_translation_engine_api_key", "")
+
 }
