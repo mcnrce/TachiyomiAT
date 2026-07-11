@@ -67,6 +67,11 @@ import tachiyomi.domain.manga.model.Manga
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.screens.LoadingScreen
 
+// 🚀 الاستيرادات الخاصة بالترجمة
+import eu.kanade.translation.MetadataTranslator
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
+
 class MangaScreen(
     private val mangaId: Long,
     val fromSource: Boolean = false,
@@ -102,6 +107,43 @@ class MangaScreen(
         val successState = state as MangaScreenModel.State.Success
         val isHttpSource = remember { successState.source is HttpSource }
 
+        // ----------------------------------------------------
+        // 🚀 اعتراض البيانات قبل العرض (UI Interception) للترجمة
+        // ----------------------------------------------------
+        
+        var displayTitle by remember(successState.manga.title) { mutableStateOf(successState.manga.title) }
+        var displayDescription by remember(successState.manga.description) { mutableStateOf(successState.manga.description) }
+        var displayGenres by remember(successState.manga.genre) { mutableStateOf(successState.manga.genre) }
+
+        val metadataTranslator = remember { Injekt.get<MetadataTranslator>() }
+        
+        LaunchedEffect(successState.manga) {
+            launch { displayTitle = metadataTranslator.translateTitle(successState.manga.title) }
+            
+            successState.manga.description?.let { desc ->
+                launch { displayDescription = metadataTranslator.translateDescription(desc) }
+            }
+            
+            successState.manga.genre?.let { genres ->
+                launch { 
+                    // تحويل القائمة لنص واحد لترجمته كفقاعة واحدة، ثم إعادته لقائمة
+                    val joinedGenres = genres.joinToString(", ")
+                    val translatedText = metadataTranslator.translateTags(joinedGenres)
+                    displayGenres = translatedText.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                }
+            }
+        }
+
+        // دمج النصوص المترجمة في نسخة "وهمية" للواجهة فقط
+        val displayManga = successState.manga.copy(
+            title = displayTitle,
+            description = displayDescription,
+            genre = displayGenres
+        )
+        
+        val displaySuccessState = successState.copy(manga = displayManga)
+        // ----------------------------------------------------
+
         LaunchedEffect(successState.manga, screenModel.source) {
             if (isHttpSource) {
                 try {
@@ -114,8 +156,9 @@ class MangaScreen(
             }
         }
 
+        // نمرر `displaySuccessState` للواجهة فقط، ونستخدم `screenModel.manga` الأصلي للإجراءات
         MangaScreen(
-            state = successState,
+            state = displaySuccessState,
             snackbarHostState = screenModel.snackbarHostState,
             nextUpdate = successState.manga.expectedNextUpdate,
             isTabletUi = isTabletUi(),
@@ -124,7 +167,6 @@ class MangaScreen(
             onBackClicked = navigator::pop,
             onChapterClicked = { openChapter(context, it) },
             onDownloadChapter = screenModel::runChapterDownloadActions.takeIf { !successState.source.isLocalOrStub() },
-            // TachiyomiAT
             onTranslationChapter = screenModel::runChapterTranslationActions,
             onAddToLibraryClicked = {
                 screenModel.toggleFavorite()
