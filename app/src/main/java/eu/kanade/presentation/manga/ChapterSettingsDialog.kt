@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.PeopleAlt
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -21,6 +22,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -33,6 +35,7 @@ import eu.kanade.presentation.components.TabbedDialogPaddings
 import kotlinx.collections.immutable.persistentListOf
 import tachiyomi.core.common.preference.TriState
 import tachiyomi.domain.manga.model.Manga
+import tachiyomi.domain.translation.TranslationPreferences
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.LabeledCheckbox
 import tachiyomi.presentation.core.components.RadioItem
@@ -40,6 +43,8 @@ import tachiyomi.presentation.core.components.SortItem
 import tachiyomi.presentation.core.components.TriStateItem
 import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.theme.active
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 
 @Composable
 fun ChapterSettingsDialog(
@@ -118,6 +123,14 @@ fun ChapterSettingsDialog(
                         displayMode = manga?.displayMode ?: 0,
                         onItemSelected = onDisplayModeChanged,
                     )
+                    
+                    HorizontalDivider(
+                        modifier = Modifier
+                            .padding(vertical = 8.dp)
+                            .padding(horizontal = TabbedDialogPaddings.Horizontal),
+                    )
+                    
+                    TranslationSettingsSection()
                 }
             }
         }
@@ -261,4 +274,52 @@ private fun SetAsDefaultDialog(
             }
         },
     )
+}
+
+@Composable
+private fun TranslationSettingsSection() {
+    val preferences = remember { Injekt.get<TranslationPreferences>() }
+
+    val isEnabled by preferences.metadataTranslationEnabled().collectAsState()
+    val translateTitle by preferences.translateMangaTitle().collectAsState()
+    val translateDesc by preferences.translateMangaDescription().collectAsState()
+    val translateTags by preferences.translateMangaTags().collectAsState()
+
+    Column(
+        modifier = Modifier
+            .padding(horizontal = TabbedDialogPaddings.Horizontal)
+            .padding(vertical = 8.dp),
+    ) {
+        Text(
+            text = "إعدادات الترجمة",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(bottom = 8.dp),
+        )
+
+        LabeledCheckbox(
+            label = "تفعيل ترجمة البيانات الوصفية (Metadata)",
+            checked = isEnabled,
+            onCheckedChange = { preferences.metadataTranslationEnabled().set(it) },
+        )
+
+        if (isEnabled) {
+            Column(modifier = Modifier.padding(start = 24.dp)) {
+                LabeledCheckbox(
+                    label = "ترجمة العنوان",
+                    checked = translateTitle,
+                    onCheckedChange = { preferences.translateMangaTitle().set(it) },
+                )
+                LabeledCheckbox(
+                    label = "ترجمة الوصف",
+                    checked = translateDesc,
+                    onCheckedChange = { preferences.translateMangaDescription().set(it) },
+                )
+                LabeledCheckbox(
+                    label = "ترجمة التصنيفات",
+                    checked = translateTags,
+                    onCheckedChange = { preferences.translateMangaTags().set(it) },
+                )
+            }
+        }
+    }
 }
