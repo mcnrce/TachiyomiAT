@@ -8,6 +8,8 @@ import android.graphics.BitmapRegionDecoder
 import android.graphics.Rect
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
+import com.google.mlkit.nl.languageid.LanguageIdentification
+import kotlinx.coroutines.tasks.await
 import com.hippo.unifile.UniFile
 import eu.kanade.tachiyomi.data.download.DownloadProvider
 import eu.kanade.tachiyomi.source.online.HttpSource
@@ -266,24 +268,27 @@ class ChapterTranslator(
             return
         }
 
-        val fromLang = resolveSourceLanguageForManga(manga.id, source, manga.title) ?: return
+        // تم وضعها داخل scope.launch لأن resolveSourceLanguageForManga أصبحت دالة تعليق (suspend)
+        scope.launch {
+            val fromLang = resolveSourceLanguageForManga(manga.id, source, manga.title, pageStreams) ?: return@launch
 
-        val existingOnDisk = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
-            ?.let { runCatching { readTranslationFile(it) }.getOrNull() }
-            ?: emptyMap()
+            val existingOnDisk = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
+                ?.let { runCatching { readTranslationFile(it) }.getOrNull() }
+                ?: emptyMap()
 
-        val translation = Translation(
-            source = source,
-            manga = manga,
-            chapter = chapter,
-            fromLang = fromLang,
-            toLang = toLang,
-            isRealtimeMode = true,
-        )
-        translation.existingPages.putAll(existingOnDisk)
-        translation.addPageStreams(pageStreams)
-        addToQueue(translation)
-        start()
+            val translation = Translation(
+                source = source,
+                manga = manga,
+                chapter = chapter,
+                fromLang = fromLang,
+                toLang = toLang,
+                isRealtimeMode = true,
+            )
+            translation.existingPages.putAll(existingOnDisk)
+            translation.addPageStreams(pageStreams)
+            addToQueue(translation)
+            start()
+        }
     }
 
     private fun sourceLanguageMatchesTarget(sourceLang: String, toLang: TextTranslatorLanguage): Boolean {
@@ -306,14 +311,81 @@ class ChapterTranslator(
         return true
     }
 
-    private fun resolveSourceLanguageForManga(mangaId: Long, source: HttpSource, mangaTitle: String): TextRecognizerLanguage? {
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ═══  التعرف التلقائي الذكي على اللغة (ML Kit + Title + Prefs) ════════════
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private suspend fun resolveSourceLanguageForManga(
+        mangaId: Long, 
+        source: HttpSource, 
+        mangaTitle: String,
+        pageStreams: List<Pair<String, () -> InputStream>>
+    ): TextRecognizerLanguage? {
+        
+        // 1. الأولوية للإعداد اليدوي
         val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
         if (hasOverride) {
             return TextRecognizerLanguage.fromPref(mangaTranslationPreferences.sourceLanguage(mangaId))
         }
+
+        // 2. محاولة الكشف من العنوان
         val titleLang = detectLanguageFromMangaTitle(mangaTitle)
         if (titleLang != null) return titleLang
+
+        // 3. فحص الصفحات بدءاً من الصفحة 3 (index 2) باستخدام ML Kit
+        // نأخذ عينة من أول 3 صفحات متاحة بعد الغلاف والصفحة التوضيحية
+        val pagesToSample = pageStreams.drop(2).take(3) 
+        
+        for ((_, streamFn) in pagesToSample) {
+            val text = extractTextFromStream(streamFn)
+            if (!text.isNullOrBlank()) {
+                val (detectedLang, confidence) = detectLanguageWithMLKit(text)
+                // إذا كانت الثقة عالية (أكثر من 80%)، نعتمدها فوراً
+                if (detectedLang != null && confidence > 0.8f) {
+                    return detectedLang
+                }
+            }
+        }
+
+        // 4. الحل الأخير: الاعتماد على لغة الإضافة (Extension)
         return autoDetectSourceLanguage(source.lang)
+    }
+
+    private suspend fun detectLanguageWithMLKit(text: String): Pair<TextRecognizerLanguage?, Float> {
+        val identifier = LanguageIdentification.getClient()
+        return try {
+            val possibilities = identifier.identifyPossibleLanguages(text).await()
+            val best = possibilities.maxByOrNull { it.confidence }
+            
+            if (best == null || best.languageCode == "und") return Pair(null, 0f)
+
+            // مطابقة رموز لغة ML Kit مع الـ Enums المتاحة في تطبيقك
+            val lang = when (best.languageCode) {
+                "zh" -> TextRecognizerLanguage.CHINESE
+                "ja" -> TextRecognizerLanguage.JAPANESE
+                "ko" -> TextRecognizerLanguage.KOREAN
+                "en", "fr", "de", "es", "it", "pt", "nl", "pl", "tr", "id", "vi", "ro", "hu", "cs", "sk", "hr", "sl", "da", "sv", "no", "fi" -> TextRecognizerLanguage.ENGLISH
+                else -> null
+            }
+            Pair(lang, best.confidence)
+        } catch (e: Exception) {
+            Pair(null, 0f)
+        }
+    }
+
+    private suspend fun extractTextFromStream(streamFn: () -> InputStream): String? = withContext(Dispatchers.IO) {
+        try {
+            streamFn().use { stream ->
+                val bitmap = BitmapFactory.decodeStream(stream) ?: return@withContext null
+                val inputImage = InputImage.fromBitmap(bitmap, 0)
+                // استخدام معالج النصوص الحالي المتاح في الكلاس
+                val result = textRecognizer.recognize(inputImage) 
+                bitmap.recycle()
+                result.text
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     private fun detectLanguageFromMangaTitle(mangaTitle: String): TextRecognizerLanguage? {
@@ -387,7 +459,6 @@ class ChapterTranslator(
                 translation.manga.title,
                 translation.source,
             )!!
-
             val pages = java.util.concurrent.ConcurrentHashMap<String, PageTranslation>()
             val streams = getChapterPages(chapterPath)
             val totalPageCount = streams.size
@@ -400,6 +471,7 @@ class ChapterTranslator(
                     async {
                         batchSemaphore.withPermit {
                             currentCoroutineContext().ensureActive()
+                          
                             val tmpFile = File(context.cacheDir, "ocr_tmp_${System.nanoTime()}.jpg")
                             try {
                                 if (!tmpFile.exists()) tmpFile.createNewFile()
@@ -768,7 +840,6 @@ class ChapterTranslator(
             pairs.add(Pair(splitLines[i], splitLines[i + 1]))
         }
 
-        // إنشاء سيموفور محلي لكل صورة طويلة بناءً على الإعدادات المتغيرة
         val tileConcurrency = translationPreferences.tileOcrConcurrency().get().coerceAtLeast(1)
         val localTileSemaphore = Semaphore(tileConcurrency)
 
@@ -977,9 +1048,7 @@ class ChapterTranslator(
                         }
 
                         val dist = abs(dx) + abs(dy)
-                        if (nextCollisions < bestCollisions ||
-                            (nextCollisions == bestCollisions && dist < bestDist)
-                        ) {
+                        if (nextCollisions < bestCollisions || (nextCollisions == bestCollisions && dist < bestDist)) {
                             bestCollisions = nextCollisions
                             bestDist = dist
                             bestX = testX
