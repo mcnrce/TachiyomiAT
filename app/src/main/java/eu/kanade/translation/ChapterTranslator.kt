@@ -351,16 +351,17 @@ class ChapterTranslator(
         return autoDetectSourceLanguage(source.lang)
     }
 
-    private suspend fun detectLanguageWithMLKit(text: String): Pair<TextRecognizerLanguage?, Float> {
+        private suspend fun detectLanguageWithMLKit(text: String): Pair<TextRecognizerLanguage?, Float> {
         val identifier = LanguageIdentification.getClient()
         return try {
             val possibilities = identifier.identifyPossibleLanguages(text).await()
             val best = possibilities.maxByOrNull { it.confidence }
             
-            if (best == null || best.languageCode == "und") return Pair(null, 0f)
+            // تم التعديل هنا: استخدام languageTag بدلاً من languageCode
+            if (best == null || best.languageTag == "und") return Pair(null, 0f)
 
             // مطابقة رموز لغة ML Kit مع الـ Enums المتاحة في تطبيقك
-            val lang = when (best.languageCode) {
+            val lang = when (best.languageTag) { // وتم التعديل هنا أيضاً
                 "zh" -> TextRecognizerLanguage.CHINESE
                 "ja" -> TextRecognizerLanguage.JAPANESE
                 "ko" -> TextRecognizerLanguage.KOREAN
@@ -372,6 +373,7 @@ class ChapterTranslator(
             Pair(null, 0f)
         }
     }
+
 
     private suspend fun extractTextFromStream(streamFn: () -> InputStream): String? = withContext(Dispatchers.IO) {
         try {
