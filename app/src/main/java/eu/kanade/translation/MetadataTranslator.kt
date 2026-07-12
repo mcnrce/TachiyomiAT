@@ -1,5 +1,7 @@
 package eu.kanade.translation
 
+import com.google.mlkit.nl.languageid.LanguageIdentification
+import kotlinx.coroutines.tasks.await
 import eu.kanade.translation.model.PageTranslation
 import eu.kanade.translation.model.TranslationBlock
 import eu.kanade.translation.recognizer.TextRecognizerLanguage
@@ -51,8 +53,8 @@ class MetadataTranslator(
             val dummyPage = PageTranslation(blocks = mutableListOf(dummyBlock), imgWidth = 100f, imgHeight = 100f)
             val mapToTranslate = mutableMapOf("metadata_dummy_file" to dummyPage)
 
-            // تمرير كائنات الـ Preference مباشرة بدلاً من القيم المستخرجة
-            val fromLang = TextRecognizerLanguage.ENGLISH 
+            // استخدام ML Kit للتعرف على لغة النص الأصلية
+            val fromLang = detectSourceLanguage(text) 
             val toLang = TextTranslatorLanguage.fromPref(targetLangPref)
             val enginePref = preferences.metadataTranslationEngine()
 
@@ -73,6 +75,27 @@ class MetadataTranslator(
         } catch (e: Exception) {
             logcat(LogPriority.ERROR, e) { "فشل في ترجمة البيانات الوصفية (Metadata)" }
             text
+        }
+    }
+
+    /**
+     * فحص لغة النص باستخدام ML Kit وتحديد اللغة المصدرية للمحرك
+     */
+    private suspend fun detectSourceLanguage(text: String): TextRecognizerLanguage {
+        val identifier = LanguageIdentification.getClient()
+        return try {
+            val languageCode = identifier.identifyLanguage(text).await()
+            
+            when (languageCode) {
+                "zh" -> TextRecognizerLanguage.CHINESE
+                "ja" -> TextRecognizerLanguage.JAPANESE
+                "ko" -> TextRecognizerLanguage.KOREAN
+                // في حال كانت النتيجة "und" (غير معروفة) أو لغات لاتينية أخرى، يتم التوجيه للإنجليزية كافتراضي
+                else -> TextRecognizerLanguage.ENGLISH
+            }
+        } catch (e: Exception) {
+            logcat(LogPriority.ERROR, e) { "فشل في التعرف على اللغة عبر ML Kit" }
+            TextRecognizerLanguage.ENGLISH
         }
     }
 }
