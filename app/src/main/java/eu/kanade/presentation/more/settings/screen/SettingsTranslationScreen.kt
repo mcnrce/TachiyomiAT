@@ -41,10 +41,10 @@ object SettingsTranslationScreen : SearchableSettings {
                 entries = entries.withIndex().associate { it.index to it.value.label }.toImmutableMap(),
             ),
             getTranslationLangGroup(translationPreferences),
-            getMetadataTranslationGroup(translationPreferences), // 🚀 القسم الجديد للبيانات الوصفية
+            getMetadataTranslationGroup(translationPreferences), // القسم الجديد للبيانات الوصفية
             getTranslatioEngineGroup(translationPreferences),
             getTranslatioAdvancedGroup(translationPreferences),
-            getTranslationPerformanceGroup(translationPreferences),
+            getTranslationPerformanceGroup(translationPreferences), // القسم الجديد للأداء
         )
     }
 
@@ -71,7 +71,6 @@ object SettingsTranslationScreen : SearchableSettings {
         )
     }
 
-    // ─── القسم الجديد: إعدادات ترجمة تفاصيل المانجا (البيانات الوصفية) ─────────────────
     @Composable
     private fun getMetadataTranslationGroup(
         translationPreferences: TranslationPreferences,
@@ -80,37 +79,36 @@ object SettingsTranslationScreen : SearchableSettings {
         val engines = TextTranslators.entries
         
         return Preference.PreferenceGroup(
-            title = "ترجمة تفاصيل المانجا (Metadata)",
+            title = stringResource(ATMR.strings.pref_group_metadata),
             preferenceItems = persistentListOf(
                 Preference.PreferenceItem.SwitchPreference(
                     pref = translationPreferences.metadataTranslationEnabled(),
-                    title = "تفعيل ترجمة البيانات الوصفية",
-                    subtitle = "ترجمة عنوان المانجا، الوصف، والتصنيفات."
+                    title = stringResource(ATMR.strings.pref_metadata_enabled),
+                    subtitle = stringResource(ATMR.strings.pref_sub_metadata_enabled)
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.translateMangaTitleTo(),
-                    title = "لغة ترجمة العنوان",
+                    title = stringResource(ATMR.strings.pref_metadata_title_lang),
                     entries = toLangs.associate { it.name to it.label }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.translateMangaDescriptionTo(),
-                    title = "لغة ترجمة الوصف",
+                    title = stringResource(ATMR.strings.pref_metadata_desc_lang),
                     entries = toLangs.associate { it.name to it.label }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.translateMangaTagsTo(),
-                    title = "لغة ترجمة التصنيفات (Tags)",
+                    title = stringResource(ATMR.strings.pref_metadata_tags_lang),
                     entries = toLangs.associate { it.name to it.label }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.metadataTranslationEngine(),
-                    title = "محرك الترجمة للبيانات الوصفية",
+                    title = stringResource(ATMR.strings.pref_metadata_engine),
                     entries = engines.withIndex().associate { it.index to it.value.label }.toImmutableMap(),
                 ),
             ),
         )
     }
-    // ────────────────────────────────────────────────────────────────────────────────
 
     @Composable
     private fun getTranslatioEngineGroup(
@@ -167,78 +165,78 @@ object SettingsTranslationScreen : SearchableSettings {
         translationPreferences: TranslationPreferences,
     ): Preference.PreferenceGroup {
         return Preference.PreferenceGroup(
-            title = "الأداء والتعرف المتقدم (OCR & Performance)",
+            title = stringResource(ATMR.strings.pref_group_performance),
             preferenceItems = persistentListOf(
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.maxOcrHeight(),
-                    title = "الحد الأقصى لارتفاع الصورة (Webtoon)",
-                    subtitle = "الصور الأطول سيتم تقطيعها بذكاء للحفاظ على دقة الـ OCR.",
-                    entries = listOf(1500, 2000, 2500, 3000, 4000).associateWith { "$it بكسل" }.toImmutableMap(),
+                    title = stringResource(ATMR.strings.pref_max_ocr_height),
+                    subtitle = stringResource(ATMR.strings.pref_sub_max_ocr_height),
+                    entries = listOf(1500, 2000, 2500, 3000, 4000).associateWith { "$it px" }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.EditTextPreference(
                     pref = translationPreferences.longImageAspectRatioThreshold(),
-                    title = "نسبة العرض للطول للويب تون",
-                    subtitle = "الحد الأدنى لاعتبار الصورة ويب تون طويل (مثال: 2.5).",
+                    title = stringResource(ATMR.strings.pref_long_image_aspect_ratio),
+                    subtitle = stringResource(ATMR.strings.pref_sub_long_image_aspect_ratio),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.batchOcrConcurrency(),
-                    title = "توازي الصفحات (الترجمة العادية)",
-                    subtitle = "عدد الصفحات التي تتم معالجتها معاً في الخلفية.",
-                    entries = listOf(1, 2, 3, 4, 6, 8).associateWith { "$it صفحات" }.toImmutableMap(),
+                    title = stringResource(ATMR.strings.pref_batch_ocr_concurrency),
+                    subtitle = stringResource(ATMR.strings.pref_sub_batch_ocr_concurrency),
+                    entries = listOf(1, 2, 3, 4, 6, 8).associateWith { "$it pages" }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.tileOcrConcurrency(),
-                    title = "توازي شرائح الصور الطويلة",
-                    subtitle = "عدد الشرائح المعالجة معاً للصورة الطويلة الواحدة.",
-                    entries = listOf(1, 2, 3, 4, 6, 8).associateWith { "$it شرائح" }.toImmutableMap(),
+                    title = stringResource(ATMR.strings.pref_tile_ocr_concurrency),
+                    subtitle = stringResource(ATMR.strings.pref_sub_tile_ocr_concurrency),
+                    entries = listOf(1, 2, 3, 4, 6, 8).associateWith { "$it tiles" }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.lowBubbleCountThreshold(),
-                    title = "حد الفقاعات المنخفض (وضع الأكشن)",
-                    subtitle = "متوسط الفقاعات لتفعيل المعالجة السريعة (Fast-mode).",
-                    entries = listOf(2, 4, 6, 8, 10).associateWith { "$it فقاعات" }.toImmutableMap(),
+                    title = stringResource(ATMR.strings.pref_low_bubble_threshold),
+                    subtitle = stringResource(ATMR.strings.pref_sub_low_bubble_threshold),
+                    entries = listOf(2, 4, 6, 8, 10).associateWith { "$it bubbles" }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.lowBubbleHistorySize(),
-                    title = "حجم سجل الفقاعات",
-                    subtitle = "عدد الصفحات لحساب متوسط كثافة النصوص.",
-                    entries = listOf(3, 5, 8, 10).associateWith { "$it صفحات" }.toImmutableMap(),
+                    title = stringResource(ATMR.strings.pref_low_bubble_history),
+                    subtitle = stringResource(ATMR.strings.pref_sub_low_bubble_history),
+                    entries = listOf(3, 5, 8, 10).associateWith { "$it pages" }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.realtimeLowBubbleConcurrency(),
-                    title = "توازي الصفحات (الترجمة الفورية السريعة)",
-                    subtitle = "زيادة السرعة في مشاهد الأكشن خفيفة النصوص.",
-                    entries = listOf(1, 2, 3, 4, 6, 8).associateWith { "$it صفحات" }.toImmutableMap(),
+                    title = stringResource(ATMR.strings.pref_realtime_low_bubble_concurrency),
+                    subtitle = stringResource(ATMR.strings.pref_sub_realtime_low_bubble_concurrency),
+                    entries = listOf(1, 2, 3, 4, 6, 8).associateWith { "$it pages" }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.realtimeIdleTimeoutSeconds(),
-                    title = "مهلة الخمول للترجمة الفورية",
-                    subtitle = "إيقاف المترجم لتوفير البطارية عند توقفك عن القراءة.",
-                    entries = listOf(0.5, 1, 3, 5, 10, 15, 30, 45, 60, 120, 300).associateWith { "$it ثانية" }.toImmutableMap(),
+                    title = stringResource(ATMR.strings.pref_realtime_idle_timeout),
+                    subtitle = stringResource(ATMR.strings.pref_sub_realtime_idle_timeout),
+                    entries = listOf(1, 3, 5, 10, 15, 30, 45, 60, 120, 300).associateWith { "$it s" }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.realtimePollIntervalMs(),
-                    title = "معدل فحص الصفحات (الترجمة الفورية)",
-                    subtitle = "الزمن بين محاولات الفحص. رقم أقل = استجابة أسرع.",
-                    entries = listOf(10, 20, 30, 40, 50, 100, 150, 250, 500).associateWith { "$it ملي ثانية" }.toImmutableMap(),
+                    title = stringResource(ATMR.strings.pref_realtime_poll_interval),
+                    subtitle = stringResource(ATMR.strings.pref_sub_realtime_poll_interval),
+                    entries = listOf(10, 20, 30, 40, 50, 100, 150, 250, 500).associateWith { "$it ms" }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.realtimePreloadMemoryBudgetMb(),
-                    title = "ميزانية الذاكرة للتحميل المسبق",
-                    subtitle = "الحد الأقصى للرام المسموح به للتحميل المسبق (Preload).",
+                    title = stringResource(ATMR.strings.pref_realtime_preload_memory),
+                    subtitle = stringResource(ATMR.strings.pref_sub_realtime_preload_memory),
                     entries = listOf(50, 100, 150, 200, 300, 400, 250, 400, 500).associateWith { "$it MB" }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.realtimeDefaultPreloadCount(),
-                    title = "العدد الافتراضي للتحميل المسبق",
-                    subtitle = "عدد الصفحات المترجمة مسبقاً قبل وصولك إليها.",
-                    entries = listOf(1, 2, 3, 4, 5).associateWith { "$it صفحات" }.toImmutableMap(),
+                    title = stringResource(ATMR.strings.pref_realtime_default_preload),
+                    subtitle = stringResource(ATMR.strings.pref_sub_realtime_default_preload),
+                    entries = listOf(1, 2, 3, 4, 5).associateWith { "$it pages" }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.realtimeMaxPreloadCount(),
-                    title = "الحد الأقصى المطلق للتحميل المسبق",
-                    subtitle = "يمنع تحميل عدد مفرط من الصفحات مهما كانت الميزانية.",
-                    entries = listOf(1, 2, 3, 4, 6, 8, 10).associateWith { "$it صفحات" }.toImmutableMap(),
+                    title = stringResource(ATMR.strings.pref_realtime_max_preload),
+                    subtitle = stringResource(ATMR.strings.pref_sub_realtime_max_preload),
+                    entries = listOf(1, 2, 4, 6, 8, 10).associateWith { "$it pages" }.toImmutableMap(),
                 ),
             ),
         )
