@@ -36,4 +36,40 @@
     <string name="action_cancel">Cancel</string>
     <string name="translation_cleared">Translation cleared</string>
     <string name="action_confirm">Apply Changes</string>
+        <!-- Metadata Translation Settings -->
+    <string name="pref_group_metadata">Metadata Translation</string>
+    <string name="pref_metadata_enabled">Enable Metadata Translation</string>
+    <string name="pref_sub_metadata_enabled">Translate manga title, description, and tags.</string>
+    <string name="pref_metadata_title_lang">Title Translation Language</string>
+    <string name="pref_metadata_desc_lang">Description Translation Language</string>
+    <string name="pref_metadata_tags_lang">Tags Translation Language</string>
+    <string name="pref_metadata_engine">Metadata Translator Engine</string>
+
+    <!-- Performance & Advanced OCR Settings -->
+    <string name="pref_group_performance">Performance &amp; Advanced OCR</string>
+    <string name="pref_max_ocr_height">Max Image Height (Webtoon)</string>
+    <string name="pref_sub_max_ocr_height">Long images will be sliced smartly to maintain OCR accuracy.</string>
+    <string name="pref_long_image_aspect_ratio">Webtoon Aspect Ratio Threshold</string>
+    <string name="pref_sub_long_image_aspect_ratio">Minimum ratio to consider an image as a long webtoon (e.g., 2.5).</string>
+    <string name="pref_batch_ocr_concurrency">Page Concurrency (Normal)</string>
+    <string name="pref_sub_batch_ocr_concurrency">Number of pages processed together in the background.</string>
+    <string name="pref_tile_ocr_concurrency">Tile Concurrency (Long Images)</string>
+    <string name="pref_sub_tile_ocr_concurrency">Number of tiles processed together for a single long image.</string>
+    <string name="pref_low_bubble_threshold">Low Bubble Threshold (Action Mode)</string>
+    <string name="pref_sub_low_bubble_threshold">Average bubbles to activate Fast-mode processing.</string>
+    <string name="pref_low_bubble_history">Bubble History Size</string>
+    <string name="pref_sub_low_bubble_history">Number of pages to calculate average text density.</string>
+    <string name="pref_realtime_low_bubble_concurrency">Page Concurrency (Fast Real-time)</string>
+    <string name="pref_sub_realtime_low_bubble_concurrency">Increased speed in text-light action scenes.</string>
+    <string name="pref_realtime_idle_timeout">Real-time Idle Timeout</string>
+    <string name="pref_sub_realtime_idle_timeout">Stop translator to save battery when you stop reading.</string>
+    <string name="pref_realtime_poll_interval">Page Polling Interval</string>
+    <string name="pref_sub_realtime_poll_interval">Time between poll attempts. Lower = faster response.</string>
+    <string name="pref_realtime_preload_memory">Preload Memory Budget</string>
+    <string name="pref_sub_realtime_preload_memory">Maximum RAM allowed for page preloading.</string>
+    <string name="pref_realtime_default_preload">Default Preload Count</string>
+    <string name="pref_sub_realtime_default_preload">Number of pages translated ahead of your current page.</string>
+    <string name="pref_realtime_max_preload">Absolute Max Preload Count</string>
+    <string name="pref_sub_realtime_max_preload">Prevents excessive page loading regardless of memory budget.</string>
+
 </resources>
