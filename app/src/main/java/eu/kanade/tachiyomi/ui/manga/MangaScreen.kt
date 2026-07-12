@@ -69,6 +69,7 @@ import tachiyomi.presentation.core.screens.LoadingScreen
 
 // 🚀 الاستيرادات الخاصة بالترجمة
 import eu.kanade.translation.MetadataTranslator
+import tachiyomi.domain.translation.TranslationPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
@@ -110,37 +111,58 @@ class MangaScreen(
         // ----------------------------------------------------
         // 🚀 اعتراض البيانات قبل العرض (UI Interception) للترجمة
         // ----------------------------------------------------
+        val metadataTranslator = remember { Injekt.get<MetadataTranslator>() }
+        val translationPreferences = remember { Injekt.get<TranslationPreferences>() }
         
+        // مراقبة الأزرار لحظياً (Real-time Observation)
+        val isMetadataTranslated by translationPreferences.metadataTranslationEnabled().collectAsState()
+        val isTitleTranslated by translationPreferences.translateMangaTitle().collectAsState()
+        val isDescTranslated by translationPreferences.translateMangaDescription().collectAsState()
+        val isTagsTranslated by translationPreferences.translateMangaTags().collectAsState()
+
         var displayTitle by remember(successState.manga.title) { mutableStateOf(successState.manga.title) }
         var displayDescription by remember(successState.manga.description) { mutableStateOf(successState.manga.description) }
         var displayGenres by remember(successState.manga.genre) { mutableStateOf(successState.manga.genre) }
 
-        val metadataTranslator = remember { Injekt.get<MetadataTranslator>() }
-        
-        LaunchedEffect(successState.manga) {
-            launch { displayTitle = metadataTranslator.translateTitle(successState.manga.title) }
+        // التحديث التلقائي عند تغيير أي زر أو تغير المانجا
+        LaunchedEffect(successState.manga, isMetadataTranslated, isTitleTranslated, isDescTranslated, isTagsTranslated) {
             
-            successState.manga.description?.let { desc ->
-                launch { displayDescription = metadataTranslator.translateDescription(desc) }
+            // 1. العنوان
+            if (isMetadataTranslated && isTitleTranslated) {
+                launch { displayTitle = metadataTranslator.translateTitle(successState.manga.title) }
+            } else {
+                displayTitle = successState.manga.title
             }
-            
-            successState.manga.genre?.let { genres ->
-                launch { 
-                    // تحويل القائمة لنص واحد لترجمته كفقاعة واحدة، ثم إعادته لقائمة
-                    val joinedGenres = genres.joinToString(", ")
-                    val translatedText = metadataTranslator.translateTags(joinedGenres)
-                    displayGenres = translatedText.split(",").map { it.trim() }.filter { it.isNotBlank() }
+
+            // 2. الوصف
+            if (isMetadataTranslated && isDescTranslated) {
+                successState.manga.description?.let { desc ->
+                    launch { displayDescription = metadataTranslator.translateDescription(desc) }
                 }
+            } else {
+                displayDescription = successState.manga.description
+            }
+
+            // 3. التصنيفات
+            if (isMetadataTranslated && isTagsTranslated) {
+                successState.manga.genre?.let { genres ->
+                    launch { 
+                        val joinedGenres = genres.joinToString(", ")
+                        val translatedText = metadataTranslator.translateTags(joinedGenres)
+                        displayGenres = translatedText.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                    }
+                }
+            } else {
+                displayGenres = successState.manga.genre
             }
         }
 
-        // دمج النصوص المترجمة في نسخة "وهمية" للواجهة فقط
+        // دمج النصوص المترجمة أو الأصلية في نسخة "وهمية" للواجهة فقط
         val displayManga = successState.manga.copy(
             title = displayTitle,
             description = displayDescription,
             genre = displayGenres
         )
-        
         val displaySuccessState = successState.copy(manga = displayManga)
         // ----------------------------------------------------
 
@@ -387,11 +409,6 @@ class MangaScreen(
         }
     }
 
-    /**
-     * Perform a search using the provided query.
-     *
-     * @param query the search query to the parent controller
-     */
     private suspend fun performSearch(navigator: Navigator, query: String, global: Boolean) {
         if (global) {
             navigator.push(GlobalSearchScreen(query))
@@ -415,11 +432,6 @@ class MangaScreen(
         }
     }
 
-    /**
-     * Performs a genre search using the provided genre name.
-     *
-     * @param genreName the search genre to the parent controller
-     */
     private suspend fun performGenreSearch(navigator: Navigator, genreName: String, source: Source) {
         if (navigator.size < 2) {
             return
@@ -434,9 +446,6 @@ class MangaScreen(
         }
     }
 
-    /**
-     * Copy Manga URL to Clipboard
-     */
     private fun copyMangaUrl(context: Context, manga_: Manga?, source_: Source?) {
         val manga = manga_ ?: return
         val source = source_ as? HttpSource ?: return
