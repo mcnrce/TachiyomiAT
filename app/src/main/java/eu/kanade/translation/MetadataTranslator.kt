@@ -22,17 +22,20 @@ class MetadataTranslator(
     private val cache = ConcurrentHashMap<String, String>()
 
     suspend fun translateTitle(title: String?): String {
-        if (title.isNullOrBlank() || !preferences.metadataTranslationEnabled().get()) return title ?: ""
+        // إضافة التحقق من زر ترجمة العنوان
+        if (title.isNullOrBlank() || !preferences.metadataTranslationEnabled().get() || !preferences.translateMangaTitle().get()) return title ?: ""
         return translateTextViaBubble(title, preferences.translateMangaTitleTo())
     }
 
     suspend fun translateDescription(description: String?): String {
-        if (description.isNullOrBlank() || !preferences.metadataTranslationEnabled().get()) return description ?: ""
+        // إضافة التحقق من زر ترجمة الوصف
+        if (description.isNullOrBlank() || !preferences.metadataTranslationEnabled().get() || !preferences.translateMangaDescription().get()) return description ?: ""
         return translateTextViaBubble(description, preferences.translateMangaDescriptionTo())
     }
 
     suspend fun translateTags(tags: String?): String {
-        if (tags.isNullOrBlank() || !preferences.metadataTranslationEnabled().get()) return tags ?: ""
+        // إضافة التحقق من زر ترجمة التصنيفات
+        if (tags.isNullOrBlank() || !preferences.metadataTranslationEnabled().get() || !preferences.translateMangaTags().get()) return tags ?: ""
         return translateTextViaBubble(tags, preferences.translateMangaTagsTo())
     }
 
