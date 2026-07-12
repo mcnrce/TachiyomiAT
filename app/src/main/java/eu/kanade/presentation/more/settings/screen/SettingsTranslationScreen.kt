@@ -41,9 +41,10 @@ object SettingsTranslationScreen : SearchableSettings {
                 entries = entries.withIndex().associate { it.index to it.value.label }.toImmutableMap(),
             ),
             getTranslationLangGroup(translationPreferences),
+            getMetadataTranslationGroup(translationPreferences), // 🚀 القسم الجديد للبيانات الوصفية
             getTranslatioEngineGroup(translationPreferences),
             getTranslatioAdvancedGroup(translationPreferences),
-            getTranslationPerformanceGroup(translationPreferences), // القسم الجديد للأداء
+            getTranslationPerformanceGroup(translationPreferences),
         )
     }
 
@@ -69,6 +70,47 @@ object SettingsTranslationScreen : SearchableSettings {
             ),
         )
     }
+
+    // ─── القسم الجديد: إعدادات ترجمة تفاصيل المانجا (البيانات الوصفية) ─────────────────
+    @Composable
+    private fun getMetadataTranslationGroup(
+        translationPreferences: TranslationPreferences,
+    ): Preference.PreferenceGroup {
+        val toLangs = TextTranslatorLanguage.entries
+        val engines = TextTranslators.entries
+        
+        return Preference.PreferenceGroup(
+            title = "ترجمة تفاصيل المانجا (Metadata)",
+            preferenceItems = persistentListOf(
+                Preference.PreferenceItem.SwitchPreference(
+                    pref = translationPreferences.metadataTranslationEnabled(),
+                    title = "تفعيل ترجمة البيانات الوصفية",
+                    subtitle = "ترجمة عنوان المانجا، الوصف، والتصنيفات."
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.translateMangaTitleTo(),
+                    title = "لغة ترجمة العنوان",
+                    entries = toLangs.associate { it.name to it.label }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.translateMangaDescriptionTo(),
+                    title = "لغة ترجمة الوصف",
+                    entries = toLangs.associate { it.name to it.label }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.translateMangaTagsTo(),
+                    title = "لغة ترجمة التصنيفات (Tags)",
+                    entries = toLangs.associate { it.name to it.label }.toImmutableMap(),
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.metadataTranslationEngine(),
+                    title = "محرك الترجمة للبيانات الوصفية",
+                    entries = engines.withIndex().associate { it.index to it.value.label }.toImmutableMap(),
+                ),
+            ),
+        )
+    }
+    // ────────────────────────────────────────────────────────────────────────────────
 
     @Composable
     private fun getTranslatioEngineGroup(
@@ -120,7 +162,6 @@ object SettingsTranslationScreen : SearchableSettings {
         )
     }
 
-    // ─── القسم الجديد: إعدادات الأداء والتقطيع الذكي ────────────────────────────────────
     @Composable
     private fun getTranslationPerformanceGroup(
         translationPreferences: TranslationPreferences,
@@ -173,7 +214,7 @@ object SettingsTranslationScreen : SearchableSettings {
                     pref = translationPreferences.realtimeIdleTimeoutSeconds(),
                     title = "مهلة الخمول للترجمة الفورية",
                     subtitle = "إيقاف المترجم لتوفير البطارية عند توقفك عن القراءة.",
-                    entries = listOf(1, 3, 5, 10, 15, 30, 45, 60, 120, 300).associateWith { "$it ثانية" }.toImmutableMap(),
+                    entries = listOf(0.5, 1, 3, 5, 10, 15, 30, 45, 60, 120, 300).associateWith { "$it ثانية" }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.realtimePollIntervalMs(),
@@ -197,7 +238,7 @@ object SettingsTranslationScreen : SearchableSettings {
                     pref = translationPreferences.realtimeMaxPreloadCount(),
                     title = "الحد الأقصى المطلق للتحميل المسبق",
                     subtitle = "يمنع تحميل عدد مفرط من الصفحات مهما كانت الميزانية.",
-                    entries = listOf(1, 2, 4, 6, 8, 10).associateWith { "$it صفحات" }.toImmutableMap(),
+                    entries = listOf(1, 2, 3, 4, 6, 8, 10).associateWith { "$it صفحات" }.toImmutableMap(),
                 ),
             ),
         )
