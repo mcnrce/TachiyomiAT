@@ -7,6 +7,7 @@ import eu.kanade.translation.translator.TextTranslatorLanguage
 import eu.kanade.translation.translator.TextTranslators
 import tachiyomi.core.common.util.system.logcat
 import logcat.LogPriority
+import tachiyomi.core.common.preference.Preference
 import tachiyomi.domain.translation.TranslationPreferences
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
@@ -15,61 +16,54 @@ import java.util.concurrent.ConcurrentHashMap
 class MetadataTranslator(
     private val preferences: TranslationPreferences = Injekt.get()
 ) {
-    // ذاكرة تخزين مؤقتة (Cache) لكي لا نرسل نفس النص للترجمة مرتين ونستهلك الـ API
+    // ذاكرة تخزين مؤقتة (Cache) لتفادي الترجمة المتكررة
     private val cache = ConcurrentHashMap<String, String>()
 
     suspend fun translateTitle(title: String?): String {
         if (title.isNullOrBlank() || !preferences.metadataTranslationEnabled().get()) return title ?: ""
-        val targetLangCode = preferences.translateMangaTitleTo().get()
-        return translateTextViaBubble(title, targetLangCode)
+        return translateTextViaBubble(title, preferences.translateMangaTitleTo())
     }
 
     suspend fun translateDescription(description: String?): String {
         if (description.isNullOrBlank() || !preferences.metadataTranslationEnabled().get()) return description ?: ""
-        val targetLangCode = preferences.translateMangaDescriptionTo().get()
-        return translateTextViaBubble(description, targetLangCode)
+        return translateTextViaBubble(description, preferences.translateMangaDescriptionTo())
     }
 
     suspend fun translateTags(tags: String?): String {
         if (tags.isNullOrBlank() || !preferences.metadataTranslationEnabled().get()) return tags ?: ""
-        val targetLangCode = preferences.translateMangaTagsTo().get()
-        return translateTextViaBubble(tags, targetLangCode)
+        return translateTextViaBubble(tags, preferences.translateMangaTagsTo())
     }
 
     /**
-     * تغليف النص في "فقاعة وهمية" وإرسالها للمحرك
+     * تغليف النص في "فقاعة وهمية" وتمرير الـ Preference مباشرة للمحرك
      */
-    private suspend fun translateTextViaBubble(text: String, targetLangCode: String): String {
-        // 1. التحقق من الذاكرة المؤقتة أولاً
+    private suspend fun translateTextViaBubble(text: String, targetLangPref: Preference<String>): String {
+        val targetLangCode = targetLangPref.get()
         val cacheKey = "${targetLangCode}_$text"
         cache[cacheKey]?.let { return it }
 
         return try {
-            // 2. إنشاء فقاعة (Block) وهمية أبعادها صفر تحتوي على النص
             val dummyBlock = TranslationBlock(
                 text = text,
                 width = 0f, height = 0f, x = 0f, y = 0f, symWidth = 0f, symHeight = 0f, angle = 0f
             )
-
-            // 3. وضع الفقاعة داخل صفحة وهمية (Page)
+            
             val dummyPage = PageTranslation(blocks = mutableListOf(dummyBlock), imgWidth = 100f, imgHeight = 100f)
             val mapToTranslate = mutableMapOf("metadata_dummy_file" to dummyPage)
 
-            // 4. بناء محرك الترجمة الخاص بالنصوص
+            // تمرير كائنات الـ Preference مباشرة بدلاً من القيم المستخرجة
             val fromLang = TextRecognizerLanguage.ENGLISH 
-            val toLang = TextTranslatorLanguage.fromPref(targetLangCode)
+            val toLang = TextTranslatorLanguage.fromPref(targetLangPref)
+            val enginePref = preferences.metadataTranslationEngine()
 
-            // تمرير كائن preferences كامل — دالة build() تستخرج القيم من الـ Preferences بنفسها
-            val translator = TextTranslators.fromPref(preferences.metadataTranslationEngine().get())
+            val translator = TextTranslators.fromPref(enginePref)
                 .build(preferences, fromLang, toLang)
 
-            // 5. أمر الترجمة
             translator.translate(mapToTranslate)
             translator.close()
 
-            // 6. استخراج النص المترجم
             val translatedText = mapToTranslate["metadata_dummy_file"]?.blocks?.firstOrNull()?.translation
-
+            
             if (!translatedText.isNullOrBlank()) {
                 cache[cacheKey] = translatedText
                 translatedText
