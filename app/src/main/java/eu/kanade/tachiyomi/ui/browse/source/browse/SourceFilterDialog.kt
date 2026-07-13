@@ -10,15 +10,21 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import eu.kanade.presentation.components.AdaptiveSheet
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import tachiyomi.core.common.preference.TriState
+import tachiyomi.domain.translation.TranslationPreferences
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.CheckboxItem
 import tachiyomi.presentation.core.components.CollapsibleBox
@@ -29,6 +35,8 @@ import tachiyomi.presentation.core.components.TextItem
 import tachiyomi.presentation.core.components.TriStateItem
 import tachiyomi.presentation.core.components.material.Button
 import tachiyomi.presentation.core.i18n.stringResource
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 
 @Composable
 fun SourceFilterDialog(
@@ -40,33 +48,54 @@ fun SourceFilterDialog(
 ) {
     val updateFilters = { onUpdate(filters) }
 
+    // 🚀 جلب إعدادات الترجمة
+    val translationPreferences = remember { Injekt.get<TranslationPreferences>() }
+    val isTranslationEnabled by translationPreferences.metadataTranslationEnabled().collectAsState()
+
     AdaptiveSheet(onDismissRequest = onDismissRequest) {
         LazyColumn {
             stickyHeader {
-                Row(
-                    modifier = Modifier
-                        .background(MaterialTheme.colorScheme.background)
-                        .padding(8.dp),
-                ) {
-                    TextButton(onClick = onReset) {
-                        Text(
-                            text = stringResource(MR.strings.action_reset),
-                            style = LocalTextStyle.current.copy(
-                                color = MaterialTheme.colorScheme.primary,
-                            ),
+                Column(modifier = Modifier.background(MaterialTheme.colorScheme.background)) {
+                    Row(
+                        modifier = Modifier.padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = onReset) {
+                            Text(
+                                text = stringResource(MR.strings.action_reset),
+                                style = LocalTextStyle.current.copy(
+                                    color = MaterialTheme.colorScheme.primary,
+                                ),
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.weight(1f))
+
+                        Button(onClick = {
+                            onFilter()
+                            onDismissRequest()
+                        }) {
+                            Text(stringResource(MR.strings.action_filter))
+                        }
+                    }
+
+                    // 🚀 إضافة زر التبديل للترجمة
+                    Row(
+                        modifier = Modifier
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(text = "تفعيل الترجمة", style = MaterialTheme.typography.bodyMedium)
+                        Spacer(modifier = Modifier.weight(1f))
+                        Switch(
+                            checked = isTranslationEnabled,
+                            onCheckedChange = { 
+                                translationPreferences.metadataTranslationEnabled().set(it) 
+                            }
                         )
                     }
-
-                    Spacer(modifier = Modifier.weight(1f))
-
-                    Button(onClick = {
-                        onFilter()
-                        onDismissRequest()
-                    }) {
-                        Text(stringResource(MR.strings.action_filter))
-                    }
+                    HorizontalDivider()
                 }
-                HorizontalDivider()
             }
 
             items(filters) {
