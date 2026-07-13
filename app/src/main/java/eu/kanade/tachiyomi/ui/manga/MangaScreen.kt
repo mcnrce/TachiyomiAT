@@ -67,9 +67,10 @@ import tachiyomi.domain.manga.model.Manga
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.screens.LoadingScreen
 
-// 🚀 الاستيرادات الخاصة بالترجمة
+// 🚀 الاستيرادات الخاصة بالترجمة وإصلاح الخطأ
 import eu.kanade.translation.MetadataTranslator
 import tachiyomi.domain.translation.TranslationPreferences
+import tachiyomi.presentation.core.util.collectAsState 
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
@@ -114,7 +115,7 @@ class MangaScreen(
         val metadataTranslator = remember { Injekt.get<MetadataTranslator>() }
         val translationPreferences = remember { Injekt.get<TranslationPreferences>() }
         
-        // مراقبة الأزرار لحظياً (Real-time Observation)
+        // مراقبة الأزرار لحظياً (Real-time Observation) باستخدام الاستيراد الصحيح
         val isMetadataTranslated by translationPreferences.metadataTranslationEnabled().collectAsState()
         val isTitleTranslated by translationPreferences.translateMangaTitle().collectAsState()
         val isDescTranslated by translationPreferences.translateMangaDescription().collectAsState()
