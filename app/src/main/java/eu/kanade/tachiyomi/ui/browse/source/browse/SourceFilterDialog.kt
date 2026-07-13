@@ -14,15 +14,19 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import eu.kanade.presentation.components.AdaptiveSheet
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.translation.MetadataTranslator
 import tachiyomi.core.common.preference.TriState
 import tachiyomi.domain.translation.TranslationPreferences
 import tachiyomi.i18n.MR
@@ -48,8 +52,9 @@ fun SourceFilterDialog(
 ) {
     val updateFilters = { onUpdate(filters) }
 
-    // 🚀 جلب إعدادات الترجمة
+    // 🚀 جلب إعدادات الترجمة والمترجم
     val translationPreferences = remember { Injekt.get<TranslationPreferences>() }
+    val metadataTranslator = remember { Injekt.get<MetadataTranslator>() }
     val isTranslationEnabled by translationPreferences.metadataTranslationEnabled().collectAsState()
 
     AdaptiveSheet(onDismissRequest = onDismissRequest) {
@@ -98,25 +103,46 @@ fun SourceFilterDialog(
                 }
             }
 
-            items(filters) {
-                FilterItem(it, updateFilters)
+            items(filters) { filter ->
+                FilterItem(
+                    filter = filter, 
+                    onUpdate = updateFilters, 
+                    isTranslationEnabled = isTranslationEnabled,
+                    translator = metadataTranslator
+                )
             }
         }
     }
 }
 
 @Composable
-private fun FilterItem(filter: Filter<*>, onUpdate: () -> Unit) {
+private fun FilterItem(
+    filter: Filter<*>, 
+    onUpdate: () -> Unit, 
+    isTranslationEnabled: Boolean, 
+    translator: MetadataTranslator
+) {
+    // 🚀 ترجمة اسم الفلتر لحظياً
+    var translatedName by remember(filter.name, isTranslationEnabled) { mutableStateOf(filter.name) }
+    
+    LaunchedEffect(filter.name, isTranslationEnabled) {
+        translatedName = if (isTranslationEnabled) {
+            translator.translateFilter(filter.name)
+        } else {
+            filter.name
+        }
+    }
+
     when (filter) {
         is Filter.Header -> {
-            HeadingItem(filter.name)
+            HeadingItem(translatedName)
         }
         is Filter.Separator -> {
             HorizontalDivider()
         }
         is Filter.CheckBox -> {
             CheckboxItem(
-                label = filter.name,
+                label = translatedName,
                 checked = filter.state,
             ) {
                 filter.state = !filter.state
@@ -125,7 +151,7 @@ private fun FilterItem(filter: Filter<*>, onUpdate: () -> Unit) {
         }
         is Filter.TriState -> {
             TriStateItem(
-                label = filter.name,
+                label = translatedName,
                 state = filter.state.toTriStateFilter(),
             ) {
                 filter.state = filter.state.toTriStateFilter().next().toTriStateInt()
@@ -134,7 +160,7 @@ private fun FilterItem(filter: Filter<*>, onUpdate: () -> Unit) {
         }
         is Filter.Text -> {
             TextItem(
-                label = filter.name,
+                label = translatedName,
                 value = filter.state,
             ) {
                 filter.state = it
@@ -142,9 +168,21 @@ private fun FilterItem(filter: Filter<*>, onUpdate: () -> Unit) {
             }
         }
         is Filter.Select<*> -> {
+            // 🚀 ترجمة خيارات القائمة المنسدلة
+            var translatedOptions by remember(filter.values, isTranslationEnabled) { 
+                mutableStateOf(filter.values.map { it.toString() }.toTypedArray()) 
+            }
+            LaunchedEffect(filter.values, isTranslationEnabled) {
+                translatedOptions = if (isTranslationEnabled) {
+                    filter.values.map { translator.translateFilter(it.toString()) }.toTypedArray()
+                } else {
+                    filter.values.map { it.toString() }.toTypedArray()
+                }
+            }
+
             SelectItem(
-                label = filter.name,
-                options = filter.values,
+                label = translatedName,
+                options = translatedOptions,
                 selectedIndex = filter.state,
             ) {
                 filter.state = it
@@ -152,11 +190,23 @@ private fun FilterItem(filter: Filter<*>, onUpdate: () -> Unit) {
             }
         }
         is Filter.Sort -> {
+            // 🚀 ترجمة خيارات الفرز
+            var translatedSortOptions by remember(filter.values, isTranslationEnabled) { 
+                mutableStateOf(filter.values.toList()) 
+            }
+            LaunchedEffect(filter.values, isTranslationEnabled) {
+                translatedSortOptions = if (isTranslationEnabled) {
+                    filter.values.map { translator.translateFilter(it) }
+                } else {
+                    filter.values.toList()
+                }
+            }
+
             CollapsibleBox(
-                heading = filter.name,
+                heading = translatedName,
             ) {
                 Column {
-                    filter.values.mapIndexed { index, item ->
+                    translatedSortOptions.mapIndexed { index, item ->
                         SortItem(
                             label = item,
                             sortDescending = filter.state?.ascending?.not()
@@ -179,12 +229,19 @@ private fun FilterItem(filter: Filter<*>, onUpdate: () -> Unit) {
         }
         is Filter.Group<*> -> {
             CollapsibleBox(
-                heading = filter.name,
+                heading = translatedName,
             ) {
                 Column {
                     filter.state
                         .filterIsInstance<Filter<*>>()
-                        .map { FilterItem(filter = it, onUpdate = onUpdate) }
+                        .map { 
+                            FilterItem(
+                                filter = it, 
+                                onUpdate = onUpdate, 
+                                isTranslationEnabled = isTranslationEnabled, 
+                                translator = translator
+                            ) 
+                        }
                 }
             }
         }
