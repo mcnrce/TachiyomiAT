@@ -39,6 +39,12 @@ class MetadataTranslator(
         return translateTextViaBubble(tags, preferences.translateMangaTagsTo())
     }
 
+    // 🚀 دالة جديدة لترجمة الفلاتر وواجهة المصادر
+    suspend fun translateFilter(text: String?): String {
+        if (text.isNullOrBlank() || !preferences.metadataTranslationEnabled().get()) return text ?: ""
+        return translateTextViaBubble(text, preferences.translateSourceUiTo())
+    }
+
     /**
      * تغليف النص في "فقاعة وهمية" وتمرير الـ Preference مباشرة للمحرك
      */
