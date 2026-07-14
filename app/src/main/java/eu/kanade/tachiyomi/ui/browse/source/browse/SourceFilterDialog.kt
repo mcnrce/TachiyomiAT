@@ -15,7 +15,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,6 +38,7 @@ import tachiyomi.presentation.core.components.TextItem
 import tachiyomi.presentation.core.components.TriStateItem
 import tachiyomi.presentation.core.components.material.Button
 import tachiyomi.presentation.core.i18n.stringResource
+import tachiyomi.presentation.core.util.collectAsState // 🚀 هذا هو الاستيراد الذي أصلح الخطأ
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
@@ -56,7 +56,7 @@ fun SourceFilterDialog(
     val metadataTranslator = remember { Injekt.get<MetadataTranslator>() }
     val isTranslationEnabled by translationPreferences.metadataTranslationEnabled().collectAsState()
 
-    // 🚀 استخراج كل النصوص من القائمة دفعة واحدة
+    // استخراج كل النصوص من القائمة دفعة واحدة
     val allStringsToTranslate = remember(filters) {
         val set = mutableSetOf<String>()
         fun extract(filter: Filter<*>) {
@@ -73,10 +73,10 @@ fun SourceFilterDialog(
         set
     }
 
-    // 🚀 حالة الخريطة المترجمة
+    // حالة الخريطة المترجمة
     var translatedMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
-    // 🚀 الترجمة المجمعة في مكان واحد (مرة واحدة فقط!)
+    // الترجمة المجمعة في مكان واحد (مرة واحدة فقط لتفادي الانهيار)
     LaunchedEffect(allStringsToTranslate, isTranslationEnabled) {
         if (isTranslationEnabled) {
             translatedMap = metadataTranslator.translateFiltersBatch(allStringsToTranslate)
@@ -104,7 +104,7 @@ fun SourceFilterDialog(
 
                         Spacer(modifier = Modifier.weight(1f))
 
-                        // 🚀 زر الترجمة بجانب الأزرار العلوية
+                        // زر الترجمة بجانب الأزرار العلوية
                         Text(
                             text = "ترجمة", 
                             style = MaterialTheme.typography.labelLarge,
@@ -146,7 +146,7 @@ private fun FilterItem(
     onUpdate: () -> Unit, 
     translatedMap: Map<String, String>
 ) {
-    // 🚀 تطبيق الترجمة الجاهزة من الخريطة (إن وجدت)
+    // تطبيق الترجمة الجاهزة من الخريطة (إن وجدت)
     val translatedName = translatedMap[filter.name] ?: filter.name
 
     when (filter) {
@@ -184,7 +184,6 @@ private fun FilterItem(
             }
         }
         is Filter.Select<*> -> {
-            // تطبيق الترجمة على القوائم المنسدلة
             val translatedOptions = filter.values.map { 
                 translatedMap[it.toString()] ?: it.toString() 
             }.toTypedArray()
@@ -199,7 +198,6 @@ private fun FilterItem(
             }
         }
         is Filter.Sort -> {
-            // تطبيق الترجمة على خيارات الفرز
             val translatedSortOptions = filter.values.map { 
                 translatedMap[it] ?: it 
             }
