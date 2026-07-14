@@ -71,6 +71,7 @@ object SettingsTranslationScreen : SearchableSettings {
         )
     }
 
+
     @Composable
     private fun getMetadataTranslationGroup(
         translationPreferences: TranslationPreferences,
@@ -99,6 +100,12 @@ object SettingsTranslationScreen : SearchableSettings {
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.translateMangaTagsTo(),
                     title = stringResource(ATMR.strings.pref_metadata_tags_lang),
+                    entries = toLangs.associate { it.name to it.label }.toImmutableMap(),
+                ),
+                // السطر الجديد الذي أضفناه هنا:
+                Preference.PreferenceItem.ListPreference(
+                    pref = translationPreferences.translateSourceUiTo(),
+                    title = stringResource(ATMR.strings.pref_metadata_ui_lang), // تأكد من إضافة هذا النص في ملف الـ Strings الخاص بك
                     entries = toLangs.associate { it.name to it.label }.toImmutableMap(),
                 ),
                 Preference.PreferenceItem.ListPreference(
