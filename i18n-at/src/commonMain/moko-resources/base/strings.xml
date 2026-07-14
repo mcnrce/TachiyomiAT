@@ -44,6 +44,8 @@
     <string name="pref_metadata_desc_lang">Description Translation Language</string>
     <string name="pref_metadata_tags_lang">Tags Translation Language</string>
     <string name="pref_metadata_engine">Metadata Translator Engine</string>
+    <string name="pref_metadata_ui_lang">tag search translation engine</string>
+
 
     <!-- Performance & Advanced OCR Settings -->
     <string name="pref_group_performance">Performance &amp; Advanced OCR</string>
