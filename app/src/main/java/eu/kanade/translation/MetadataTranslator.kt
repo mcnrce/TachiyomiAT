@@ -22,32 +22,86 @@ class MetadataTranslator(
     private val cache = ConcurrentHashMap<String, String>()
 
     suspend fun translateTitle(title: String?): String {
-        // إضافة التحقق من زر ترجمة العنوان
         if (title.isNullOrBlank() || !preferences.metadataTranslationEnabled().get() || !preferences.translateMangaTitle().get()) return title ?: ""
         return translateTextViaBubble(title, preferences.translateMangaTitleTo())
     }
 
     suspend fun translateDescription(description: String?): String {
-        // إضافة التحقق من زر ترجمة الوصف
         if (description.isNullOrBlank() || !preferences.metadataTranslationEnabled().get() || !preferences.translateMangaDescription().get()) return description ?: ""
         return translateTextViaBubble(description, preferences.translateMangaDescriptionTo())
     }
 
     suspend fun translateTags(tags: String?): String {
-        // إضافة التحقق من زر ترجمة التصنيفات
         if (tags.isNullOrBlank() || !preferences.metadataTranslationEnabled().get() || !preferences.translateMangaTags().get()) return tags ?: ""
         return translateTextViaBubble(tags, preferences.translateMangaTagsTo())
     }
 
-    // 🚀 دالة جديدة لترجمة الفلاتر وواجهة المصادر
-    suspend fun translateFilter(text: String?): String {
-        if (text.isNullOrBlank() || !preferences.metadataTranslationEnabled().get()) return text ?: ""
-        return translateTextViaBubble(text, preferences.translateSourceUiTo())
+    // 🚀 دالة جديدة للترجمة المجمعة (Batch Translation)
+    suspend fun translateFiltersBatch(texts: Set<String>): Map<String, String> {
+        if (texts.isEmpty() || !preferences.metadataTranslationEnabled().get()) return emptyMap()
+
+        val targetLangPref = preferences.translateSourceUiTo()
+        val targetLangCode = targetLangPref.get()
+        
+        val toTranslate = mutableListOf<String>()
+        val resultMap = mutableMapOf<String, String>()
+
+        // فحص الذاكرة المؤقتة أولاً
+        for (text in texts) {
+            if (text.isBlank()) continue
+            val cacheKey = "${targetLangCode}_$text"
+            if (cache.containsKey(cacheKey)) {
+                resultMap[text] = cache[cacheKey]!!
+            } else {
+                toTranslate.add(text)
+            }
+        }
+
+        if (toTranslate.isEmpty()) return resultMap
+
+        return try {
+            // تجميع النصوص في كتل داخل صفحة وهمية واحدة (محاكاة لصفحة مانجا)
+            val blocks = toTranslate.map { text ->
+                TranslationBlock(
+                    text = text,
+                    width = 0f, height = 0f, x = 0f, y = 0f, symWidth = 0f, symHeight = 0f, angle = 0f
+                )
+            }
+            
+            val dummyPage = PageTranslation(blocks = blocks.toMutableList(), imgWidth = 100f, imgHeight = 100f)
+            val mapToTranslate = mutableMapOf("metadata_dummy_batch" to dummyPage)
+
+            // دمج النصوص للتعرف على اللغة الأم بشكل أدق
+            val combinedText = toTranslate.joinToString(" ")
+            val fromLang = detectSourceLanguage(combinedText) 
+            val toLang = TextTranslatorLanguage.fromPref(targetLangPref)
+            val enginePref = preferences.metadataTranslationEngine()
+
+            val translator = TextTranslators.fromPref(enginePref)
+                .build(preferences, fromLang, toLang)
+
+            // إرسال طلب واحد فقط لترجمة كل شيء!
+            translator.translate(mapToTranslate)
+            translator.close()
+
+            val translatedBlocks = mapToTranslate["metadata_dummy_batch"]?.blocks
+            
+            translatedBlocks?.forEachIndexed { index, block ->
+                val originalText = toTranslate[index]
+                val translatedText = block.translation
+                if (!translatedText.isNullOrBlank()) {
+                    val cacheKey = "${targetLangCode}_$originalText"
+                    cache[cacheKey] = translatedText
+                    resultMap[originalText] = translatedText
+                }
+            }
+            resultMap
+        } catch (e: Exception) {
+            logcat(LogPriority.ERROR, e) { "فشل في ترجمة الفلاتر المجمعة (Batch)" }
+            resultMap
+        }
     }
 
-    /**
-     * تغليف النص في "فقاعة وهمية" وتمرير الـ Preference مباشرة للمحرك
-     */
     private suspend fun translateTextViaBubble(text: String, targetLangPref: Preference<String>): String {
         val targetLangCode = targetLangPref.get()
         val cacheKey = "${targetLangCode}_$text"
@@ -62,7 +116,6 @@ class MetadataTranslator(
             val dummyPage = PageTranslation(blocks = mutableListOf(dummyBlock), imgWidth = 100f, imgHeight = 100f)
             val mapToTranslate = mutableMapOf("metadata_dummy_file" to dummyPage)
 
-            // استخدام ML Kit للتعرف على لغة النص الأصلية
             val fromLang = detectSourceLanguage(text) 
             val toLang = TextTranslatorLanguage.fromPref(targetLangPref)
             val enginePref = preferences.metadataTranslationEngine()
@@ -87,9 +140,6 @@ class MetadataTranslator(
         }
     }
 
-    /**
-     * فحص لغة النص باستخدام ML Kit وتحديد اللغة المصدرية للمحرك
-     */
     private suspend fun detectSourceLanguage(text: String): TextRecognizerLanguage {
         val identifier = LanguageIdentification.getClient()
         return try {
@@ -99,7 +149,6 @@ class MetadataTranslator(
                 "zh" -> TextRecognizerLanguage.CHINESE
                 "ja" -> TextRecognizerLanguage.JAPANESE
                 "ko" -> TextRecognizerLanguage.KOREAN
-                // في حال كانت النتيجة "und" (غير معروفة) أو لغات لاتينية أخرى، يتم التوجيه للإنجليزية كافتراضي
                 else -> TextRecognizerLanguage.ENGLISH
             }
         } catch (e: Exception) {
