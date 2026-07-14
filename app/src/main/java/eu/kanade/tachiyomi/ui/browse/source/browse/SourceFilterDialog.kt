@@ -15,8 +15,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import tachiyomi.presentation.core.util.collectAsState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -52,10 +52,38 @@ fun SourceFilterDialog(
 ) {
     val updateFilters = { onUpdate(filters) }
 
-    // 🚀 جلب إعدادات الترجمة والمترجم
     val translationPreferences = remember { Injekt.get<TranslationPreferences>() }
     val metadataTranslator = remember { Injekt.get<MetadataTranslator>() }
     val isTranslationEnabled by translationPreferences.metadataTranslationEnabled().collectAsState()
+
+    // 🚀 استخراج كل النصوص من القائمة دفعة واحدة
+    val allStringsToTranslate = remember(filters) {
+        val set = mutableSetOf<String>()
+        fun extract(filter: Filter<*>) {
+            set.add(filter.name)
+            if (filter is Filter.Select<*>) {
+                filter.values.forEach { set.add(it.toString()) }
+            } else if (filter is Filter.Sort) {
+                filter.values.forEach { set.add(it) }
+            } else if (filter is Filter.Group<*>) {
+                filter.state.filterIsInstance<Filter<*>>().forEach { extract(it) }
+            }
+        }
+        filters.forEach { extract(it) }
+        set
+    }
+
+    // 🚀 حالة الخريطة المترجمة
+    var translatedMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+
+    // 🚀 الترجمة المجمعة في مكان واحد (مرة واحدة فقط!)
+    LaunchedEffect(allStringsToTranslate, isTranslationEnabled) {
+        if (isTranslationEnabled) {
+            translatedMap = metadataTranslator.translateFiltersBatch(allStringsToTranslate)
+        } else {
+            translatedMap = emptyMap()
+        }
+    }
 
     AdaptiveSheet(onDismissRequest = onDismissRequest) {
         LazyColumn {
@@ -76,28 +104,26 @@ fun SourceFilterDialog(
 
                         Spacer(modifier = Modifier.weight(1f))
 
+                        // 🚀 زر الترجمة بجانب الأزرار العلوية
+                        Text(
+                            text = "ترجمة", 
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.padding(end = 4.dp)
+                        )
+                        Switch(
+                            checked = isTranslationEnabled,
+                            onCheckedChange = { 
+                                translationPreferences.metadataTranslationEnabled().set(it) 
+                            },
+                            modifier = Modifier.padding(end = 12.dp)
+                        )
+
                         Button(onClick = {
                             onFilter()
                             onDismissRequest()
                         }) {
                             Text(stringResource(MR.strings.action_filter))
                         }
-                    }
-
-                    // 🚀 إضافة زر التبديل للترجمة
-                    Row(
-                        modifier = Modifier
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(text = "تفعيل الترجمة", style = MaterialTheme.typography.bodyMedium)
-                        Spacer(modifier = Modifier.weight(1f))
-                        Switch(
-                            checked = isTranslationEnabled,
-                            onCheckedChange = { 
-                                translationPreferences.metadataTranslationEnabled().set(it) 
-                            }
-                        )
                     }
                     HorizontalDivider()
                 }
@@ -107,8 +133,7 @@ fun SourceFilterDialog(
                 FilterItem(
                     filter = filter, 
                     onUpdate = updateFilters, 
-                    isTranslationEnabled = isTranslationEnabled,
-                    translator = metadataTranslator
+                    translatedMap = translatedMap
                 )
             }
         }
@@ -119,19 +144,10 @@ fun SourceFilterDialog(
 private fun FilterItem(
     filter: Filter<*>, 
     onUpdate: () -> Unit, 
-    isTranslationEnabled: Boolean, 
-    translator: MetadataTranslator
+    translatedMap: Map<String, String>
 ) {
-    // 🚀 ترجمة اسم الفلتر لحظياً
-    var translatedName by remember(filter.name, isTranslationEnabled) { mutableStateOf(filter.name) }
-    
-    LaunchedEffect(filter.name, isTranslationEnabled) {
-        translatedName = if (isTranslationEnabled) {
-            translator.translateFilter(filter.name)
-        } else {
-            filter.name
-        }
-    }
+    // 🚀 تطبيق الترجمة الجاهزة من الخريطة (إن وجدت)
+    val translatedName = translatedMap[filter.name] ?: filter.name
 
     when (filter) {
         is Filter.Header -> {
@@ -168,18 +184,11 @@ private fun FilterItem(
             }
         }
         is Filter.Select<*> -> {
-            // 🚀 ترجمة خيارات القائمة المنسدلة
-            var translatedOptions by remember(filter.values, isTranslationEnabled) { 
-                mutableStateOf(filter.values.map { it.toString() }.toTypedArray()) 
-            }
-            LaunchedEffect(filter.values, isTranslationEnabled) {
-                translatedOptions = if (isTranslationEnabled) {
-                    filter.values.map { translator.translateFilter(it.toString()) }.toTypedArray()
-                } else {
-                    filter.values.map { it.toString() }.toTypedArray()
-                }
-            }
-
+            // تطبيق الترجمة على القوائم المنسدلة
+            val translatedOptions = filter.values.map { 
+                translatedMap[it.toString()] ?: it.toString() 
+            }.toTypedArray()
+            
             SelectItem(
                 label = translatedName,
                 options = translatedOptions,
@@ -190,16 +199,9 @@ private fun FilterItem(
             }
         }
         is Filter.Sort -> {
-            // 🚀 ترجمة خيارات الفرز
-            var translatedSortOptions by remember(filter.values, isTranslationEnabled) { 
-                mutableStateOf(filter.values.toList()) 
-            }
-            LaunchedEffect(filter.values, isTranslationEnabled) {
-                translatedSortOptions = if (isTranslationEnabled) {
-                    filter.values.map { translator.translateFilter(it) }
-                } else {
-                    filter.values.toList()
-                }
+            // تطبيق الترجمة على خيارات الفرز
+            val translatedSortOptions = filter.values.map { 
+                translatedMap[it] ?: it 
             }
 
             CollapsibleBox(
@@ -238,8 +240,7 @@ private fun FilterItem(
                             FilterItem(
                                 filter = it, 
                                 onUpdate = onUpdate, 
-                                isTranslationEnabled = isTranslationEnabled, 
-                                translator = translator
+                                translatedMap = translatedMap 
                             ) 
                         }
                 }
