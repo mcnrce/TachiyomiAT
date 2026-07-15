@@ -999,13 +999,15 @@ class ChapterTranslator(
                 .coerceIn(1.0f, 1.25f)
             val finalScale = sqrt(textRatio.toDouble()).toFloat()
             
-            if (abs(block.angle) in 70.0..110.0){
-                var newHeight = block.height * finalScale * 1.3f
-                var newWidth = block.width * finalScale
-            }else{
-                var newHeight = block.height * finalScale
-                var newWidth = block.width * finalScale * 1.3
-            }
+            var newHeight: Float
+var newWidth: Float
+if (abs(block.angle) in 70.0..110.0) {
+    newHeight = block.height * finalScale * 1.3f
+    newWidth = block.width * finalScale
+} else {
+    newHeight = block.height * finalScale
+    newWidth = block.width * finalScale * 1.3f
+}
 
             val newX = block.x - (newWidth - block.width) / 2f
             val newY = block.y - (newHeight - block.height) / 2f
