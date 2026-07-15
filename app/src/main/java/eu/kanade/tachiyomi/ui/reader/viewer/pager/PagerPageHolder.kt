@@ -48,15 +48,11 @@ class PagerPageHolder(
     readerThemedContext: Context,
     val viewer: PagerViewer,
     val page: ReaderPage,
-    // TachiyomiAT
     translationPreferences: TranslationPreferences = Injekt.get(),
     mangaTranslationPreferences: MangaTranslationPreferences = Injekt.get(),
     private val font: TranslationFont = TranslationFont.fromPref(translationPreferences.translationFont()),
     readerPreferences: ReaderPreferences = Injekt.get(),
     private val translationManager: TranslationManager = Injekt.get(),
-    // TachiyomiAT: منطق الأولوية — إعداد المانجا الخاص يَجبّ الإعداد العام إن وُجد.
-    // نستخدم viewer.activity.viewModel.manga?.id لأنه المصدر الموثوق والمضمون التوفر
-    // (الـ DbChapter القديم على page.chapter.chapter لا يحمل mangaId بشكل مباشر وموثوق).
     private val realtimeTranslation: Boolean = run {
         val mangaId = viewer.activity.viewModel.manga?.id
         if (mangaId == null) {
@@ -70,36 +66,22 @@ class PagerPageHolder(
     },
 ) : ReaderPageImageView(readerThemedContext), ViewPagerAdapter.PositionableView {
 
-    // TachiyomiAT
     private var showTranslations = true
     private var translationsView: PagerTranslationsView? = null
 
-    /**
-     * Item that identifies this view. Needed by the adapter to not recreate views.
-     */
     override val item
         get() = page
 
-    /**
-     * Loading progress bar to indicate the current progress.
-     */
     private var progressIndicator: ReaderProgressIndicator? = null
-
-    /**
-     * Error layout to show when the image fails to load.
-     */
     private var errorLayout: ReaderErrorBinding? = null
-
     private val scope = MainScope()
-
-    /**
-     * Job for loading the page and processing changes to the page's status.
-     */
     private var loadJob: Job? = null
+    // ✅ FIX: متغير لتتبع مشترك globalPageTranslatedFlow
+    private var translationFlowJob: Job? = null
 
     init {
         loadJob = scope.launch { loadPageAndProcessStatus() }
-        // TachiyomiAT
+        
         showTranslations = readerPreferences.showTranslations().get()
         readerPreferences.showTranslations().changes().onEach {
             showTranslations = it
@@ -110,12 +92,9 @@ class PagerPageHolder(
             }
         }.launchIn(scope)
 
-        // TachiyomiAT: مراقبة مستمرة للترجمة الفورية عبر global flow.
-        // كل holder يراقب فقط الأحداث الخاصة بـ (chapterId, fileName) صفحته هو،
-        // لذا يعمل بشكل صحيح بغض النظر عن أي فصل دخله المستخدم سابقاً أو لاحقاً —
-        // الفلترة بـ chapterId تمنع تسرّب أحداث فصل قديم لصفحة فصل جديد.
+        // ✅ FIX: حفظ مرجع الـ Job لتتمكن من إلغائه لاحقاً
         if (realtimeTranslation) {
-            scope.launch {
+            translationFlowJob = scope.launch {
                 val pageFileName = String.format("%03d.jpg", page.index)
                 val chapterId = page.chapter.chapter.id
                 translationManager.globalPageTranslatedFlow.collect { event ->
@@ -133,14 +112,25 @@ class PagerPageHolder(
         }
     }
 
-    /**
-     * Called when this view is detached from the window. Unsubscribes any active subscription.
-     */
     @SuppressLint("ClickableViewAccessibility")
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         loadJob?.cancel()
         loadJob = null
+        
+        // ✅ FIX: إلغاء مشترك globalPageTranslatedFlow显式
+        translationFlowJob?.cancel()
+        translationFlowJob = null
+        
+        // ✅ FIX: إلغاء scope لقتل جميع Coroutines المتبقية
+        scope.cancel()
+        
+        // ✅ FIX: حذف الترجمة من الذاكرة
+        page.translation = null
+        
+        // ✅ FIX: إزالة translationsView من الـ View hierarchy
+        removeView(translationsView)
+        translationsView = null
     }
 
     private fun initProgressIndicator() {
@@ -150,13 +140,6 @@ class PagerPageHolder(
         }
     }
 
-    /**
-     * Loads the page and processes changes to the page's status.
-     *
-     * Returns immediately if the page has no PageLoader.
-     * Otherwise, this function does not return. It will continue to process status changes until
-     * the Job is cancelled.
-     */
     private suspend fun loadPageAndProcessStatus() {
         val loader = page.chapter.pageLoader ?: return
 
@@ -176,11 +159,7 @@ class PagerPageHolder(
                     }
                     Page.State.READY -> {
                         setImage()
-                        // TachiyomiAT
                         addTranslationsView()
-                        // TachiyomiAT: ابدأ الترجمة الفورية إذا لم تكن الصفحة مترجمة بعد.
-                        // queueChapterWithPages تتحقق داخلياً من وجود translation فوري نشط
-                        // لنفس الفصل وتضيف هذه الصفحة إليه بدل إنشاء واحد منفصل لكل صفحة.
                         if (page.translation == null && realtimeTranslation) {
                             triggerRealtimeTranslation()
                         }
@@ -191,39 +170,26 @@ class PagerPageHolder(
         }
     }
 
-    /**
-     * Called when the page is queued.
-     */
     private fun setQueued() {
         initProgressIndicator()
         progressIndicator?.show()
         removeErrorLayout()
     }
 
-    /**
-     * Called when the page is loading.
-     */
     private fun setLoading() {
         initProgressIndicator()
         progressIndicator?.show()
         removeErrorLayout()
     }
 
-    /**
-     * Called when the page is downloading.
-     */
     private fun setDownloading() {
         initProgressIndicator()
         progressIndicator?.show()
         removeErrorLayout()
     }
 
-    /**
-     * Called when the page is ready.
-     */
     private suspend fun setImage() {
         progressIndicator?.setProgress(0)
-
         val streamFn = page.stream ?: return
 
         try {
@@ -281,7 +247,6 @@ class PagerPageHolder(
         }
 
         onPageSplit(page)
-
         return splitInHalf(imageSource)
     }
 
@@ -319,56 +284,36 @@ class PagerPageHolder(
         viewer.onPageSplit(page, newPage)
     }
 
-    /**
-     * Called when the page has an error.
-     */
     private fun setError() {
         progressIndicator?.hide()
         showErrorLayout()
-        // TachiyomiAT
         translationsView?.hide()
     }
 
     override fun onImageLoaded() {
         super.onImageLoaded()
         progressIndicator?.hide()
-        // TachiyomiAT
         updateTranslationCoords(pageView as SubsamplingScaleImageView)
-        // TachiyomiAT
         translationsView?.show()
     }
 
-    /**
-     * Called when an image fails to decode.
-     */
     override fun onImageLoadError() {
         super.onImageLoadError()
         setError()
-        // TachiyomiAT
         translationsView?.hide()
     }
 
-    /**
-     * Called when an image is zoomed in/out.
-     */
     override fun onScaleChanged(newScale: Float) {
         super.onScaleChanged(newScale)
         viewer.activity.hideMenu()
-        // TachiyomiAT
         updateTranslationCoords(pageView as SubsamplingScaleImageView)
     }
 
-    // TachiyomiAT
     override fun onCenterChanged(newCenter: PointF?) {
         super.onCenterChanged(newCenter)
         updateTranslationCoords(pageView as SubsamplingScaleImageView)
     }
 
-    // TachiyomiAT: تشغيل الترجمة الفورية عندما تكون الصورة جاهزة.
-    // المفتاح "%03d.jpg" حسب page.index هو نفس المفتاح المستخدم في:
-    //   - ChapterLoader (عند قراءة JSON موجود وربطه بالصفحات)
-    //   - ChapterTranslator (عند الترجمة العادية للأرشيف الكامل)
-    // هذا يضمن أن أي ترجمة تُنتج (عادية أو فورية) تُقرأ بشكل صحيح بغض النظر عن المصدر.
     private fun triggerRealtimeTranslation() {
         val stream = page.stream ?: return
         val manga = viewer.activity.viewModel.manga ?: return
@@ -377,7 +322,6 @@ class PagerPageHolder(
         translationManager.queueChapterWithPages(manga, domainChapter, listOf(Pair(fileName, stream)))
     }
 
-    // TachiyomiAT
     private fun addTranslationsView() {
         if (page.translation == null) return
         removeView(translationsView)
@@ -386,7 +330,6 @@ class PagerPageHolder(
         addView(translationsView, MATCH_PARENT, MATCH_PARENT)
     }
 
-    // TachiyomiAT
     private fun updateTranslationCoords(vi: SubsamplingScaleImageView) {
         if (page.translation == null) return
         val coords = vi.sourceToViewCoord(0f, 0f)
@@ -421,9 +364,6 @@ class PagerPageHolder(
         return errorLayout!!
     }
 
-    /**
-     * Removes the decode error layout from the holder, if found.
-     */
     private fun removeErrorLayout() {
         errorLayout?.root?.isVisible = false
         errorLayout = null
