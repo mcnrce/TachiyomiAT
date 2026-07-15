@@ -238,24 +238,29 @@ class ReaderViewModel @JvmOverloads constructor(
             .launchIn(viewModelScope)
     }
 
-    override fun onCleared() {
-    val currentChapters = state.value.viewerChapters
-    
-    // [تحسين]: إيقاف أي ترجمة نشطة للفصل الحالي عند الخروج من القارئ
-    // لتوفير البيانات وطلبات الـ API
-    state.value.currentChapter?.chapter?.id?.let { currentChapterId ->
-        translationManager.getQueuedTranslationOrNull(currentChapterId)?.let { t ->
-            translationManager.cancelQueuedTranslation(t)
+        override fun onCleared() {
+        val currentChapters = state.value.viewerChapters
+        
+        // إيقاف أي ترجمة نشطة للفصل الحالي عند الخروج من القارئ
+        state.value.currentChapter?.chapter?.id?.let { currentChapterId ->
+            translationManager.getQueuedTranslationOrNull(currentChapterId)?.let { t ->
+                translationManager.cancelQueuedTranslation(t)
+            }
+        }
+
+        // ✅ FIX: حذف ترجمات جميع الصفحات من الذاكرة عند الخروج
+        currentChapters?.currChapter?.pages?.forEach { it.translation = null }
+        currentChapters?.prevChapter?.pages?.forEach { it.translation = null }
+        currentChapters?.nextChapter?.pages?.forEach { it.translation = null }
+
+        if (currentChapters != null) {
+            currentChapters.unref()
+            chapterToDownload?.let {
+                downloadManager.addDownloadsToStartOfQueue(listOf(it))
+            }
         }
     }
 
-    if (currentChapters != null) {
-        currentChapters.unref()
-        chapterToDownload?.let {
-            downloadManager.addDownloadsToStartOfQueue(listOf(it))
-        }
-    }
-}
 
 
     /**
