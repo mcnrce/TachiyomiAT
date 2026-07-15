@@ -238,8 +238,16 @@ class ChapterTranslator(
         if (provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source) != null) return
         if (queueState.value.any { it.chapter.id == chapter.id }) return
         if (!validateEngineSupportsLanguage()) return
-        val fromLang = TextRecognizerLanguage.fromPref(translationPreferences.translateFromLanguage())
+
         val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
+        val hasOverride = mangaTranslationPreferences.hasOverride(manga.id).get()
+
+        // منع إضافة الفصل للطابور إذا تطابقت اللغات أو تم استثناؤها
+        if (!hasOverride && shouldSkipTranslation(source.lang, toLang)) {
+            return
+        }
+
+        val fromLang = TextRecognizerLanguage.fromPref(translationPreferences.translateFromLanguage())
         val translation = Translation(source, manga, chapter, fromLang, toLang, isRealtimeMode = false)
         addToQueue(translation)
     }
@@ -264,7 +272,7 @@ class ChapterTranslator(
         val hasOverride = mangaTranslationPreferences.hasOverride(manga.id).get()
         val toLang = TextTranslatorLanguage.fromPref(translationPreferences.translateToLanguage())
 
-        if (!hasOverride && sourceLanguageMatchesTarget(source.lang, toLang)) {
+        if (!hasOverride && shouldSkipTranslation(source.lang, toLang)) {
             return
         }
 
@@ -291,10 +299,23 @@ class ChapterTranslator(
         }
     }
 
-    private fun sourceLanguageMatchesTarget(sourceLang: String, toLang: TextTranslatorLanguage): Boolean {
+    private fun shouldSkipTranslation(sourceLang: String, toLang: TextTranslatorLanguage): Boolean {
         val normalizedSource = sourceLang.substringBefore("-").lowercase()
         val normalizedTarget = toLang.code.substringBefore("-").lowercase()
-        return normalizedSource == normalizedTarget
+
+        // التحقق الأول: هل اللغة الأصلية هي نفس اللغة الهدف؟
+        if (normalizedSource == normalizedTarget) return true
+
+        // التحقق الثاني: هل اللغة موجودة في قائمة الاستثناءات؟
+        val excludedLangs = translationPreferences.translationExcludedLanguages().get()
+            .split(",")
+            .map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() }
+
+        // نتحقق مما إذا كان الهدف موجوداً في قائمة الاستثناء
+        if (excludedLangs.contains(normalizedTarget) || excludedLangs.contains(normalizedSource)) return true
+
+        return false
     }
 
     fun finishRealtimeChapter(chapterId: Long) {
