@@ -87,6 +87,11 @@ object SettingsTranslationScreen : SearchableSettings {
                     title = stringResource(ATMR.strings.pref_metadata_enabled),
                     subtitle = stringResource(ATMR.strings.pref_sub_metadata_enabled)
                 ),
+                Preference.PreferenceItem.EditTextPreference(
+    pref = translationPreferences.translationExcludedLanguages(),
+    title = "لغات مستثناة من الترجمة",
+    subtitle = "اكتب رموز اللغات مفصولة بفاصلة، مثال: en, ar, zh",
+),
                 Preference.PreferenceItem.ListPreference(
                     pref = translationPreferences.translateMangaTitleTo(),
                     title = stringResource(ATMR.strings.pref_metadata_title_lang),
