@@ -148,9 +148,6 @@ class WebtoonPageHolder(
         translationCollectorJob?.cancel()
         translationCollectorJob = null
 
-        // ✅ FIX: إلغاء scope لقتل جميع Coroutines المتبقية
-        scope.cancel()
-
         // ✅ FIX: حذف الترجمة من الذاكرة لتحرير RAM
         page?.translation = null
 
