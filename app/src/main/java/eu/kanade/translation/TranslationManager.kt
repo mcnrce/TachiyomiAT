@@ -53,6 +53,10 @@ class TranslationManager(
     val queueState
         get() = translator.queueState
 
+    // ✅ FIX: إضافة LruCache للترجمات (10 فصول كحد أقصى)
+    // يقلل من قراءة القرص المتكررة ويحافظ على الذاكرة
+    private val translationCache = android.util.LruCache<String, Map<String, PageTranslation>>(10)
+
     init {
         queueState
             .flatMapLatest { queue ->
@@ -138,16 +142,27 @@ class TranslationManager(
 
     // ─── Read Translation ─────────────────────────────────────────────────────
 
+    // ✅ FIX: getChapterTranslation مع LruCache
     fun getChapterTranslation(
         chapterName: String,
         scanlator: String?,
         title: String,
         source: Source,
     ): Map<String, PageTranslation> {
+        val cacheKey = "$title|$chapterName|$scanlator"
+        
+        // ✅ FIX: التحقق من الكاش أولاً
+        translationCache.get(cacheKey)?.let { return it }
+        
         return try {
             val file = provider.findTranslationFile(chapterName, scanlator, title, source)
                 ?: return emptyMap()
-            getChapterTranslation(file)
+            val result = getChapterTranslation(file)
+            // ✅ FIX: تخزين في الكاش إذا كانت النتيجة غير فارغة
+            if (result.isNotEmpty()) {
+                translationCache.put(cacheKey, result)
+            }
+            result
         } catch (_: Exception) {
             emptyMap()
         }
@@ -162,6 +177,17 @@ class TranslationManager(
         }
     }
 
+    // ✅ FIX: دالة لمسح الكاش بالكامل (يمكن استدعاؤها من ReaderViewModel عند الخروج)
+    fun clearTranslationCache() {
+        translationCache.evictAll()
+    }
+
+    // ✅ FIX: دالة لمسح فصل محدد من الكاش (مفيد عند حذف ترجمة)
+    fun removeTranslationFromCache(chapterName: String, scanlator: String?, title: String) {
+        val cacheKey = "$title|$chapterName|$scanlator"
+        translationCache.remove(cacheKey)
+    }
+
     // ─── Delete Translation ───────────────────────────────────────────────────
 
     fun deleteTranslation(chapter: Chapter, manga: Manga, source: Source) {
@@ -169,6 +195,8 @@ class TranslationManager(
             removeFromTranslationQueue(chapter)
             provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
                 ?.delete()
+            // ✅ FIX: مسح من الكاش أيضاً
+            removeTranslationFromCache(chapter.name, chapter.scanlator, manga.title)
             // أعد العداد للصفر → أيقونة الترجمة ترجع لـ "غير مترجم" فوراً
             mangaTranslationPreferences.clearChapterTranslation(chapter.id)
         }
@@ -180,6 +208,8 @@ class TranslationManager(
             provider.findMangaDir(manga.title, source)?.delete()
             val sourceDir = provider.findSourceDir(source)
             if (sourceDir?.listFiles()?.isEmpty() == true) sourceDir.delete()
+            // ✅ FIX: مسح الكاش بالكامل عند حذف المانجا
+            clearTranslationCache()
         }
     }
 
