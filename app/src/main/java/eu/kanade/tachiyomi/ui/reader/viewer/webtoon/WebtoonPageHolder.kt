@@ -101,7 +101,7 @@ class WebtoonPageHolder(
     }
 
     fun bind(page: ReaderPage) {
-        // ✅ إلغاء المشترك السابق فوراً قبل إنشاء مشترك جديد
+        // ✅ FIX: إلغاء المشترك السابق فوراً قبل إنشاء مشترك جديد
         translationCollectorJob?.cancel()
         translationCollectorJob = null
         
@@ -147,6 +147,12 @@ class WebtoonPageHolder(
         translationCollectorJob?.cancel()
         translationCollectorJob = null
 
+        // ✅ FIX: إلغاء scope لقتل جميع Coroutines المتبقية
+        scope.cancel()
+
+        // ✅ FIX: حذف الترجمة من الذاكرة لتحرير RAM
+        page?.translation = null
+
         removeErrorLayout()
         frame.recycle()
         progressIndicator.setProgress(0)
@@ -154,6 +160,9 @@ class WebtoonPageHolder(
 
         frame.removeView(translationsView)
         translationsView = null
+        
+        // ✅ FIX: حذف مرجع الصفحة لتسريع GC
+        page = null
     }
 
     private suspend fun loadPageAndProcessStatus() {
@@ -176,8 +185,6 @@ class WebtoonPageHolder(
                     Page.State.READY -> {
                         setImage()
                         addTranslationsView()
-                        // ✅ نقل triggerRealtimeTranslation إلى onImageDecoded بدلاً من هنا
-                        // لضمان أن الصورة جاهزة فعلياً قبل طلب الترجمة
                     }
                     Page.State.ERROR -> setError()
                 }
@@ -268,7 +275,6 @@ class WebtoonPageHolder(
         removeErrorLayout()
         translationsView?.show()
         
-        // ✅ بدء الترجمة الفورية بعد تحميل الصورة فعلياً
         val page = this.page
         if (page != null && page.translation == null && realtimeTranslation) {
             triggerRealtimeTranslation(page)
@@ -281,7 +287,6 @@ class WebtoonPageHolder(
         val domainChapter = page.chapter.chapter.toDomainChapter() ?: return
         val fileName = String.format("%03d.jpg", page.index)
         
-        // ✅ لا تطلب إذا كانت الصفحة مترجمة أو في الطابور
         if (page.translation != null) return
         
         val queued = translationManager.getQueuedTranslationOrNull(domainChapter.id!!)
