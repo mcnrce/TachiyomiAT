@@ -185,6 +185,7 @@ class MetadataTranslator(
     } catch (e: Exception) {
         false
     }
+    }
 
     private suspend fun detectSourceLanguage(text: String): TextRecognizerLanguage {
         val identifier = LanguageIdentification.getClient()
