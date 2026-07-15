@@ -287,19 +287,19 @@ private fun TranslationSettingsSection() {
     val translateDesc by preferences.translateMangaDescription().collectAsState()
     val translateTags by preferences.translateMangaTags().collectAsState()
 
-    Column(
+        Column(
         modifier = Modifier
             .padding(horizontal = TabbedDialogPaddings.Horizontal)
             .padding(vertical = 8.dp),
     ) {
         Text(
-            text = "إعدادات الترجمة",
+            text = stringResource(ATMR.strings.pref_translation_settings_title), // تم التعديل
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(bottom = 8.dp),
         )
 
         LabeledCheckbox(
-            label = "تفعيل ترجمة البيانات الوصفية (Metadata)",
+            label = stringResource(ATMR.strings.pref_metadata_translation_enabled), // تم التعديل
             checked = isEnabled,
             onCheckedChange = { preferences.metadataTranslationEnabled().set(it) },
         )
@@ -307,17 +307,17 @@ private fun TranslationSettingsSection() {
         if (isEnabled) {
             Column(modifier = Modifier.padding(start = 24.dp)) {
                 LabeledCheckbox(
-                    label = "ترجمة العنوان",
+                    label = stringResource(ATMR.strings.pref_translate_title), // تم التعديل
                     checked = translateTitle,
                     onCheckedChange = { preferences.translateMangaTitle().set(it) },
                 )
                 LabeledCheckbox(
-                    label = "ترجمة الوصف",
+                    label = stringResource(ATMR.strings.pref_translate_description), // تم التعديل
                     checked = translateDesc,
                     onCheckedChange = { preferences.translateMangaDescription().set(it) },
                 )
                 LabeledCheckbox(
-                    label = "ترجمة التصنيفات",
+                    label = stringResource(ATMR.strings.pref_translate_tags), // تم التعديل
                     checked = translateTags,
                     onCheckedChange = { preferences.translateMangaTags().set(it) },
                 )
