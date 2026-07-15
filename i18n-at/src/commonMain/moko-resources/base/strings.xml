@@ -45,6 +45,14 @@
     <string name="pref_metadata_tags_lang">Tags Translation Language</string>
     <string name="pref_metadata_engine">Metadata Translator Engine</string>
     <string name="pref_metadata_ui_lang">tag search translation engine</string>
+    <string name="action_translate">Translate</string>
+    <string name="pref_translation_settings_title">Translation Settings</string>
+<string name="pref_metadata_translation_enabled">Enable Metadata Translation</string>
+<string name="pref_translate_title">Translate Title</string>
+<string name="pref_translate_description">Translate Description</string>
+<string name="pref_translate_tags">Translate Tags</string>
+
+
 
 
     <!-- Performance & Advanced OCR Settings -->
