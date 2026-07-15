@@ -29,6 +29,7 @@ import eu.kanade.translation.MetadataTranslator
 import tachiyomi.core.common.preference.TriState
 import tachiyomi.domain.translation.TranslationPreferences
 import tachiyomi.i18n.MR
+import tachiyomi.i18n.at.ATMR
 import tachiyomi.presentation.core.components.CheckboxItem
 import tachiyomi.presentation.core.components.CollapsibleBox
 import tachiyomi.presentation.core.components.HeadingItem
