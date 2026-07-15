@@ -57,6 +57,11 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
 
     private val threshold: Int = Injekt.get<ReaderPreferences>().readerHideThreshold().get().threshold
 
+    // ✅ FIX: متغيرات تخزين مؤقت لـ computeOffscreenPageLimit
+    private var cachedOffscreenLimit: Int = 1
+    private var cachedPageBytes: Long = 0L
+    private var lastPageHash: Int = 0
+
     init {
         recycler.isVisible = false 
         recycler.layoutParams = ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT)
@@ -137,8 +142,7 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         frame.addView(recycler)
     }
 
-    // ─── الحساب الذكي للتحميل المسبق للترجمة (Memory Budget الديناميكي) ───
-    
+    // ✅ FIX: computeOffscreenPageLimit مع تخزين مؤقت
     private suspend fun computeOffscreenPageLimit(): Int {
         val translationPreferences = Injekt.get<tachiyomi.domain.translation.TranslationPreferences>()
         val mangaTranslationPreferences = Injekt.get<tachiyomi.domain.translation.MangaTranslationPreferences>()
@@ -153,12 +157,18 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
             translationPreferences.realtimeTranslation().get()
         }
 
-        // الكاش الافتراضي لـ Webtoon RecyclerView لمنع التقطيع إذا الترجمة معطلة
         val defaultRecyclerCache = 1
 
         if (!realtimeEnabled) return defaultRecyclerCache
 
-        // قراءة الإعدادات الديناميكية
+        // ✅ FIX: إعادة استخدام القيمة المخزنة إذا لم يتغير شيء
+        val currentState = activity.viewModel.state.value
+        val currentPage = currentState.currentChapter?.pages?.getOrNull(currentState.currentPage - 1)
+        val currentHash = currentPage?.hashCode() ?: 0
+        if (currentHash == lastPageHash && cachedPageBytes > 0) {
+            return cachedOffscreenLimit
+        }
+
         val defaultPreload = translationPreferences.realtimeDefaultPreloadCount().get()
         val maxPreload = translationPreferences.realtimeMaxPreloadCount().get()
         val memoryBudgetMb = translationPreferences.realtimePreloadMemoryBudgetMb().get()
@@ -169,8 +179,14 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
 
         val maxPagesInBudget = (memoryBudgetBytes / estimatedPageBytes).toInt()
         
-        // حماية من تقليل الكاش أقل من الكاش الافتراضي للـ RecyclerView
-        return maxPagesInBudget.coerceIn(defaultRecyclerCache, maxPreload)
+        val result = maxPagesInBudget.coerceIn(defaultRecyclerCache, maxPreload)
+        
+        // ✅ FIX: تخزين النتيجة
+        lastPageHash = currentHash
+        cachedPageBytes = estimatedPageBytes
+        cachedOffscreenLimit = result
+        
+        return result
     }
 
     private suspend fun estimateCurrentPageMemoryBytes(): Long = withContext(Dispatchers.IO) {
@@ -187,8 +203,6 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
             0L
         }
     }
-
-    // ────────────────────────────────────────────────────────────
 
     private fun checkAllowPreload(page: ReaderPage?): Boolean {
         page ?: return true
@@ -209,8 +223,16 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
     }
 
     override fun destroy() {
-        super.destroy()
+        // ✅ FIX: إلغاء Job المعلقة
+        limitCalculationJob?.cancel()
+        
+        // ✅ FIX: تنظيف RecyclerView
+        recycler.adapter = null
+        recycler.layoutManager = null
+        recycler.clearOnScrollListeners()
+        
         scope.cancel()
+        super.destroy()
     }
 
     private fun onPageSelected(page: ReaderPage, allowPreload: Boolean) {
