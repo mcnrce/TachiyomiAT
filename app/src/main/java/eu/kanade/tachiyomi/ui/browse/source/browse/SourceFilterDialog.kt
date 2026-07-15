@@ -106,7 +106,7 @@ fun SourceFilterDialog(
 
                         // زر الترجمة بجانب الأزرار العلوية
                         Text(
-                            text = "ترجمة", 
+                            text = stringResource(MR.strings.action_translate),
                             style = MaterialTheme.typography.labelLarge,
                             modifier = Modifier.padding(end = 4.dp)
                         )
