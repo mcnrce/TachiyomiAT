@@ -1001,7 +1001,9 @@ class ChapterTranslator(
             
             if (abs(block.angle) in 70.0..110.0){
                 var newHeight = block.height * finalScale * 1.3f
+                var newWidth = block.width * finalScale
             }else{
+                var newHeight = block.height * finalScale
                 var newWidth = block.width * finalScale * 1.3
             }
 
