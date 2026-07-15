@@ -175,13 +175,15 @@ class MetadataTranslator(
 
     // التحقق مما إذا كانت اللغة تقع ضمن قائمة اللغات المستثناة
     private fun isLanguageExcluded(langCode: String): Boolean {
-        return try {
-            val excluded = preferences.excludedLanguages().get()
-            val normalizedLang = langCode.substringBefore("-").lowercase().trim()
-            excluded.any { it.substringBefore("-").lowercase().trim() == normalizedLang }
-        } catch (e: Exception) {
-            false
-        }
+    return try {
+        val excluded = preferences.translationExcludedLanguages().get()
+            .split(",")
+            .map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() }
+        val normalizedLang = langCode.substringBefore("-").lowercase().trim()
+        excluded.any { it.substringBefore("-").lowercase().trim() == normalizedLang }
+    } catch (e: Exception) {
+        false
     }
 
     private suspend fun detectSourceLanguage(text: String): TextRecognizerLanguage {
