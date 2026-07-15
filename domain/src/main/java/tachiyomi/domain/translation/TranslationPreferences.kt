@@ -41,6 +41,7 @@ class TranslationPreferences(
 
     // التفعيل العام لميزة ترجمة النصوص (الزر الشامل)
     fun metadataTranslationEnabled() = preferenceStore.getBoolean("metadata_translation_enabled", false)
+    fun excludedLanguages(): Preference<Set<String>>
 
     // تفعيل الترجمة لكل جزء على حدة (تظهر في إعدادات الفصل)
     fun translateMangaTitle() = preferenceStore.getBoolean("pref_translate_manga_title", true)
