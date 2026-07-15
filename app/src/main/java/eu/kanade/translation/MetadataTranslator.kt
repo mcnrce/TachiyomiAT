@@ -36,7 +36,7 @@ class MetadataTranslator(
         return translateTextViaBubble(tags, preferences.translateMangaTagsTo())
     }
 
-    // 🚀 دالة جديدة للترجمة المجمعة (Batch Translation)
+    // 🚀 دالة الترجمة المجمعة المحدثة (Batch Translation)
     suspend fun translateFiltersBatch(texts: Set<String>): Map<String, String> {
         if (texts.isEmpty() || !preferences.metadataTranslationEnabled().get()) return emptyMap()
 
@@ -46,14 +46,21 @@ class MetadataTranslator(
         val toTranslate = mutableListOf<String>()
         val resultMap = mutableMapOf<String, String>()
 
-        // فحص الذاكرة المؤقتة أولاً
+        // فحص الذاكرة المؤقتة والتحقق من تطابق واستبعاد اللغات أولاً لتقليل المعالجة
         for (text in texts) {
             if (text.isBlank()) continue
             val cacheKey = "${targetLangCode}_$text"
             if (cache.containsKey(cacheKey)) {
                 resultMap[text] = cache[cacheKey]!!
             } else {
-                toTranslate.add(text)
+                val detected = identifyRawLanguage(text)
+                // إذا كانت اللغة الأصلية تطابق لغة الترجمة، أو كانت مستثناة، نرجع النص كما هو ونضعه بالكاش
+                if (isSameLanguage(detected, targetLangCode) || isLanguageExcluded(detected)) {
+                    resultMap[text] = text
+                    cache[cacheKey] = text
+                } else {
+                    toTranslate.add(text)
+                }
             }
         }
 
@@ -89,6 +96,7 @@ class MetadataTranslator(
             translatedBlocks?.forEachIndexed { index, block ->
                 val originalText = toTranslate[index]
                 val translatedText = block.translation
+       
                 if (!translatedText.isNullOrBlank()) {
                     val cacheKey = "${targetLangCode}_$originalText"
                     cache[cacheKey] = translatedText
@@ -104,6 +112,13 @@ class MetadataTranslator(
 
     private suspend fun translateTextViaBubble(text: String, targetLangPref: Preference<String>): String {
         val targetLangCode = targetLangPref.get()
+        
+        // 1. تحقق من لغة النص الأصلية قبل كل شيء لتجنب العمليات غير الضرورية
+        val detectedLang = identifyRawLanguage(text)
+        if (isSameLanguage(detectedLang, targetLangCode) || isLanguageExcluded(detectedLang)) {
+            return text
+        }
+
         val cacheKey = "${targetLangCode}_$text"
         cache[cacheKey]?.let { return it }
 
@@ -137,6 +152,35 @@ class MetadataTranslator(
         } catch (e: Exception) {
             logcat(LogPriority.ERROR, e) { "فشل في ترجمة البيانات الوصفية (Metadata)" }
             text
+        }
+    }
+
+    // التعرف على اللغة الخام بشكل دقيق عبر ML Kit
+    private suspend fun identifyRawLanguage(text: String): String {
+        return try {
+            val identifier = LanguageIdentification.getClient()
+            identifier.identifyLanguage(text).await()
+        } catch (e: Exception) {
+            "und"
+        }
+    }
+
+    // مقارنة اللغتين بعد تسوية الصيغة (Normalization)
+    private fun isSameLanguage(detected: String, target: String): Boolean {
+        if (detected == "und" || detected.isBlank()) return false
+        val normDetected = detected.substringBefore("-").lowercase().trim()
+        val normTarget = target.substringBefore("-").lowercase().trim()
+        return normDetected == normTarget
+    }
+
+    // التحقق مما إذا كانت اللغة تقع ضمن قائمة اللغات المستثناة
+    private fun isLanguageExcluded(langCode: String): Boolean {
+        return try {
+            val excluded = preferences.excludedLanguages().get()
+            val normalizedLang = langCode.substringBefore("-").lowercase().trim()
+            excluded.any { it.substringBefore("-").lowercase().trim() == normalizedLang }
+        } catch (e: Exception) {
+            false
         }
     }
 
