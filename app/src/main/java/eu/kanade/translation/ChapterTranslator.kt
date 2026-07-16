@@ -337,12 +337,12 @@ class ChapterTranslator(
     // ═══════════════════════════════════════════════════════════════════════════
 
     private suspend fun resolveSourceLanguageForManga(
-        mangaId: Long, 
-        source: HttpSource, 
+        mangaId: Long,
+        source: HttpSource,
         mangaTitle: String,
         pageStreams: List<Pair<String, () -> InputStream>>
     ): TextRecognizerLanguage? {
-        
+
         // 1. الأولوية للإعداد اليدوي
         val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
         if (hasOverride) {
@@ -353,23 +353,36 @@ class ChapterTranslator(
         val titleLang = detectLanguageFromMangaTitle(mangaTitle)
         if (titleLang != null) return titleLang
 
-        // 3. فحص الصفحات بدءاً من الصفحة 3 (index 2) باستخدام ML Kit
-        // نأخذ عينة من أول 3 صفحات متاحة بعد الغلاف والصفحة التوضيحية
-        val pagesToSample = pageStreams.drop(2).take(3) 
-        
-        for ((_, streamFn) in pagesToSample) {
-            val text = extractTextFromStream(streamFn)
-            if (!text.isNullOrBlank()) {
-                val (detectedLang, confidence) = detectLanguageWithMLKit(text)
-                // إذا كانت الثقة عالية (أكثر من 80%)، نعتمدها فوراً
-                if (detectedLang != null && confidence > 0.8f) {
-                    return detectedLang
-                }
-            }
+        // 3. تصويت الأغلبية على أول 20% من الصفحات (بحد أدنى 3 وأقصى 10)
+        // نتجاهل الصفحة الأولى (الغلاف) لأنها غالباً بالإنجليزية حتى في المانغا الصينية/اليابانية
+        val sampleCount = (pageStreams.size * 0.20f).toInt().coerceIn(3, 10)
+        val pagesToSample = pageStreams.drop(1).take(sampleCount)
+
+        val winner = voteForLanguage(pagesToSample)
+        if (winner != null) {
+            logcat { "كشف اللغة الأولي بالتصويت: $winner" }
+            return winner
         }
 
         // 4. الحل الأخير: الاعتماد على لغة الإضافة (Extension)
         return autoDetectSourceLanguage(source.lang)
+    }
+
+    // تصويت الأغلبية: تجمع ثقة كل لغة عبر الصفحات المعطاة وتُرجع الفائزة
+    private suspend fun voteForLanguage(
+        pages: List<Pair<String, () -> InputStream>>,
+    ): TextRecognizerLanguage? {
+        val langScores = mutableMapOf<TextRecognizerLanguage, Float>()
+        for ((_, streamFn) in pages) {
+            val text = extractTextFromStream(streamFn)
+            if (!text.isNullOrBlank()) {
+                val (detectedLang, confidence) = detectLanguageWithMLKit(text)
+                if (detectedLang != null && confidence > 0.5f) {
+                    langScores[detectedLang] = (langScores[detectedLang] ?: 0f) + confidence
+                }
+            }
+        }
+        return langScores.maxByOrNull { it.value }?.key
     }
 
         private suspend fun detectLanguageWithMLKit(text: String): Pair<TextRecognizerLanguage?, Float> {
@@ -500,15 +513,6 @@ class ChapterTranslator(
                                 if (!tmpFile.exists()) tmpFile.createNewFile()
                                 streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
 
-                                // فحص حجم الصورة — إذا كانت أصغر من 40×40 نتجاهلها ونضعها كترجمة فارغة
-                                val batchSizeOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                BitmapFactory.decodeFile(tmpFile.absolutePath, batchSizeOpts)
-                                if (batchSizeOpts.outWidth < 40 || batchSizeOpts.outHeight < 40) {
-                                    logcat(LogPriority.WARN) { "تجاهل صورة صغيرة جداً في الباتش: $fileName (${batchSizeOpts.outWidth}x${batchSizeOpts.outHeight})" }
-                                    pages[fileName] = PageTranslation(emptyList())
-                                    return@withPermit
-                                }
-
                                 val pageTranslation = recognizePage(tmpFile.absolutePath)
                                 if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
                                     pages[fileName] = pageTranslation
@@ -550,6 +554,15 @@ class ChapterTranslator(
         val finishFlag = java.util.concurrent.atomic.AtomicBoolean(false)
         if (chapterId != null) finishRequests[chapterId] = finishFlag
 
+        // اللغة الحالية المستخدمة — قابلة للتغيير عند إعادة التصويت
+        var currentFromLang = translation.fromLang
+        // هل اللغة مُحددة يدوياً؟ إذن لا نعيد التصويت أبداً
+        val isLangFixed = mangaTranslationPreferences.hasOverride(translation.manga.id).get()
+        // عداد الصفحات المعالجة لتفعيل إعادة التصويت كل 10 صفحات
+        var processedPageCount = 0
+        // آخر دفعة صفحات شوفناها — نحتفظ بها للتصويت
+        var lastBatchForVoting = mutableListOf<Pair<String, () -> InputStream>>()
+
         try {
             while (true) {
                 currentCoroutineContext().ensureActive()
@@ -560,6 +573,9 @@ class ChapterTranslator(
                     delay(translationPreferences.realtimePollIntervalMs().get().toLong())
                     continue
                 }
+
+                // إضافة الصفحات الجديدة لقائمة التصويت
+                if (!isLangFixed) lastBatchForVoting.addAll(newStreams)
 
                 val currentAvg = rollingAvgBubbles
                 val lowBubbleThreshold = translationPreferences.lowBubbleCountThreshold().get().toFloat()
@@ -588,12 +604,6 @@ class ChapterTranslator(
                                         streamFn().use { stream -> BitmapFactory.decodeStream(stream, null, opts) }
                                         
                                         if (opts.outWidth <= 0 || opts.outHeight <= 0) return@withContext null
-
-                                        // فحص حجم الصورة — إذا كانت أصغر من 40×40 نتجاهلها ونعيد ترجمة فارغة
-                                        if (opts.outWidth < 40 || opts.outHeight < 40) {
-                                            logcat(LogPriority.WARN) { "تجاهل صورة صغيرة جداً في الريالتايم: $fileName (${opts.outWidth}x${opts.outHeight})" }
-                                            return@withContext PageTranslation(emptyList())
-                                        }
 
                                         val aspectRatio = opts.outHeight.toFloat() / opts.outWidth.toFloat()
                                         val maxOcrHeight = translationPreferences.maxOcrHeight().get()
@@ -637,6 +647,27 @@ class ChapterTranslator(
                         }
                     }
                     deferredList.awaitAll()
+                }
+
+                // إعادة التصويت على اللغة كل 10 صفحات (فقط إذا لم تكن اللغة مُحددة يدوياً)
+                if (!isLangFixed) {
+                    processedPageCount += newStreams.size
+                    if (processedPageCount >= 10) {
+                        processedPageCount = 0
+                        val streamsForVoting = lastBatchForVoting.toList()
+                        lastBatchForVoting.clear()
+
+                        val votedLang = voteForLanguage(streamsForVoting)
+                        if (votedLang != null && votedLang != currentFromLang) {
+                            logcat { "إعادة كشف اللغة: $currentFromLang → $votedLang" }
+                            currentFromLang = votedLang
+                            // نُعدّل الـ recognizer ليتوافق مع اللغة الجديدة
+                            if (currentFromLang != textRecognizer.language) {
+                                textRecognizer.close()
+                                textRecognizer = TextRecognizer(currentFromLang)
+                            }
+                        }
+                    }
                 }
             }
         } catch (e: Throwable) {
