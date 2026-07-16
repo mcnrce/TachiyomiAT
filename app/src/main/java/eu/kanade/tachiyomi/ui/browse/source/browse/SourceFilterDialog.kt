@@ -39,7 +39,7 @@ import tachiyomi.presentation.core.components.TextItem
 import tachiyomi.presentation.core.components.TriStateItem
 import tachiyomi.presentation.core.components.material.Button
 import tachiyomi.presentation.core.i18n.stringResource
-import tachiyomi.presentation.core.util.collectAsState // 🚀 هذا هو الاستيراد الذي أصلح الخطأ
+import tachiyomi.presentation.core.util.collectAsState
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 
@@ -105,9 +105,9 @@ fun SourceFilterDialog(
 
                         Spacer(modifier = Modifier.weight(1f))
 
-                        // زر الترجمة بجانب الأزرار العلوية
+                        // 🚀 زر الترجمة تم تعديل الاسم هنا ليطابق ATMR
                         Text(
-                            text = stringResource(MR.strings.action_translate),
+                            text = stringResource(ATMR.strings.manga_translate),
                             style = MaterialTheme.typography.labelLarge,
                             modifier = Modifier.padding(end = 4.dp)
                         )
