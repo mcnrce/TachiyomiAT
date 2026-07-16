@@ -36,9 +36,9 @@ import eu.kanade.presentation.components.TabbedDialogPaddings
 import kotlinx.collections.immutable.persistentListOf
 import tachiyomi.core.common.preference.TriState
 import tachiyomi.domain.manga.model.Manga
+import tachiyomi.domain.translation.TranslationPreferences // 🚀 الاستيراد الذي كان مفقوداً
 import tachiyomi.i18n.MR
 import tachiyomi.i18n.at.ATMR
-import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.components.LabeledCheckbox
 import tachiyomi.presentation.core.components.RadioItem
 import tachiyomi.presentation.core.components.SortItem
@@ -288,19 +288,19 @@ private fun TranslationSettingsSection() {
     val translateDesc by preferences.translateMangaDescription().collectAsState()
     val translateTags by preferences.translateMangaTags().collectAsState()
 
-        Column(
+    Column(
         modifier = Modifier
             .padding(horizontal = TabbedDialogPaddings.Horizontal)
             .padding(vertical = 8.dp),
     ) {
         Text(
-            text = stringResource(ATMR.strings.pref_translation_settings_title), // تم التعديل
+            text = stringResource(ATMR.strings.pref_translation_settings_title),
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(bottom = 8.dp),
         )
 
         LabeledCheckbox(
-            label = stringResource(ATMR.strings.pref_metadata_translation_enabled), // تم التعديل
+            label = stringResource(ATMR.strings.pref_metadata_translation_enabled),
             checked = isEnabled,
             onCheckedChange = { preferences.metadataTranslationEnabled().set(it) },
         )
@@ -308,17 +308,17 @@ private fun TranslationSettingsSection() {
         if (isEnabled) {
             Column(modifier = Modifier.padding(start = 24.dp)) {
                 LabeledCheckbox(
-                    label = stringResource(ATMR.strings.pref_translate_title), // تم التعديل
+                    label = stringResource(ATMR.strings.pref_translate_title),
                     checked = translateTitle,
                     onCheckedChange = { preferences.translateMangaTitle().set(it) },
                 )
                 LabeledCheckbox(
-                    label = stringResource(ATMR.strings.pref_translate_description), // تم التعديل
+                    label = stringResource(ATMR.strings.pref_translate_description),
                     checked = translateDesc,
                     onCheckedChange = { preferences.translateMangaDescription().set(it) },
                 )
                 LabeledCheckbox(
-                    label = stringResource(ATMR.strings.pref_translate_tags), // تم التعديل
+                    label = stringResource(ATMR.strings.pref_translate_tags),
                     checked = translateTags,
                     onCheckedChange = { preferences.translateMangaTags().set(it) },
                 )
