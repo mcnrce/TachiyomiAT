@@ -500,6 +500,15 @@ class ChapterTranslator(
                                 if (!tmpFile.exists()) tmpFile.createNewFile()
                                 streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
 
+                                // فحص حجم الصورة — إذا كانت أصغر من 40×40 نتجاهلها ونضعها كترجمة فارغة
+                                val batchSizeOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                                BitmapFactory.decodeFile(tmpFile.absolutePath, batchSizeOpts)
+                                if (batchSizeOpts.outWidth < 40 || batchSizeOpts.outHeight < 40) {
+                                    logcat(LogPriority.WARN) { "تجاهل صورة صغيرة جداً في الباتش: $fileName (${batchSizeOpts.outWidth}x${batchSizeOpts.outHeight})" }
+                                    pages[fileName] = PageTranslation(emptyList())
+                                    return@withPermit
+                                }
+
                                 val pageTranslation = recognizePage(tmpFile.absolutePath)
                                 if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
                                     pages[fileName] = pageTranslation
@@ -579,6 +588,12 @@ class ChapterTranslator(
                                         streamFn().use { stream -> BitmapFactory.decodeStream(stream, null, opts) }
                                         
                                         if (opts.outWidth <= 0 || opts.outHeight <= 0) return@withContext null
+
+                                        // فحص حجم الصورة — إذا كانت أصغر من 40×40 نتجاهلها ونعيد ترجمة فارغة
+                                        if (opts.outWidth < 40 || opts.outHeight < 40) {
+                                            logcat(LogPriority.WARN) { "تجاهل صورة صغيرة جداً في الريالتايم: $fileName (${opts.outWidth}x${opts.outHeight})" }
+                                            return@withContext PageTranslation(emptyList())
+                                        }
 
                                         val aspectRatio = opts.outHeight.toFloat() / opts.outWidth.toFloat()
                                         val maxOcrHeight = translationPreferences.maxOcrHeight().get()
@@ -1002,11 +1017,11 @@ class ChapterTranslator(
             var newHeight: Float
 var newWidth: Float
 if (abs(block.angle) in 70.0..110.0) {
-    newHeight = block.height * finalScale * 1.3f
-    newWidth = block.width * finalScale
-} else {
     newHeight = block.height * finalScale
     newWidth = block.width * finalScale * 1.3f
+} else {
+    newHeight = block.height * finalScale * 1.3f
+    newWidth = block.width * finalScale
 }
 
             val newX = block.x - (newWidth - block.width) / 2f
