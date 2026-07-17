@@ -293,6 +293,7 @@ class ChapterTranslator(
                 isRealtimeMode = true,
                 isLangResolved = isLangResolved,
                 isLangFixed = hasOverride,
+                totalPages = pageStreams.size,
             )
             translation.existingPages.putAll(existingOnDisk)
             translation.addPageStreams(pageStreams)
@@ -736,6 +737,35 @@ class ChapterTranslator(
                     deferredList.awaitAll()
                 }
 
+                // تصويت نهاية الفصل: إذا الفصل قصير (< 10 صفحات) واللغة لا تزال مؤقتة
+                // وانتهت كل الصفحات — نُصوّت بكل ما لدينا فوراً بدل انتظار 5 صفحات
+                if (!isLangResolved && translation.totalPages in 1..9) {
+                    val processedTotal = translation.existingPages.size
+                    if (processedTotal >= translation.totalPages && pendingVoteStreams.isNotEmpty()) {
+                        val votedLang = voteForLanguage(pendingVoteStreams)
+                        if (votedLang != null) {
+                            val langChanged = votedLang != currentFromLang
+                            logcat { "تصويت نهاية الفصل القصير ($processedTotal/${translation.totalPages}): $currentFromLang → $votedLang (تغيّرت: $langChanged)" }
+
+                            if (langChanged) {
+                                currentFromLang = votedLang
+                                if (currentFromLang != textRecognizer.language) {
+                                    textRecognizer.close()
+                                    textRecognizer = TextRecognizer(currentFromLang)
+                                }
+                                if (!pendingReTranslateNames.isNullOrEmpty()) {
+                                    reTranslatePages(pendingReTranslateNames, translation, translationMangaDir, saveFile)
+                                }
+                            }
+
+                            isLangResolved = true
+                            pendingVoteStreams.clear()
+                            pendingReTranslateNames?.clear()
+                            processedPageCount = 0
+                        }
+                    }
+                }
+
                 // التصويت الدوري كل 10 صفحات (فقط بعد أن تستقر اللغة)
                 if (isLangResolved && !translation.isLangFixed) {
                     processedPageCount += newStreams.size
@@ -1134,11 +1164,11 @@ class ChapterTranslator(
             var newHeight: Float
 var newWidth: Float
 if (abs(block.angle) in 70.0..110.0) {
-    newHeight = block.height * finalScale
-    newWidth = block.width * finalScale * 1.3f
-} else {
     newHeight = block.height * finalScale * 1.3f
     newWidth = block.width * finalScale
+} else {
+    newHeight = block.height * finalScale
+    newWidth = block.width * finalScale * 1.3f
 }
 
             val newX = block.x - (newWidth - block.width) / 2f
