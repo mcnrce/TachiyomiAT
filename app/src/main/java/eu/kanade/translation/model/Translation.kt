@@ -31,6 +31,8 @@ data class Translation(
     val isLangResolved: Boolean = true,
     // هل اللغة مُحددة يدوياً؟ إذن لا تصويت دوري أبداً
     val isLangFixed: Boolean = false,
+    // العدد الكلي لصفحات الفصل — لاكتشاف الفصول القصيرة (أقل من 10 صفحات)
+    val totalPages: Int = 0,
 ) {
 
     @Transient
