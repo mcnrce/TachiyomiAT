@@ -384,16 +384,11 @@ class ChapterTranslator(
             try {
                 val tileTranslation = recognizeSingleBitmap(tileBitmap, imageWidth, tileH)
                 if (tileTranslation != null) {
-                    // تصحيح إحداثيات الـ blocks لموضعها الحقيقي في الصورة الكاملة
+                    // تصحيح إحداثيات Y لموضعها الحقيقي في الصورة الكاملة
                     val adjustedBlocks = tileTranslation.blocks.map { block ->
-                        block.copy(rect = android.graphics.RectF(
-                            block.rect.left,
-                            block.rect.top + offsetY,
-                            block.rect.right,
-                            block.rect.bottom + offsetY,
-                        ))
+                        block.copy(y = block.y + offsetY)
                     }
-                    tiles.add(PageTranslation(adjustedBlocks))
+                    tiles.add(PageTranslation(adjustedBlocks.toMutableList()))
                 }
             } finally {
                 tileBitmap?.recycle()
@@ -403,7 +398,7 @@ class ChapterTranslator(
         }
 
         if (tiles.isEmpty()) return null
-        return PageTranslation(tiles.flatMap { it.blocks })
+        return PageTranslation(tiles.flatMap { it.blocks }.toMutableList())
     }
 
     // تصويت الأغلبية على نصوص OCR — تجمع ثقة كل لغة وتُرجع الفائزة
@@ -728,7 +723,7 @@ class ChapterTranslator(
                                             val isLongPage = pageTranslation.blocks.size > 15
                                             if (isLongPage) {
                                                 // الصور الطويلة (webtoon): نأخذ عينات من أعلى/وسط/أسفل
-                                                val sorted = pageTranslation.blocks.sortedBy { it.rect.top }
+                                                val sorted = pageTranslation.blocks.sortedBy { it.y }
                                                 val third = (sorted.size / 3).coerceAtLeast(1)
                                                 listOf(
                                                     sorted.take(third),
