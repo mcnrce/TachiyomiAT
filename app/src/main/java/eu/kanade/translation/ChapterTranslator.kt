@@ -278,7 +278,7 @@ class ChapterTranslator(
 
         // تم وضعها داخل scope.launch لأن resolveSourceLanguageForManga أصبحت دالة تعليق (suspend)
         scope.launch {
-            val (fromLang, isLangResolved) = resolveSourceLanguageForManga(manga.id, source, manga.title, pageStreams) ?: return@launch
+            val fromLang = resolveSourceLanguageForManga(manga.id, source, manga.title, pageStreams) ?: return@launch
 
             val existingOnDisk = provider.findTranslationFile(chapter.name, chapter.scanlator, manga.title, source)
                 ?.let { runCatching { readTranslationFile(it) }.getOrNull() }
@@ -291,9 +291,6 @@ class ChapterTranslator(
                 fromLang = fromLang,
                 toLang = toLang,
                 isRealtimeMode = true,
-                isLangResolved = isLangResolved,
-                isLangFixed = hasOverride,
-                totalPages = pageStreams.size,
             )
             translation.existingPages.putAll(existingOnDisk)
             translation.addPageStreams(pageStreams)
@@ -339,58 +336,36 @@ class ChapterTranslator(
     // ═══  التعرف التلقائي الذكي على اللغة (ML Kit + Title + Prefs) ════════════
     // ═══════════════════════════════════════════════════════════════════════════
 
-    // يُرجع Pair(اللغة، هل القرار نهائي)
-    // isResolved = false يعني اللغة مؤقتة وسيُعاد التصويت داخل translateChapterRealtime
     private suspend fun resolveSourceLanguageForManga(
         mangaId: Long,
         source: HttpSource,
         mangaTitle: String,
         pageStreams: List<Pair<String, () -> InputStream>>,
-    ): Pair<TextRecognizerLanguage, Boolean>? {
+    ): TextRecognizerLanguage? {
 
-        // 1. الأولوية للإعداد اليدوي — نهائي دائماً
+        // 1. الأولوية للإعداد اليدوي
         val hasOverride = mangaTranslationPreferences.hasOverride(mangaId).get()
         if (hasOverride) {
-            return Pair(TextRecognizerLanguage.fromPref(mangaTranslationPreferences.sourceLanguage(mangaId)), true)
+            return TextRecognizerLanguage.fromPref(mangaTranslationPreferences.sourceLanguage(mangaId))
         }
 
-        // 2. محاولة الكشف من العنوان — نهائي إذا نجح
+        // 2. محاولة الكشف من العنوان
         val titleLang = detectLanguageFromMangaTitle(mangaTitle)
-        if (titleLang != null) return Pair(titleLang, true)
+        if (titleLang != null) return titleLang
 
-        // 3. تصويت الأغلبية على أول 20% من الصفحات (بحد أدنى 3 وأقصى 10)
-        // نتجاهل الصفحة الأولى (الغلاف) لأنها غالباً بالإنجليزية حتى في المانغا الصينية/اليابانية
-        val sampleCount = (pageStreams.size * 0.20f).toInt().coerceIn(3, 10)
-        val pagesToSample = pageStreams.drop(1).take(sampleCount)
-
-        // إذا الصفحات المتاحة كافية للتصويت (≥ 3 بعد تجاهل الغلاف)
-        if (pagesToSample.size >= 3) {
-            val winner = voteForLanguage(pagesToSample)
-            if (winner != null) {
-                logcat { "كشف اللغة الأولي بالتصويت: $winner (نهائي)" }
-                return Pair(winner, true)
-            }
-        }
-
-        // 4. الصفحات غير كافية أو التصويت فشل — نستخدم لغة الإضافة كـ fallback مؤقت
-        // isResolved = false يعني translateChapterRealtime سيُعيد التصويت في أول فرصة
-        val fallback = autoDetectSourceLanguage(source.lang) ?: return null
-        logcat { "لغة مؤقتة من الإضافة: $fallback — سيُعاد التصويت عند توفر صفحات كافية" }
-        return Pair(fallback, false)
+        // 3. الحل الأخير: لغة الإضافة كـ fallback — التصويت الحقيقي يحدث داخل translateChapterRealtime
+        // بعد OCR مباشرة بدون أي استهلاك إضافي
+        return autoDetectSourceLanguage(source.lang)
     }
 
-    // تصويت الأغلبية: تجمع ثقة كل لغة عبر الصفحات المعطاة وتُرجع الفائزة
-    private suspend fun voteForLanguage(
-        pages: List<Pair<String, () -> InputStream>>,
-    ): TextRecognizerLanguage? {
+    // تصويت الأغلبية على نصوص OCR — تجمع ثقة كل لغة وتُرجع الفائزة
+    private suspend fun voteForLanguage(texts: List<String>): TextRecognizerLanguage? {
         val langScores = mutableMapOf<TextRecognizerLanguage, Float>()
-        for ((_, streamFn) in pages) {
-            val text = extractTextFromStream(streamFn)
-            if (!text.isNullOrBlank()) {
-                val (detectedLang, confidence) = detectLanguageWithMLKit(text)
-                if (detectedLang != null && confidence > 0.5f) {
-                    langScores[detectedLang] = (langScores[detectedLang] ?: 0f) + confidence
-                }
+        for (text in texts) {
+            if (text.isBlank()) continue
+            val (detectedLang, confidence) = detectLanguageWithMLKit(text)
+            if (detectedLang != null && confidence > 0.5f) {
+                langScores[detectedLang] = (langScores[detectedLang] ?: 0f) + confidence
             }
         }
         return langScores.maxByOrNull { it.value }?.key
@@ -419,21 +394,6 @@ class ChapterTranslator(
         }
     }
 
-
-    private suspend fun extractTextFromStream(streamFn: () -> InputStream): String? = withContext(Dispatchers.IO) {
-        try {
-            streamFn().use { stream ->
-                val bitmap = BitmapFactory.decodeStream(stream) ?: return@withContext null
-                val inputImage = InputImage.fromBitmap(bitmap, 0)
-                // استخدام معالج النصوص الحالي المتاح في الكلاس
-                val result = textRecognizer.recognize(inputImage) 
-                bitmap.recycle()
-                result.text
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
 
     private fun detectLanguageFromMangaTitle(mangaTitle: String): TextRecognizerLanguage? {
         val bracketPattern = Regex("""[\[(]([^\])]+)[\])]""")
@@ -603,19 +563,19 @@ class ChapterTranslator(
 
         // اللغة الحالية — قابلة للتحديث عند إعادة التصويت
         var currentFromLang = translation.fromLang
-        // هل اللغة نهائية؟
-        // false = مؤقتة → نُعيد التصويت في أول دفعة كافية + نحتفظ بـ streams للإعادة
-        // true  = نهائية → تصويت دوري كل 10 صفحات فقط
-        var isLangResolved = translation.isLangResolved
+        // التصويت يحدث دائماً ما لم تكن اللغة مُحددة يدوياً
+        val isLangFixed = mangaTranslationPreferences.hasOverride(translation.manga.id).get()
+        var isLangResolved = isLangFixed
         // عداد الصفحات لإعادة التصويت الدوري
         var processedPageCount = 0
-        // تراكم الصفحات للتصويت
-        val pendingVoteStreams = mutableListOf<Pair<String, () -> InputStream>>()
+        // نصوص OCR المستخرجة للتصويت — نملأها مباشرة بعد OCR بدل الاحتفاظ بـ streams
+        // الصور الطويلة (webtoon) تُضيف عدة عينات (أعلى/وسط/أسفل)
+        val pendingVoteTexts = mutableListOf<String>()
         // أسماء الصفحات المعالجة بلغة مؤقتة — لإعادة ترجمتها إذا تغيرت اللغة
         // فقط عند MLKIT أو GOOGLE (لتجنب تكاليف API للمحركات المدفوعة)
         val engine = TextTranslators.fromPref(translationPreferences.translationEngine())
         val canReTranslate = (engine == TextTranslators.MLKIT || engine == TextTranslators.GOOGLE)
-        val pendingReTranslateNames = if (!isLangResolved && canReTranslate)
+        val pendingReTranslateNames = if (!isLangFixed && canReTranslate)
             mutableListOf<String>() else null
 
         try {
@@ -629,14 +589,10 @@ class ChapterTranslator(
                     continue
                 }
 
-                // نجمع الصفحات للتصويت إذا اللغة غير نهائية أو للتصويت الدوري
-                if (!isLangResolved || !translation.isLangFixed) {
-                    pendingVoteStreams.addAll(newStreams)
-                }
-
-                // إعادة التصويت المبكر: إذا اللغة مؤقتة وتوفر ≥ 5 صفحات جديدة
-                if (!isLangResolved && pendingVoteStreams.size >= 5) {
-                    val votedLang = voteForLanguage(pendingVoteStreams)
+                // إعادة التصويت المبكر: إذا اللغة مؤقتة وتوفر ≥ 5 عينات نصية
+                // (تُملأ pendingVoteTexts داخل الـ async block بعد OCR مباشرة)
+                if (!isLangResolved && pendingVoteTexts.size >= 5) {
+                    val votedLang = voteForLanguage(pendingVoteTexts)
                     if (votedLang != null) {
                         val langChanged = votedLang != currentFromLang
                         logcat { "تأكيد اللغة المبكر: $currentFromLang → $votedLang (تغيّرت: $langChanged)" }
@@ -647,14 +603,13 @@ class ChapterTranslator(
                                 textRecognizer.close()
                                 textRecognizer = TextRecognizer(currentFromLang)
                             }
-                            // إعادة ترجمة الصفحات التي عولجت بالغلط (بدون إعادة OCR)
                             if (!pendingReTranslateNames.isNullOrEmpty()) {
                                 reTranslatePages(pendingReTranslateNames, translation, translationMangaDir, saveFile)
                             }
                         }
 
                         isLangResolved = true
-                        pendingVoteStreams.clear()
+                        pendingVoteTexts.clear()
                         pendingReTranslateNames?.clear()
                         processedPageCount = 0
                     }
@@ -713,6 +668,28 @@ class ChapterTranslator(
                                         translation.existingPages[fileName] = pageTranslation
                                         translation.emitPageTranslated(fileName, pageTranslation)
 
+                                        // إضافة نصوص OCR لقائمة التصويت بعد المعالجة مباشرة
+                                        if (!isLangResolved || !isLangFixed) {
+                                            val isLongPage = pageTranslation.blocks.size > 15
+                                            if (isLongPage) {
+                                                // الصور الطويلة (webtoon): نأخذ عينات من أعلى/وسط/أسفل
+                                                val sorted = pageTranslation.blocks.sortedBy { it.rect.top }
+                                                val third = (sorted.size / 3).coerceAtLeast(1)
+                                                listOf(
+                                                    sorted.take(third),
+                                                    sorted.drop(third).take(third),
+                                                    sorted.drop(third * 2)
+                                                ).forEach { chunk ->
+                                                    val text = chunk.joinToString(" ") { it.text }
+                                                    if (text.isNotBlank()) pendingVoteTexts.add(text)
+                                                }
+                                            } else {
+                                                // صورة عادية: عينة واحدة من كل النص
+                                                val text = pageTranslation.blocks.joinToString(" ") { it.text }
+                                                if (text.isNotBlank()) pendingVoteTexts.add(text)
+                                            }
+                                        }
+
                                         // إذا اللغة لا تزال مؤقتة، نحفظ اسم الصفحة لإعادة الترجمة لاحقاً
                                         if (!isLangResolved && pendingReTranslateNames != null) {
                                             pendingReTranslateNames.add(fileName)
@@ -739,13 +716,13 @@ class ChapterTranslator(
 
                 // تصويت نهاية الفصل: إذا الفصل قصير (< 10 صفحات) واللغة لا تزال مؤقتة
                 // وانتهت كل الصفحات — نُصوّت بكل ما لدينا فوراً بدل انتظار 5 صفحات
-                if (!isLangResolved && translation.totalPages in 1..9) {
+                // تصويت نهاية الفصل: إذا لا يوجد صفحات معلقة يعني انتهى الفصل
+                if (!isLangResolved && !translation.hasPendingPages() && pendingVoteTexts.isNotEmpty()) {
                     val processedTotal = translation.existingPages.size
-                    if (processedTotal >= translation.totalPages && pendingVoteStreams.isNotEmpty()) {
-                        val votedLang = voteForLanguage(pendingVoteStreams)
-                        if (votedLang != null) {
+                    val votedLang = voteForLanguage(pendingVoteTexts)
+                    if (votedLang != null) {
                             val langChanged = votedLang != currentFromLang
-                            logcat { "تصويت نهاية الفصل القصير ($processedTotal/${translation.totalPages}): $currentFromLang → $votedLang (تغيّرت: $langChanged)" }
+                            logcat { "تصويت نهاية الفصل ($processedTotal صفحة): $currentFromLang → $votedLang (تغيّرت: $langChanged)" }
 
                             if (langChanged) {
                                 currentFromLang = votedLang
@@ -759,22 +736,21 @@ class ChapterTranslator(
                             }
 
                             isLangResolved = true
-                            pendingVoteStreams.clear()
+                            pendingVoteTexts.clear()
                             pendingReTranslateNames?.clear()
                             processedPageCount = 0
                         }
-                    }
                 }
 
                 // التصويت الدوري كل 10 صفحات (فقط بعد أن تستقر اللغة)
-                if (isLangResolved && !translation.isLangFixed) {
+                if (isLangResolved && !isLangFixed) {
                     processedPageCount += newStreams.size
                     if (processedPageCount >= 10) {
                         processedPageCount = 0
-                        val streamsForVoting = pendingVoteStreams.toList()
-                        pendingVoteStreams.clear()
+                        val textsForVoting = pendingVoteTexts.toList()
+                        pendingVoteTexts.clear()
 
-                        val votedLang = voteForLanguage(streamsForVoting)
+                        val votedLang = voteForLanguage(textsForVoting)
                         if (votedLang != null && votedLang != currentFromLang) {
                             logcat { "تغيير اللغة الدوري: $currentFromLang → $votedLang" }
                             currentFromLang = votedLang
