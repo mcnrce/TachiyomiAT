@@ -27,6 +27,10 @@ data class Translation(
     // [الإصلاح]: استخدام ConcurrentHashMap ليتحمل الإضافة من مسارات (Threads) متعددة في نفس الوقت
     @Transient val existingPages: MutableMap<String, PageTranslation> = ConcurrentHashMap(),
     val isRealtimeMode: Boolean = false,
+    // هل اللغة نهائية أم مؤقتة تنتظر إعادة التصويت؟
+    val isLangResolved: Boolean = true,
+    // هل اللغة مُحددة يدوياً؟ إذن لا تصويت دوري أبداً
+    val isLangFixed: Boolean = false,
 ) {
 
     @Transient
