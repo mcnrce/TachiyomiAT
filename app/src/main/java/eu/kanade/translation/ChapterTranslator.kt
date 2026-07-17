@@ -358,6 +358,54 @@ class ChapterTranslator(
         return autoDetectSourceLanguage(source.lang)
     }
 
+    // الحد الأقصى لارتفاع الصورة الذي يقبله ML Kit
+    private val ML_KIT_MAX_HEIGHT = 20000
+
+    // تقسيم الصورة الكبيرة جداً إلى tiles ودمج نتائج OCR
+    private suspend fun recognizeLargeImageByTiles(imagePath: String, imageHeight: Int, imageWidth: Int): PageTranslation? {
+        val tileHeight = ML_KIT_MAX_HEIGHT - 200 // تداخل 200px بين الـ tiles لتجنب قطع النص
+        val tiles = mutableListOf<PageTranslation>()
+        var offsetY = 0
+
+        while (offsetY < imageHeight) {
+            val tileH = minOf(tileHeight, imageHeight - offsetY)
+            val rect = Rect(0, offsetY, imageWidth, offsetY + tileH)
+            val tileBitmap = try {
+                val decoder = BitmapRegionDecoder.newInstance(imagePath, false) ?: break
+                val bmp = decoder.decodeRegion(rect, BitmapFactory.Options())
+                decoder.recycle()
+                bmp
+            } catch (e: Exception) {
+                logcat(LogPriority.ERROR, e) { "فشل في قراءة tile عند offsetY=$offsetY" }
+                offsetY += tileHeight
+                continue
+            }
+
+            try {
+                val tileTranslation = recognizeSingleBitmap(tileBitmap, imageWidth, tileH)
+                if (tileTranslation != null) {
+                    // تصحيح إحداثيات الـ blocks لموضعها الحقيقي في الصورة الكاملة
+                    val adjustedBlocks = tileTranslation.blocks.map { block ->
+                        block.copy(rect = android.graphics.RectF(
+                            block.rect.left,
+                            block.rect.top + offsetY,
+                            block.rect.right,
+                            block.rect.bottom + offsetY,
+                        ))
+                    }
+                    tiles.add(PageTranslation(adjustedBlocks))
+                }
+            } finally {
+                tileBitmap?.recycle()
+            }
+
+            offsetY += tileHeight
+        }
+
+        if (tiles.isEmpty()) return null
+        return PageTranslation(tiles.flatMap { it.blocks })
+    }
+
     // تصويت الأغلبية على نصوص OCR — تجمع ثقة كل لغة وتُرجع الفائزة
     private suspend fun voteForLanguage(texts: List<String>): TextRecognizerLanguage? {
         val langScores = mutableMapOf<TextRecognizerLanguage, Float>()
@@ -590,8 +638,10 @@ class ChapterTranslator(
                 }
 
                 // إعادة التصويت المبكر: إذا اللغة مؤقتة وتوفر ≥ 5 عينات نصية
-                // (تُملأ pendingVoteTexts داخل الـ async block بعد OCR مباشرة)
-                if (!isLangResolved && pendingVoteTexts.size >= 5) {
+                // أو إذا انتهت كل الصفحات نُصوّت بأي عدد متاح (حل حالة الصفحات الفارغة)
+                val shouldVoteNow = !isLangResolved && pendingVoteTexts.isNotEmpty() &&
+                    (pendingVoteTexts.size >= 5 || !translation.hasPendingPages())
+                if (shouldVoteNow) {
                     val votedLang = voteForLanguage(pendingVoteTexts)
                     if (votedLang != null) {
                         val langChanged = votedLang != currentFromLang
@@ -653,9 +703,14 @@ class ChapterTranslator(
                                         
                                         if (!isLongImage) {
                                             val bitmap = BitmapFactory.decodeFile(tmpFile.absolutePath)
-                                            bitmap?.let { 
-                                                try { recognizeSingleBitmap(it, opts.outWidth, opts.outHeight) } 
-                                                finally { it.recycle() } 
+                                            bitmap?.let {
+                                                try { recognizeSingleBitmap(it, opts.outWidth, opts.outHeight) }
+                                                finally { it.recycle() }
+                                            }
+                                        } else if (opts.outHeight > ML_KIT_MAX_HEIGHT) {
+                                            // الصورة أكبر من حد ML Kit — نقسّمها إلى tiles
+                                            longImageSemaphore.withPermit {
+                                                recognizeLargeImageByTiles(tmpFile.absolutePath, opts.outHeight, opts.outWidth)
                                             }
                                         } else {
                                             longImageSemaphore.withPermit { recognizePage(tmpFile.absolutePath) }
@@ -712,34 +767,6 @@ class ChapterTranslator(
                         }
                     }
                     deferredList.awaitAll()
-                }
-
-                // تصويت نهاية الفصل: إذا الفصل قصير (< 10 صفحات) واللغة لا تزال مؤقتة
-                // وانتهت كل الصفحات — نُصوّت بكل ما لدينا فوراً بدل انتظار 5 صفحات
-                // تصويت نهاية الفصل: إذا لا يوجد صفحات معلقة يعني انتهى الفصل
-                if (!isLangResolved && !translation.hasPendingPages() && pendingVoteTexts.isNotEmpty()) {
-                    val processedTotal = translation.existingPages.size
-                    val votedLang = voteForLanguage(pendingVoteTexts)
-                    if (votedLang != null) {
-                            val langChanged = votedLang != currentFromLang
-                            logcat { "تصويت نهاية الفصل ($processedTotal صفحة): $currentFromLang → $votedLang (تغيّرت: $langChanged)" }
-
-                            if (langChanged) {
-                                currentFromLang = votedLang
-                                if (currentFromLang != textRecognizer.language) {
-                                    textRecognizer.close()
-                                    textRecognizer = TextRecognizer(currentFromLang)
-                                }
-                                if (!pendingReTranslateNames.isNullOrEmpty()) {
-                                    reTranslatePages(pendingReTranslateNames, translation, translationMangaDir, saveFile)
-                                }
-                            }
-
-                            isLangResolved = true
-                            pendingVoteTexts.clear()
-                            pendingReTranslateNames?.clear()
-                            processedPageCount = 0
-                        }
                 }
 
                 // التصويت الدوري كل 10 صفحات (فقط بعد أن تستقر اللغة)
