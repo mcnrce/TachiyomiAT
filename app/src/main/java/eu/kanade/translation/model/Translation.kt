@@ -27,12 +27,6 @@ data class Translation(
     // [الإصلاح]: استخدام ConcurrentHashMap ليتحمل الإضافة من مسارات (Threads) متعددة في نفس الوقت
     @Transient val existingPages: MutableMap<String, PageTranslation> = ConcurrentHashMap(),
     val isRealtimeMode: Boolean = false,
-    // هل اللغة نهائية أم مؤقتة تنتظر إعادة التصويت؟
-    val isLangResolved: Boolean = true,
-    // هل اللغة مُحددة يدوياً؟ إذن لا تصويت دوري أبداً
-    val isLangFixed: Boolean = false,
-    // العدد الكلي لصفحات الفصل — لاكتشاف الفصول القصيرة (أقل من 10 صفحات)
-    val totalPages: Int = 0,
 ) {
 
     @Transient
