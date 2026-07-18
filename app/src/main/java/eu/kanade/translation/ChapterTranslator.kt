@@ -553,10 +553,14 @@ class ChapterTranslator(
         val engine = TextTranslators.fromPref(translationPreferences.translationEngine())
         if (engine != TextTranslators.MLKIT && engine != TextTranslators.GOOGLE) return
 
+        // [إصلاح #5] نأخذ snapshot من existingPages بشكل atomic لكل صفحة على حدة
+        // لتجنب التضارب مع الـ async loop الذي قد يكتب في existingPages في نفس الوقت
         val pagesToRetranslate = fileNames
             .mapNotNull { fileName ->
+                // putIfAbsent-style: نقرأ القيمة الحالية فقط إذا كانت موجودة بالفعل
+                // الصفحات التي لا تزال تحت المعالجة في الـ loop لن تكون في existingPages بعد
                 val page = translation.existingPages[fileName]
-                if (page != null && page.blocks.isNotEmpty()) fileName to page else null
+                if (page != null && page.blocks.isNotEmpty()) fileName to page.copy() else null
             }
             .toMap().toMutableMap()
 
@@ -566,9 +570,25 @@ class ChapterTranslator(
 
         withContext(Dispatchers.IO) { textTranslator.translate(pagesToRetranslate) }
 
+        // [إصلاح #5] نستخدم merge بدل الكتابة المباشرة:
+        // إذا كتب الـ loop الرئيسي قيمة جديدة بينما كنا نترجم،
+        // نتجاهل نتيجتنا لتلك الصفحة — الأحدث دائماً يفوز
         for ((fileName, pageTranslation) in pagesToRetranslate) {
-            translation.existingPages[fileName] = pageTranslation
-            translation.emitPageTranslated(fileName, pageTranslation)
+            // replace فقط إذا كانت القيمة الحالية هي نفس ما أخذناه في البداية (قبل الترجمة)
+            // هذا يمنع الكتابة فوق نتيجة OCR جديدة وصلت أثناء إعادة الترجمة
+            val currentPage = translation.existingPages[fileName]
+            if (currentPage != null && currentPage.blocks.isNotEmpty() &&
+                currentPage.blocks.first().translation.isNullOrEmpty()) {
+                // الصفحة الحالية لم تُترجم بعد — نكتب نتيجتنا
+                translation.existingPages[fileName] = pageTranslation
+                translation.emitPageTranslated(fileName, pageTranslation)
+            } else if (currentPage != null) {
+                // الصفحة تُرجمت بالفعل بواسطة الـ loop الرئيسي — نتجاهل نتيجتنا
+                logcat { "تخطي إعادة ترجمة $fileName — تُرجمت بالفعل بواسطة الـ loop الرئيسي" }
+            } else {
+                // الصفحة غير موجودة في existingPages — لا نكتب
+                logcat { "تخطي إعادة ترجمة $fileName — غير موجودة في existingPages" }
+            }
         }
 
         persistRealtimeProgress(translationMangaDir, saveFile, translation)
