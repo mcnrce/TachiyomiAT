@@ -604,23 +604,17 @@ class ChapterTranslator(
         val finishFlag = java.util.concurrent.atomic.AtomicBoolean(false)
         if (chapterId != null) finishRequests[chapterId] = finishFlag
 
-        // اللغة الحالية — قابلة للتحديث عند إعادة التصويت
         var currentFromLang = translation.fromLang
-        // التصويت يحدث دائماً ما لم تكن اللغة مُحددة يدوياً
-        val isLangFixed = mangaTranslationPreferences.hasOverride(translation.manga.id).get()
-        var isLangResolved = isLangFixed
-        // عداد الصفحات لإعادة التصويت الدوري
-        var processedPageCount = 0
-        // نصوص OCR المستخرجة للتصويت — نملأها مباشرة بعد OCR بدل الاحتفاظ بـ streams
-        // الصور الطويلة (webtoon) تُضيف عدة عينات (أعلى/وسط/أسفل)
-        val pendingVoteTexts = mutableListOf<String>()
-        // أسماء الصفحات المعالجة بلغة مؤقتة — لإعادة ترجمتها إذا تغيرت اللغة
-        // فقط عند MLKIT أو GOOGLE (لتجنب تكاليف API للمحركات المدفوعة)
-        val engine = TextTranslators.fromPref(translationPreferences.translationEngine())
-        val canReTranslate = (engine == TextTranslators.MLKIT || engine == TextTranslators.GOOGLE)
-        val pendingReTranslateNames = if (!isLangFixed && canReTranslate)
-            mutableListOf<String>() else null
-
+val isLangFixed = mangaTranslationPreferences.hasOverride(translation.manga.id).get()
+// @Volatile لضمان رؤية التغيير فوراً من كل threads
+@Volatile var isLangResolved = isLangFixed
+var processedPageCount = 0
+// synchronizedList بدل mutableListOf — آمن للكتابة المتزامنة من coroutines متعددة
+val pendingVoteTexts = java.util.Collections.synchronizedList(mutableListOf<String>())
+val engine = TextTranslators.fromPref(translationPreferences.translationEngine())
+val canReTranslate = (engine == TextTranslators.MLKIT || engine == TextTranslators.GOOGLE)
+val pendingReTranslateNames = if (!isLangFixed && canReTranslate)
+    java.util.Collections.synchronizedList(mutableListOf<String>()) else null
         try {
             while (true) {
                 currentCoroutineContext().ensureActive()
