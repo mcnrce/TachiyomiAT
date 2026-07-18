@@ -1445,21 +1445,29 @@ if (abs(block.angle) in 70.0..110.0) {
     }
 
     private fun getChapterPages(chapterPath: UniFile): List<Pair<String, () -> InputStream>> {
-        if (chapterPath.isFile) {
-            val reader = chapterPath.archiveReader(context)
-            return reader.useEntries { entries ->
-                entries.filter { it.isFile && ImageUtil.isImage(it.name) { reader.getInputStream(it.name)!! } }
-                    .sortedWith { f1, f2 -> f1.name.compareToCaseInsensitiveNaturalOrder(f2.name) }
-                    .map { entry -> Pair(entry.name) { reader.getInputStream(entry.name)!! } }
-                    .toList()
-            }
-        } else {
-            return chapterPath.listFiles()!!
-                .filter { ImageUtil.isImage(it.name) }
-                .map { entry -> Pair(entry.name!!) { entry.openInputStream() } }
+    if (chapterPath.isFile) {
+        val reader = chapterPath.archiveReader(context)
+        return reader.useEntries { entries ->
+            entries.filter { it.isFile && ImageUtil.isImage(it.name) { reader.getInputStream(it.name)!! } }
+                .sortedWith { f1, f2 -> f1.name.compareToCaseInsensitiveNaturalOrder(f2.name) }
+                .mapIndexed { index, entry ->
+                    // استخدام index كـ key ثابت بدل اسم الملف — يطابق ما يستخدمه الـ holder
+                    val key = String.format("%03d.jpg", index)
+                    Pair(key) { reader.getInputStream(entry.name)!! }
+                }
                 .toList()
         }
+    } else {
+        return chapterPath.listFiles()!!
+            .filter { ImageUtil.isImage(it.name) }
+            .sortedWith { f1, f2 -> f1.name!!.compareToCaseInsensitiveNaturalOrder(f2.name!!) }
+            .mapIndexed { index, entry ->
+                val key = String.format("%03d.jpg", index)
+                Pair(key) { entry.openInputStream() }
+            }
+            .toList()
     }
+}
 
     private fun areAllTranslationsFinished(): Boolean =
         queueState.value.none { it.status.value <= Translation.State.TRANSLATING.value }
