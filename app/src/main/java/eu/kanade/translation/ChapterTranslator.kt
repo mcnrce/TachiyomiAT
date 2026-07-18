@@ -683,34 +683,41 @@ class ChapterTranslator(
                                 val tmpFile = File(context.cacheDir, "ocr_tmp_rt_${System.nanoTime()}.jpg")
                                 try {
                                     val pageTranslation = withContext(Dispatchers.IO) {
-                                        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                                        streamFn().use { stream -> BitmapFactory.decodeStream(stream, null, opts) }
-                                        
-                                        if (opts.outWidth <= 0 || opts.outHeight <= 0) return@withContext null
+    // خطوة 1: نسخ الـ stream للـ tmpFile مرة واحدة فقط
+    if (!tmpFile.exists()) tmpFile.createNewFile()
+    streamFn().use { input ->
+        tmpFile.outputStream().use { out -> input.copyTo(out) }
+    }
 
-                                        val aspectRatio = opts.outHeight.toFloat() / opts.outWidth.toFloat()
-                                        val maxOcrHeight = translationPreferences.maxOcrHeight().get()
-                                        val aspectRatioThreshold = translationPreferences.longImageAspectRatioThreshold().get().toFloatOrNull() ?: 2.5f
-                                        val isLongImage = opts.outHeight > maxOcrHeight && aspectRatio > aspectRatioThreshold
+    // خطوة 2: قراءة الأبعاد من الـ tmpFile مباشرة — بدون فتح stream جديد
+    val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(tmpFile.absolutePath, opts)
 
-                                        if (!tmpFile.exists()) tmpFile.createNewFile()
-                                        streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
-                                        
-                                        if (!isLongImage) {
-                                            val bitmap = BitmapFactory.decodeFile(tmpFile.absolutePath)
-                                            bitmap?.let {
-                                                try { recognizeSingleBitmap(it, opts.outWidth, opts.outHeight) }
-                                                finally { it.recycle() }
-                                            }
-                                        } else if (opts.outHeight > ML_KIT_MAX_HEIGHT) {
-                                            // الصورة أكبر من حد ML Kit — نقسّمها إلى tiles
-                                            longImageSemaphore.withPermit {
-                                                recognizeLargeImageByTiles(tmpFile.absolutePath, opts.outHeight, opts.outWidth)
-                                            }
-                                        } else {
-                                            longImageSemaphore.withPermit { recognizePage(tmpFile.absolutePath) }
-                                        }
-                                    }
+    if (opts.outWidth <= 0 || opts.outHeight <= 0) return@withContext null
+
+    val aspectRatio = opts.outHeight.toFloat() / opts.outWidth.toFloat()
+    val maxOcrHeight = translationPreferences.maxOcrHeight().get()
+    val aspectRatioThreshold = translationPreferences.longImageAspectRatioThreshold()
+        .get().toFloatOrNull() ?: 2.5f
+    val isLongImage = opts.outHeight > maxOcrHeight && aspectRatio > aspectRatioThreshold
+
+    // خطوة 3: معالجة OCR من الـ tmpFile مباشرة
+    if (!isLongImage) {
+        val bitmap = BitmapFactory.decodeFile(tmpFile.absolutePath)
+        bitmap?.let {
+            try { recognizeSingleBitmap(it, opts.outWidth, opts.outHeight) }
+            finally { it.recycle() }
+        }
+    } else if (opts.outHeight > ML_KIT_MAX_HEIGHT) {
+        longImageSemaphore.withPermit {
+            recognizeLargeImageByTiles(tmpFile.absolutePath, opts.outHeight, opts.outWidth)
+        }
+    } else {
+        longImageSemaphore.withPermit {
+            recognizePage(tmpFile.absolutePath)
+        }
+    }
+}
 
                                     if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
                                         withContext(Dispatchers.IO) { textTranslator.translate(mutableMapOf(fileName to pageTranslation)) }
