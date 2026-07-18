@@ -607,8 +607,8 @@ class ChapterTranslator(
         var currentFromLang = translation.fromLang
         val isLangFixed = mangaTranslationPreferences.hasOverride(translation.manga.id).get()
 
-        // [إصلاح #3] @Volatile لضمان رؤية التغيير فوراً من كل threads
-        @Volatile var isLangResolved = isLangFixed
+        // [إصلاح #3] AtomicBoolean بدل @Volatile على local var — لضمان رؤية التغيير فوراً من كل threads
+        val isLangResolved = AtomicBoolean(isLangFixed)
 
         var processedPageCount = 0
 
@@ -699,7 +699,7 @@ class ChapterTranslator(
 
                                         // إضافة نصوص OCR لقائمة التصويت
                                         // [إصلاح #3] الكتابة آمنة لأن pendingVoteTexts هو synchronizedList
-                                        if (!isLangResolved || !isLangFixed) {
+                                        if (!isLangResolved.get() || !isLangFixed) {
                                             val isLongPage = pageTranslation.blocks.size > 15
                                             if (isLongPage) {
                                                 val sorted = pageTranslation.blocks.sortedBy { it.y }
@@ -718,7 +718,7 @@ class ChapterTranslator(
                                             }
                                         }
 
-                                        if (!isLangResolved && pendingReTranslateNames != null) {
+                                        if (!isLangResolved.get() && pendingReTranslateNames != null) {
                                             pendingReTranslateNames.add(fileName)
                                         }
 
@@ -742,7 +742,7 @@ class ChapterTranslator(
                 }
 
                 // [إصلاح #4] التصويت المبكر — بعد awaitAll مباشرة، بعد اكتمال كل البيانات من هذه الدورة
-                if (!isLangResolved && pendingVoteTexts.isNotEmpty()) {
+                if (!isLangResolved.get() && pendingVoteTexts.isNotEmpty()) {
                     val hasEnoughSamples = pendingVoteTexts.size >= 5
                     val noMorePages = !translation.hasPendingPages()
                     if (hasEnoughSamples || noMorePages) {
@@ -767,7 +767,7 @@ class ChapterTranslator(
                                 }
                             }
 
-                            isLangResolved = true
+                            isLangResolved.set(true)
                             synchronized(pendingVoteTexts) { pendingVoteTexts.clear() }
                             pendingReTranslateNames?.let { synchronized(it) { it.clear() } }
                             processedPageCount = 0
@@ -776,7 +776,7 @@ class ChapterTranslator(
                 }
 
                 // التصويت الدوري كل 10 صفحات (فقط بعد أن تستقر اللغة)
-                if (isLangResolved && !isLangFixed) {
+                if (isLangResolved.get() && !isLangFixed) {
                     processedPageCount += newStreams.size
                     if (processedPageCount >= 10) {
                         processedPageCount = 0
