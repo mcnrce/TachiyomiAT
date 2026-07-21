@@ -80,3 +80,15 @@
 # Firebase
 -keep class com.google.firebase.installations.** { *; }
 -keep interface com.google.firebase.installations.** { *; }
+
+##---------------Begin: Fix NoSuchMethodError for coroutines on Android 16  ----------
+# Android 16 يطبق strict class loading — يجب الحفاظ على كل signatures بدون تغيير
+# الإضافات تستدعي runBlockingK$default التي يجب أن تبقى كما هي
+-keep class kotlinx.coroutines.BuildersKt { *; }
+-keepclassmembers class kotlinx.coroutines.BuildersKt {
+    public static <methods>;
+}
+# حفظ كل internal coroutines classes التي تستخدمها الإضافات عبر RxCoroutineBridge
+-keep class kotlinx.coroutines.rx2.** { *; }
+-keep class tachiyomi.core.common.util.lang.RxCoroutineBridgeKt { *; }
+##---------------End: Fix NoSuchMethodError for coroutines on Android 16  ----------
