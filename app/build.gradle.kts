@@ -195,8 +195,8 @@ dependencies {
     implementation(kotlinx.reflect)
     implementation(kotlinx.immutables)
 
-    implementation(platform(kotlinx.coroutines.bom))
-    implementation(kotlinx.bundles.coroutines)
+    // [إصلاح] استخدام إصدار coroutines صريح 1.11.0 بدل BOM — يحل NoSuchMethodError على Android 16
+    implementation(libs.bundles.coroutines)
 
     // AndroidX libraries
     implementation(androidx.annotation)
@@ -280,7 +280,7 @@ dependencies {
     // debugImplementation(libs.leakcanary.android)
     implementation(libs.leakcanary.plumber)
 
-    testImplementation(kotlinx.coroutines.test)
+    testImplementation(libs.kotlinx.coroutines.test)
 
     // TachiyomiAT
     implementation(libs.mlkit.text.recognition)
