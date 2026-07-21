@@ -292,6 +292,18 @@ dependencies {
     implementation(libs.google.generativeai)
 }
 
+// إجبار كل dependencies على نفس إصدار coroutines — يحل NoSuchMethodError على Android 16
+// السبب: الإضافات (extensions) تحمل coroutines قديمة تتعارض مع إصدار التطبيق
+configurations.all {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "org.jetbrains.kotlinx" &&
+            requested.name.startsWith("kotlinx-coroutines")) {
+            useVersion("1.9.0")
+            because("Fix NoSuchMethodError on Android 16 caused by extensions bundling older coroutines")
+        }
+    }
+}
+
 androidComponents {
     beforeVariants { variantBuilder ->
         // Disables standardBenchmark
