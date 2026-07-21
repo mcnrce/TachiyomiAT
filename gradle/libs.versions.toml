@@ -9,12 +9,14 @@ sqldelight = "2.0.2"
 sqlite = "2.4.0"
 mlkit-text-recognition-version = "16.0.1"
 mlkit-text-translate-version = "17.0.3"
-mlkit-language-id-version = "17.0.6" 
+mlkit-language-id-version = "17.0.6"
 google-generativeai-version = "0.9.0"
 voyager = "1.0.1"
 spotless = "7.0.0.BETA4"
 ktlint-core = "1.5.0"
 firebase-bom = "33.7.0"
+# [إصلاح] إصدار coroutines صريح بدل الاعتماد على BOM — يحل NoSuchMethodError على Android 16
+kotlinx-coroutines = "1.11.0"
 
 [libraries]
 desugar = "com.android.tools:desugar_jdk_libs:2.1.4"
@@ -113,6 +115,11 @@ voyager-transitions = { module = "cafe.adriel.voyager:voyager-transitions", vers
 spotless-gradle = { group = "com.diffplug.spotless", name = "spotless-plugin-gradle", version.ref = "spotless" }
 ktlint-core = { module = "com.pinterest.ktlint:ktlint-cli", version.ref = "ktlint-core" }
 
+# [إصلاح] coroutines libraries بإصدار صريح
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "kotlinx-coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
+
 [plugins]
 google-services = { id = "com.google.gms.google-services", version = "4.4.2" }
 aboutLibraries = { id = "com.mikepenz.aboutlibraries.plugin", version.ref = "aboutlib_version" }
@@ -130,3 +137,5 @@ sqldelight = ["sqldelight-android-driver", "sqldelight-coroutines", "sqldelight-
 voyager = ["voyager-navigator", "voyager-screenmodel", "voyager-tab-navigator", "voyager-transitions"]
 richtext = ["richtext-commonmark", "richtext-m3"]
 test = ["junit", "kotest-assertions", "mockk"]
+# [إصلاح] bundle للـ coroutines بإصدار موحد
+coroutines = ["kotlinx-coroutines-core", "kotlinx-coroutines-android"]
