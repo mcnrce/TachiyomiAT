@@ -197,7 +197,7 @@ dependencies {
 
     // [إصلاح] استخدام إصدار coroutines صريح 1.11.0 بدل BOM — يحل NoSuchMethodError على Android 16
     implementation(libs.bundles.coroutines)
-    implementation(libs.kotlinx.coroutines.guava)
+    implementation(libs.coroutines.guava)
 
     // AndroidX libraries
     implementation(androidx.annotation)
