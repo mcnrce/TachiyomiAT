@@ -172,7 +172,9 @@ abstract class SearchScreenModel(
                         if (isActive) {
                             updateItem(source, SearchItemResult.Success(titles))
                         }
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
+                        // [إصلاح] Throwable بدل Exception — يلتقط NoSuchMethodError و Error
+                        // الذي تسببه الإضافات القديمة على Android 16
                         if (isActive) {
                             updateItem(source, SearchItemResult.Error(e))
                         }
