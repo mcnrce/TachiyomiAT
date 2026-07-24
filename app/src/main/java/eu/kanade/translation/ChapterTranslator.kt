@@ -71,6 +71,7 @@ import java.io.InputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
@@ -620,7 +621,7 @@ class ChapterTranslator(
         val pendingReTranslateNames = if (!isLangResolved && canReTranslate)
             CopyOnWriteArrayList<String>() else null
 
-        var lastSaveTime = System.currentTimeMillis()
+        val lastSaveTime = AtomicLong(System.currentTimeMillis())
 
         try {
             while (true) {
@@ -644,10 +645,19 @@ class ChapterTranslator(
 
                         if (langChanged) {
                             currentFromLang = votedLang
+                            // تحديث التعرف على النص
                             if (currentFromLang != textRecognizer.language) {
                                 textRecognizer.close()
                                 textRecognizer = TextRecognizer(currentFromLang)
                             }
+                            
+                            // تم الإصلاح هنا: تحديث محرك الترجمة بعد تغير اللغة المصدرية
+                            if (currentFromLang != textTranslator.fromLang) {
+                                withContext(Dispatchers.IO) { textTranslator.close() }
+                                textTranslator = TextTranslators.fromPref(translationPreferences.translationEngine())
+                                    .build(translationPreferences, currentFromLang, translation.toLang)
+                            }
+
                             if (!pendingReTranslateNames.isNullOrEmpty()) {
                                 reTranslatePages(pendingReTranslateNames, translation, translationMangaDir, saveFile)
                             }
@@ -757,8 +767,8 @@ class ChapterTranslator(
                                         }
 
                                         val currentTime = System.currentTimeMillis()
-                                        if (currentTime - lastSaveTime > 5000) {
-                                            lastSaveTime = currentTime
+                                        if (currentTime - lastSaveTime.get() > 5000) {
+                                            lastSaveTime.set(currentTime)
                                             scope.launch {
                                                 persistRealtimeProgress(translationMangaDir, saveFile, translation)
                                             }
@@ -793,6 +803,13 @@ class ChapterTranslator(
                             if (currentFromLang != textRecognizer.language) {
                                 textRecognizer.close()
                                 textRecognizer = TextRecognizer(currentFromLang)
+                            }
+                            
+                            // تم الإصلاح هنا أيضاً: تحديث محرك الترجمة للاستجابة للتغير الجديد
+                            if (currentFromLang != textTranslator.fromLang) {
+                                withContext(Dispatchers.IO) { textTranslator.close() }
+                                textTranslator = TextTranslators.fromPref(translationPreferences.translationEngine())
+                                    .build(translationPreferences, currentFromLang, translation.toLang)
                             }
                         }
                     }
@@ -1090,7 +1107,7 @@ class ChapterTranslator(
             block.x /= TextRecognizer.SCALE_FACTOR
             block.y /= TextRecognizer.SCALE_FACTOR
             block.width /= TextRecognizer.SCALE_FACTOR
-            block.height /= TextRecognizer.SCALE_FACTOR
+            block.height /= TextRecognizer.SCALEFACTOR
         }
         pageTranslation.imgWidth /= TextRecognizer.SCALE_FACTOR
         pageTranslation.imgHeight /= TextRecognizer.SCALE_FACTOR
