@@ -431,7 +431,7 @@ class ChapterTranslator(
         return try {
             val possibilities = identifier.identifyPossibleLanguages(text).await()
             val best = possibilities.maxByOrNull { it.confidence }
-            
+
             if (best == null || best.languageTag == "und") return Pair(null, 0f)
 
             val lang = when (best.languageTag) { 
@@ -526,7 +526,7 @@ class ChapterTranslator(
                     async {
                         batchSemaphore.withPermit {
                             currentCoroutineContext().ensureActive()
-                          
+
                             val tmpFile = File(context.cacheDir, "ocr_tmp_${System.nanoTime()}.jpg")
                             try {
                                 if (!tmpFile.exists()) tmpFile.createNewFile()
@@ -551,7 +551,7 @@ class ChapterTranslator(
                 }
                 writeTranslationFile(translationMangaDir, saveFile, pages)
             }
-            
+
             translation.status = Translation.State.TRANSLATED
 
             val cid = translation.chapter.id
@@ -609,13 +609,13 @@ class ChapterTranslator(
 
         val resolvedLang = resolveSourceLanguageForManga(translation.manga.id, translation.source, translation.manga.title)
         var currentFromLang = resolvedLang.language
-        
+
         // إذا كانت اللغة مؤكدة (من المستخدم أو العنوان)، فلن نحتاج لتصويت إطلاقاً
         var isLangResolved = resolvedLang.isDefinitive
-        
+
         var processedPageCount = 0
         val pendingVoteTexts = CopyOnWriteArrayList<String>()
-        
+
         val engine = TextTranslators.fromPref(translationPreferences.translationEngine())
         val canReTranslate = (engine == TextTranslators.MLKIT || engine == TextTranslators.GOOGLE)
         val pendingReTranslateNames = if (!isLangResolved && canReTranslate)
@@ -634,41 +634,12 @@ class ChapterTranslator(
                     continue
                 }
 
-                // ينفذ التصويت فقط إذا كانت اللغة غير مؤكدة (تستند على لغة المصدر فقط)
-                val shouldVoteNow = !isLangResolved && pendingVoteTexts.isNotEmpty() &&
-                    (pendingVoteTexts.size >= 5 || !translation.hasPendingPages())
-                if (shouldVoteNow) {
-                    val votedLang = voteForLanguage(pendingVoteTexts)
-                    if (votedLang != null) {
-                        val langChanged = votedLang != currentFromLang
-                        logcat { "تأكيد لغة المصدر عبر التصويت: $currentFromLang → $votedLang (تغيّرت: $langChanged)" }
-
-                        if (langChanged) {
-                            currentFromLang = votedLang
-                            // تحديث التعرف على النص
-                            if (currentFromLang != textRecognizer.language) {
-                                textRecognizer.close()
-                                textRecognizer = TextRecognizer(currentFromLang)
-                            }
-                            
-                            // تم الإصلاح هنا: تحديث محرك الترجمة بعد تغير اللغة المصدرية
-                            if (currentFromLang != textTranslator.fromLang) {
-                                withContext(Dispatchers.IO) { textTranslator.close() }
-                                textTranslator = TextTranslators.fromPref(translationPreferences.translationEngine())
-                                    .build(translationPreferences, currentFromLang, translation.toLang)
-                            }
-
-                            if (!pendingReTranslateNames.isNullOrEmpty()) {
-                                reTranslatePages(pendingReTranslateNames, translation, translationMangaDir, saveFile)
-                            }
-                        }
-
-                        isLangResolved = true
-                        pendingVoteTexts.clear()
-                        pendingReTranslateNames?.clear()
-                        processedPageCount = 0
-                    }
-                }
+                // ═════════════════════════════════════════════════════════════════
+                // ═══  الإصلاح الرئيسي: التصويت لا يمنع الترجمة!  ════════════════
+                // ═════════════════════════════════════════════════════════════════
+                // نفحص التصويت فقط إذا كانت اللغة غير مؤكدة
+                // لكننا لا ننتظره! نترجم الصفحات فوراً بـ currentFromLang الحالي
+                // والتصويت يحدث في الخلفية
 
                 val currentAvg = rollingAvgBubbles
                 val lowBubbleThreshold = translationPreferences.lowBubbleCountThreshold().get().toFloat()
@@ -695,19 +666,19 @@ class ChapterTranslator(
                                     val pageTranslation = withContext(Dispatchers.IO) {
                                         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                                         streamFn().use { stream -> BitmapFactory.decodeStream(stream, null, opts) }
-                                        
+
                                         if (opts.outWidth <= 0 || opts.outHeight <= 0) return@withContext null
 
                                         val aspectRatio = opts.outHeight.toFloat() / opts.outWidth.toFloat()
                                         val maxOcrHeight = translationPreferences.maxOcrHeight().get()
                                         val aspectRatioThreshold = translationPreferences.longImageAspectRatioThreshold().get().toFloatOrNull() ?: 2.5f
-                                        
+
                                         val isLongImage = opts.outHeight > maxOcrHeight && aspectRatio > aspectRatioThreshold
                                         val isMassiveImage = (opts.outWidth * opts.outHeight) > 8_000_000
 
                                         if (!tmpFile.exists()) tmpFile.createNewFile()
                                         streamFn().use { input -> tmpFile.outputStream().use { out -> input.copyTo(out) } }
-                                        
+
                                         if (!isLongImage) {
                                             if (isMassiveImage) {
                                                 longImageSemaphore.withPermit {
@@ -734,7 +705,7 @@ class ChapterTranslator(
                                     }
 
                                     if (pageTranslation != null && pageTranslation.blocks.isNotEmpty()) {
-                                        
+
                                         withRetry(times = 3, initialDelayMs = 1000) {
                                             withContext(Dispatchers.IO) { textTranslator.translate(mutableMapOf(fileName to pageTranslation)) }
                                         }
@@ -742,7 +713,9 @@ class ChapterTranslator(
                                         translation.existingPages[fileName] = pageTranslation
                                         translation.emitPageTranslated(fileName, pageTranslation)
 
-                                        // نجمع النصوص للتصويت فقط إذا لم تكن اللغة مؤكدة من البداية
+                                        // ═══════════════════════════════════════════════════════
+                                        // ═══  جمع النصوص للتصويت في الخلفية (لا يمنع الترجمة) ═══
+                                        // ═══════════════════════════════════════════════════════
                                         if (!isLangResolved) {
                                             val isLongPage = pageTranslation.blocks.size > 15
                                             if (isLongPage) {
@@ -789,10 +762,17 @@ class ChapterTranslator(
                     deferredList.awaitAll()
                 }
 
+                // ═════════════════════════════════════════════════════════════════
+                // ═══  التصويت يحدث بعد انتهاء معالجة الصفحات، لا قبلها  ═══════
+                // ═════════════════════════════════════════════════════════════════
                 if (!isLangResolved) {
                     processedPageCount += newStreams.size
-                    if (processedPageCount >= 10) {
-                        processedPageCount = 0
+
+                    // نتحقق من التصويت كل 5 صفحات أو عند نفاد الصفحات المعلقة
+                    val shouldVoteNow = pendingVoteTexts.size >= 5 || 
+                        (!translation.hasPendingPages() && pendingVoteTexts.isNotEmpty())
+
+                    if (shouldVoteNow) {
                         val textsForVoting = pendingVoteTexts.toList()
                         pendingVoteTexts.clear()
 
@@ -804,13 +784,27 @@ class ChapterTranslator(
                                 textRecognizer.close()
                                 textRecognizer = TextRecognizer(currentFromLang)
                             }
-                            
-                            // تم الإصلاح هنا أيضاً: تحديث محرك الترجمة للاستجابة للتغير الجديد
+
+                            // تحديث محرك الترجمة للاستجابة للتغير الجديد
                             if (currentFromLang != textTranslator.fromLang) {
                                 withContext(Dispatchers.IO) { textTranslator.close() }
                                 textTranslator = TextTranslators.fromPref(translationPreferences.translationEngine())
                                     .build(translationPreferences, currentFromLang, translation.toLang)
                             }
+
+                            // إعادة ترجمة الصفحات السابقة باللغة الجديدة
+                            if (!pendingReTranslateNames.isNullOrEmpty()) {
+                                val toReTranslate = pendingReTranslateNames.toList()
+                                pendingReTranslateNames.clear()
+                                reTranslatePages(toReTranslate, translation, translationMangaDir, saveFile)
+                            }
+                        }
+
+                        // بعد أول تصويت ناجح، نعتبر اللغة محلولة
+                        if (votedLang != null) {
+                            isLangResolved = true
+                            pendingReTranslateNames?.clear()
+                            processedPageCount = 0
                         }
                     }
                 }
@@ -833,7 +827,7 @@ class ChapterTranslator(
         translation: Translation,
     ) {
         val pagesSnapshot = translation.existingPages.toMap()
-        
+
         jsonWriteMutex.withLock {
             withContext(Dispatchers.IO) {
                 writeTranslationFile(translationMangaDir, saveFile, pagesSnapshot)
@@ -1100,7 +1094,7 @@ class ChapterTranslator(
         val enhancedW = origW * TextRecognizer.SCALE_FACTOR
         val enhancedH = origH * TextRecognizer.SCALE_FACTOR
         val pageTranslation = PageTranslation(imgWidth = enhancedW.toFloat(), imgHeight = enhancedH.toFloat())
-        
+
         pageTranslation.blocks = smartMergeBlocks(allBlocks, enhancedW.toFloat(), enhancedH.toFloat())
 
         for (block in pageTranslation.blocks) {
@@ -1188,7 +1182,7 @@ class ChapterTranslator(
             val textRatio = (cleanedTranslation.length.toFloat() / cleanedText.length.coerceAtLeast(1))
                 .coerceIn(1.0f, 1.25f)
             val finalScale = sqrt(textRatio.toDouble()).toFloat()
-            
+
             var newHeight: Float
             var newWidth: Float
             if (abs(block.angle) in 70.0..110.0) {
