@@ -1107,7 +1107,7 @@ class ChapterTranslator(
             block.x /= TextRecognizer.SCALE_FACTOR
             block.y /= TextRecognizer.SCALE_FACTOR
             block.width /= TextRecognizer.SCALE_FACTOR
-            block.height /= TextRecognizer.SCALEFACTOR
+            block.height /= TextRecognizer.SCALE_FACTOR
         }
         pageTranslation.imgWidth /= TextRecognizer.SCALE_FACTOR
         pageTranslation.imgHeight /= TextRecognizer.SCALE_FACTOR
