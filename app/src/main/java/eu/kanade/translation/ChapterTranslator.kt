@@ -626,6 +626,9 @@ class ChapterTranslator(
 
         val lastSaveTime = AtomicLong(System.currentTimeMillis())
         
+        // المتغير الجديد لتسجيل وقت بدء اكتشاف النصوص للتصويت
+        var firstVoteTextTime = 0L
+        
         // عداد الصفحات المعالجة منذ آخر تصويت (غير مستخدم حالياً، يمكن الاحتفاظ به)
         @Suppress("UNUSED_VARIABLE")
         var pagesSinceLastVote = 0
@@ -737,6 +740,9 @@ class ChapterTranslator(
 
                                         // جمع النصوص للتصويت (إذا كانت اللغة غير محلولة)
                                         if (!isLangResolved) {
+                                            if (pendingVoteTexts.isEmpty()) {
+                                                firstVoteTextTime = System.currentTimeMillis()
+                                            }
                                             collectTextsForVoting(pageTranslation, pendingVoteTexts)
                                             pendingReTranslateNames?.add(fileName)
                                         }
@@ -773,11 +779,15 @@ class ChapterTranslator(
                 // ═══  عملية التصويت: تحدث في الخلفية ولا تمنع الترجمة  ═══════
                 // ═════════════════════════════════════════════════════════════════
                 if (!isLangResolved) {
+                    val timePassed = if (pendingVoteTexts.isNotEmpty()) System.currentTimeMillis() - firstVoteTextTime else 0L
+                    
                     // شروط بدء التصويت:
                     // 1. لدينا 5 نصوص أو أكثر للتصويت
                     // 2. أو انتهت الصفحات المعلقة ولدينا نصوص
+                    // 3. أو مرت 3 ثوانٍ على أول نص تم جمعه (لتسريع الترجمة)
                     val shouldVoteNow = pendingVoteTexts.size >= 5 || 
-                        (!translation.hasPendingPages() && pendingVoteTexts.isNotEmpty())
+                        (!translation.hasPendingPages() && pendingVoteTexts.isNotEmpty()) ||
+                        (pendingVoteTexts.isNotEmpty() && timePassed >= 3000L)
 
                     if (shouldVoteNow) {
                         // نقوم بالتصويت في Coroutine منفصلة حتى لا نمنع المعالجة
@@ -901,7 +911,9 @@ class ChapterTranslator(
             onLanguageChanged(votedLang)
             
         } else if (votedLang == null) {
-            logcat { "⚠️ التصويت لم يحدد لغة واضحة، استمرار باللغة الحالية: $currentFromLang" }
+            // تفعيل نظام الحماية الافتراضي لتجنب الاستمرار بمحاولة تحديد لغة فارغة أو غير معتمدة
+            logcat { "⚠️ التصويت أرجع لغة فارغة أو غير متوفرة. تفعيل الحماية واستخدام آخر لغة مقبولة: $currentFromLang" }
+            pendingReTranslateNames?.clear() // مسح قائمة إعادة الترجمة لعدم وجود تغيير فعلي في اللغة
             // نعتبر اللغة محلولة لتجنب التصويت المتكرر
             onLanguageChanged(currentFromLang)
         } else {
@@ -909,11 +921,6 @@ class ChapterTranslator(
             onLanguageChanged(currentFromLang)
         }
     }
-
-    // باقي الدوال (persistRealtimeProgress, readTranslationFile, writeTranslationFile,
-    // ensureRecognizerAndTranslator, recognizePage, recognizeSingleBitmap,
-    // smartMergeBlocks, etc.) تبقى كما هي دون تغيير.
-    // تم تضمينها هنا للإكمال، لكنها لم تتغير.
 
     private suspend fun persistRealtimeProgress(
         translationMangaDir: UniFile,
@@ -1458,107 +1465,83 @@ class ChapterTranslator(
             a.y + a.height > b.y
     }
 
-    
-    
-    
-    /**
- * تحدد ما إذا كان يجب دمج كتلتين من النص (فقاعتين) في كتلة واحدة.
- * تم تعديلها لتطبيق حلين:
- * 1. استخدام أصغر حجم خط (symWidth/symHeight) لحساب المسافات القصوى للدمج، بدلاً من الأكبر.
- * 2. منع الدمج إذا كان الفرق في حجم الخط بين الكتلتين أكبر من 1.5 ضعف (أي نسبة > 1.5).
- */
-private fun shouldMergeTextBlock(
-    r1: TranslationBlock,
-    r2: TranslationBlock,
-    xThreshold: Float,
-    yThresholdFactor: Float,
-): Boolean {
-    // التحقق من تشابه الزاوية
-    val angleDiff = abs(r1.angle - r2.angle)
-    val angleSimilar = angleDiff < 15 || abs(angleDiff - 180) < 15
-    if (!angleSimilar) return false
+    private fun shouldMergeTextBlock(
+        r1: TranslationBlock,
+        r2: TranslationBlock,
+        xThreshold: Float,
+        yThresholdFactor: Float,
+    ): Boolean {
+        val angleDiff = abs(r1.angle - r2.angle)
+        val angleSimilar = angleDiff < 15 || abs(angleDiff - 180) < 15
+        if (!angleSimilar) return false
 
-    // ============================================================
-    // الحل الثاني: منع الدمج إذا كان الفرق في حجم الخط كبيراً جداً
-    // ============================================================
-    val minSymWidth = min(r1.symWidth, r2.symWidth)
-    val maxSymWidth = max(r1.symWidth, r2.symWidth)
-    val minSymHeight = min(r1.symHeight, r2.symHeight)
-    val maxSymHeight = max(r1.symHeight, r2.symHeight)
+        val minSymWidth = min(r1.symWidth, r2.symWidth)
+        val maxSymWidth = max(r1.symWidth, r2.symWidth)
+        val minSymHeight = min(r1.symHeight, r2.symHeight)
+        val maxSymHeight = max(r1.symHeight, r2.symHeight)
 
-    // نسبة الفرق الأقصى المسموح بها (1.5 ضعف)
-    val sizeRatioLimit = 1.5f
-    if (maxSymWidth / minSymWidth > sizeRatioLimit || maxSymHeight / minSymHeight > sizeRatioLimit) {
-        return false // لا ندمج كتل تختلف كثيراً في حجم الحروف
+        val sizeRatioLimit = 1.5f
+        if (maxSymWidth / minSymWidth > sizeRatioLimit || maxSymHeight / minSymHeight > sizeRatioLimit) {
+            return false 
+        }
+
+        val sH = max(minSymHeight, 12f)
+        val sW = max(minSymWidth, 12f)
+        val maxAllowedGapX = sW * 1.2f
+        val maxAllowedGapY = sH * 1.2f
+
+        val isVertical = abs(r1.angle) in 70.0..110.0
+
+        val r1Right = r1.x + r1.width
+        val r1Bottom = r1.y + r1.height
+        val r2Right = r2.x + r2.width
+        val r2Bottom = r2.y + r2.height
+
+        val yOverlap = max(0f, min(r1Bottom, r2Bottom) - max(r1.y, r2.y))
+        val xOverlap = max(0f, min(r1Right, r2Right) - max(r1.x, r2.x))
+
+        val minHeight = min(r1.height, r2.height)
+        val isFullVerticalCover = yOverlap >= (minHeight * 0.75f)
+
+        val minWidth = min(r1.width, r2.width)
+        val isFullHorizontalCover = xOverlap >= (minWidth * 0.95f)
+        val isInCross = isFullHorizontalCover || isFullVerticalCover
+        if (!isInCross) return false
+
+        if (isVertical) {
+            val sideGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
+            if (sideGap > maxAllowedGapX) return false
+            if (isFullVerticalCover && sideGap <= 0f) return true
+
+            val vertGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
+            if (vertGap > maxAllowedGapY) return false
+
+            val isTouchingOrClose = sideGap <= (sW * 1.2f) && vertGap <= (sH * 1.2f)
+            if (!isTouchingOrClose) return false
+
+            val dy = abs(r1.y - r2.y)
+            val dx = abs(r1.x - r2.x)
+            val isOriginsClose = dy < (sH * 1.2f) && dx < (sW * 1.2f)
+            val isSideBySide = sideGap < (sW * 1.2f) && dy < (sH * 1.2f)
+            val alignedVertically = yOverlap > (sH * 0.15f)
+            val closeHorizontally = sideGap < (sW * 1.2f)
+            return isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
+        } else {
+            val vGap = max(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
+            if (vGap > maxAllowedGapY) return false
+            if (isFullHorizontalCover && vGap <= maxAllowedGapY) return true
+
+            val sideGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
+            if (sideGap > maxAllowedGapX) return false
+
+            val hasHighSideOverlap = xOverlap > (minWidth * 0.70f)
+            val centerR1X = r1.x + r1.width / 2f
+            val centerR2X = r2.x + r2.width / 2f
+            val centersAligned = abs(centerR1X - centerR2X) < max(r1.width, r2.width) * 0.35f
+            val isTouching = vGap <= maxAllowedGapY
+            return (hasHighSideOverlap || centersAligned) && isTouching
+        }
     }
-
-    // ============================================================
-    // الحل الأول: استخدام أصغر حجم خط لحساب المسافات القصوى
-    // ============================================================
-    // نأخذ أصغر قيمة، مع ضمان حد أدنى 12 بكسل لتجنب القيم الصفرية
-    val sH = max(minSymHeight, 12f)
-    val sW = max(minSymWidth, 12f)
-    val maxAllowedGapX = sW * 1.2f
-    val maxAllowedGapY = sH * 1.2f
-
-    // باقي المنطق الأصلي للتحقق من التداخل والقرب
-    val isVertical = abs(r1.angle) in 70.0..110.0
-
-    val r1Right = r1.x + r1.width
-    val r1Bottom = r1.y + r1.height
-    val r2Right = r2.x + r2.width
-    val r2Bottom = r2.y + r2.height
-
-    val yOverlap = max(0f, min(r1Bottom, r2Bottom) - max(r1.y, r2.y))
-    val xOverlap = max(0f, min(r1Right, r2Right) - max(r1.x, r2.x))
-
-    val minHeight = min(r1.height, r2.height)
-    val isFullVerticalCover = yOverlap >= (minHeight * 0.75f)
-
-    val minWidth = min(r1.width, r2.width)
-    val isFullHorizontalCover = xOverlap >= (minWidth * 0.95f)
-    val isInCross = isFullHorizontalCover || isFullVerticalCover
-    if (!isInCross) return false
-
-    if (isVertical) {
-        val sideGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
-        if (sideGap > maxAllowedGapX) return false
-        if (isFullVerticalCover && sideGap <= 0f) return true
-
-        val vertGap = if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom
-        if (vertGap > maxAllowedGapY) return false
-
-        val isTouchingOrClose = sideGap <= (sW * 1.2f) && vertGap <= (sH * 1.2f)
-        if (!isTouchingOrClose) return false
-
-        val dy = abs(r1.y - r2.y)
-        val dx = abs(r1.x - r2.x)
-        val isOriginsClose = dy < (sH * 1.2f) && dx < (sW * 1.2f)
-        val isSideBySide = sideGap < (sW * 1.2f) && dy < (sH * 1.2f)
-        val alignedVertically = yOverlap > (sH * 0.15f)
-        val closeHorizontally = sideGap < (sW * 1.2f)
-        return isOriginsClose || isSideBySide || (closeHorizontally && alignedVertically)
-    } else {
-        val vGap = max(0f, if (r1.y < r2.y) r2.y - r1Bottom else r1.y - r2Bottom)
-        if (vGap > maxAllowedGapY) return false
-        if (isFullHorizontalCover && vGap <= maxAllowedGapY) return true
-
-        val sideGap = if (r1.x < r2.x) r2.x - r1Right else r1.x - r2Right
-        if (sideGap > maxAllowedGapX) return false
-
-        val hasHighSideOverlap = xOverlap > (minWidth * 0.70f)
-        val centerR1X = r1.x + r1.width / 2f
-        val centerR2X = r2.x + r2.width / 2f
-        val centersAligned = abs(centerR1X - centerR2X) < max(r1.width, r2.width) * 0.35f
-        val isTouching = vGap <= maxAllowedGapY
-        return (hasHighSideOverlap || centersAligned) && isTouching
-    }
-}
-    
-    
-
-    
-
 
     private fun mergeTextBlock(a: TranslationBlock, b: TranslationBlock, isWebtoon: Boolean): TranslationBlock {
         val minX = min(a.x, b.x)
@@ -1665,4 +1648,5 @@ private fun shouldMergeTextBlock(
             emptyList()
         }
     }
-} 
+}
+ 
