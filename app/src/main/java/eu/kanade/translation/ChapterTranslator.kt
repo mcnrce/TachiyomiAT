@@ -368,13 +368,13 @@ class ChapterTranslator(
     // ═══  كشف اللغة من النص بعد OCR  ══════════════════════════════════
     // ═══════════════════════════════════════════════════════════════════
 
-    private suspend fun detectLanguageFromOcrText(text: String): TextRecognizerLanguage? {
-        if (text.isBlank()) return null
+    private suspend fun detectLanguageFromOcrText(text: String): Pair<TextRecognizerLanguage?, Float> {
+        if (text.isBlank()) return Pair(null, 0f)
         return try {
             val possibilities = languageIdentifier.identifyPossibleLanguages(text).await()
-            val best = possibilities.maxByOrNull { it.confidence } ?: return null
-            if (best.languageTag == "und" || best.confidence < 0.6f) return null
-            when (best.languageTag) {
+            val best = possibilities.maxByOrNull { it.confidence } ?: return Pair(null, 0f)
+            if (best.languageTag == "und" || best.confidence < 0.6f) return Pair(null, 0f)
+            val lang = when (best.languageTag) {
                 "zh" -> TextRecognizerLanguage.CHINESE
                 "ja" -> TextRecognizerLanguage.JAPANESE
                 "ko" -> TextRecognizerLanguage.KOREAN
@@ -383,8 +383,9 @@ class ChapterTranslator(
                 -> TextRecognizerLanguage.ENGLISH
                 else -> null
             }
+            Pair(lang, best.confidence)
         } catch (e: Exception) {
-            null
+            Pair(null, 0f)
         }
     }
 
@@ -687,11 +688,35 @@ class ChapterTranslator(
         translationMangaDir: UniFile,
         saveFile: String,
     ) {
-        // نجمع النص من الصفحة لكشف اللغة
-        val ocrText = pageTranslation.blocks.joinToString(" ") { it.text }.trim()
-        if (ocrText.isBlank()) return
+        val blocks = pageTranslation.blocks
+        if (blocks.isEmpty()) return
 
-        val detectedLang = detectLanguageFromOcrText(ocrText)
+        // نأخذ 3 عينات من أعلى/وسط/أسفل الصفحة لتحديد اللغة بدقة أعلى
+        val sorted = blocks.sortedBy { it.y }
+        val third = (sorted.size / 3).coerceAtLeast(1)
+
+        val samples = if (sorted.size >= 3) {
+            listOf(
+                sorted.take(third).joinToString(" ") { it.text },
+                sorted.drop(third).take(third).joinToString(" ") { it.text },
+                sorted.drop(third * 2).joinToString(" ") { it.text },
+            ).filter { it.isNotBlank() }
+        } else {
+            listOf(sorted.joinToString(" ") { it.text }).filter { it.isNotBlank() }
+        }
+
+        if (samples.isEmpty()) return
+
+        // نجمع الثقة من كل العينات ونختار اللغة الفائزة بأعلى مجموع ثقة
+        val langScores = mutableMapOf<TextRecognizerLanguage, Float>()
+        for (sample in samples) {
+            val (lang, confidence) = detectLanguageFromOcrText(sample)
+            if (lang != null && confidence >= 0.6f) {
+                langScores[lang] = (langScores[lang] ?: 0f) + confidence
+            }
+        }
+
+        val detectedLang = langScores.maxByOrNull { it.value }?.key
 
         if (detectedLang == null) {
             // فشل الكشف — نبقى على آخر لغة مؤكدة كـ fallback
