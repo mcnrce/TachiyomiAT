@@ -8,6 +8,7 @@ import android.graphics.Rect
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.nl.languageid.LanguageIdentification
+import com.google.mlkit.nl.languageid.LanguageIdentifier
 import kotlinx.coroutines.tasks.await
 import com.hippo.unifile.UniFile
 import eu.kanade.tachiyomi.data.download.DownloadProvider
@@ -110,6 +111,9 @@ class ChapterTranslator(
     private val jsonWriteMutex = Mutex()
     private val finishRequests = ConcurrentHashMap<Long, AtomicBoolean>()
     private val longImageSemaphore = Semaphore(1)
+
+    // client واحد ثابت بدل إنشاء جديد في كل صفحة — أخف على الجهاز
+    private val languageIdentifier: LanguageIdentifier = LanguageIdentification.getClient()
 
     @Volatile
     private var rollingAvgBubbles = 4.0f
@@ -366,9 +370,8 @@ class ChapterTranslator(
 
     private suspend fun detectLanguageFromOcrText(text: String): TextRecognizerLanguage? {
         if (text.isBlank()) return null
-        val identifier = LanguageIdentification.getClient()
         return try {
-            val possibilities = identifier.identifyPossibleLanguages(text).await()
+            val possibilities = languageIdentifier.identifyPossibleLanguages(text).await()
             val best = possibilities.maxByOrNull { it.confidence } ?: return null
             if (best.languageTag == "und" || best.confidence < 0.6f) return null
             when (best.languageTag) {
