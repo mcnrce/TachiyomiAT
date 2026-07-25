@@ -50,10 +50,10 @@ class TranslationPreferences(
     fun translateMangaTags() = preferenceStore.getBoolean("pref_translate_manga_tags", true)
 
     // اختيار لغة الهدف لكل جزء بشكل مستقل
-    fun translateMangaTitleTo() = preferenceStore.getString("metadata_target_lang_title", "ar")
-    fun translateMangaDescriptionTo() = preferenceStore.getString("metadata_target_lang_description", "ar")
-    fun translateMangaTagsTo() = preferenceStore.getString("metadata_target_lang_tags", "ar")
-    fun translateSourceUiTo() = preferenceStore.getString("metadata_target_lang_ui", "ar") // لترجمة واجهة الإضافة
+    fun translateMangaTitleTo() = preferenceStore.getString("metadata_target_lang_title", "en")
+    fun translateMangaDescriptionTo() = preferenceStore.getString("metadata_target_lang_description", "en")
+    fun translateMangaTagsTo() = preferenceStore.getString("metadata_target_lang_tags", "en")
+    fun translateSourceUiTo() = preferenceStore.getString("metadata_target_lang_ui", "en") // لترجمة واجهة الإضافة
 
     // محرك الترجمة الخاص بالنصوص (مستقل عن محرك ترجمة الصور)
     fun metadataTranslationEngine() = preferenceStore.getInt("metadata_translation_engine", 0)
