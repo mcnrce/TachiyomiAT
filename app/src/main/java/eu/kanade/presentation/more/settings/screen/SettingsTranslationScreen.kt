@@ -41,12 +41,21 @@ object SettingsTranslationScreen : SearchableSettings {
                 entries = entries.withIndex().associate { it.index to it.value.label }.toImmutableMap(),
             ),
             getTranslationLangGroup(translationPreferences),
-            getMetadataTranslationGroup(translationPreferences), // القسم الجديد للبيانات الوصفية
+            
+            // محرك الترجمة الأساسي
             getTranslatioEngineGroup(translationPreferences),
+            
+            // الإعدادات المتقدمة (Advanced)
             getTranslatioAdvancedGroup(translationPreferences),
-            getTranslationPerformanceGroup(translationPreferences), // القسم الجديد للأداء
+            
+            // تم نقل قسم البيانات الوصفية (Metadata) إلى هنا ليظهر أسفل الإعدادات المتقدمة
+            getMetadataTranslationGroup(translationPreferences), 
+            
+            // قسم الأداء
+            getTranslationPerformanceGroup(translationPreferences), 
         )
     }
+
 
     @Composable
     private fun getTranslationLangGroup(
