@@ -81,5 +81,7 @@
     <string name="pref_sub_realtime_default_preload">Number of pages translated ahead of your current page.</string>
     <string name="pref_realtime_max_preload">Absolute Max Preload Count</string>
     <string name="pref_sub_realtime_max_preload">Prevents excessive page loading regardless of memory budget.</string>
+    <string name="pref_translation_excluded_languages">Excluded Translation Languages</string>
+<string name="pref_sub_translation_excluded_languages">Enter language codes separated by commas, e.g., en, ar, zh</string>
 
 </resources>
