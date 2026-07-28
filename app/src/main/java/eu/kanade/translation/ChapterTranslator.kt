@@ -1309,7 +1309,7 @@ class ChapterTranslator(
         val maxSymWidth = max(r1.symWidth, r2.symWidth)
         val minSymHeight = min(r1.symHeight, r2.symHeight)
         val maxSymHeight = max(r1.symHeight, r2.symHeight)
-        val sizeRatioLimit = 1.5f
+        val sizeRatioLimit = 3f
         if (maxSymWidth / minSymWidth > sizeRatioLimit || maxSymHeight / minSymHeight > sizeRatioLimit) return false
 
         val sH = max(minSymHeight, 12f)
